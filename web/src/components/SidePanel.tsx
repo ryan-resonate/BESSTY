@@ -4,10 +4,7 @@ import { limitForPeriod } from '../lib/types';
 import type { ReceiverResult } from '../lib/solver';
 import type { BaseMap, ContourMode } from './MapView';
 import type { Palette } from '../lib/colormap';
-import { listEntriesByKind, lookupEntry, withLocalEntry } from '../lib/catalog';
-import { LocalCatalogCard } from './LocalCatalogCard';
-import { CatalogEntryEditor } from '../screens/CatalogScreen';
-import type { CatalogEntry } from '../lib/types';
+import { listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { paletteCss } from '../lib/colormap';
 
 const GROUP_PALETTE = [
@@ -91,8 +88,18 @@ export function SidePanel(props: Props) {
     layers: false,
   };
 
+  // Click anywhere in the side panel that isn't an explicit add-mode button
+  // cancels any active add-mode. Lets the user "stop placing" by clicking
+  // on the panel chrome instead of having to click the same button again.
+  function maybeCancelAddMode(ev: React.MouseEvent) {
+    if (props.addMode === 'none') return;
+    const target = ev.target as HTMLElement;
+    if (target.closest('[data-keep-add-mode]')) return;
+    props.setAddMode('none');
+  }
+
   return (
-    <aside className="side-panel">
+    <aside className="side-panel" onClick={maybeCancelAddMode}>
       <div className="tabs">
         {TABS.map((t) => (
           <button
@@ -250,6 +257,39 @@ function BulkEditPanel(props: {
 }) {
   const { project, selectedSources, selectedReceivers, onBulkUpdateSources, onBulkUpdateReceivers } = props;
 
+  // Buffer the bulk-edit changes locally; the user pushes "Apply" to commit.
+  // Until then, no project-state writes (and therefore no recompute) fire.
+  const [srcDraft, setSrcDraft] = useState<Partial<Source>>({});
+  const [rxDraft, setRxDraft] = useState<Partial<Receiver>>({});
+
+  function setSrc<K extends keyof Source>(k: K, v: Source[K] | undefined) {
+    setSrcDraft((d) => {
+      const next: Partial<Source> = { ...d };
+      if (v === undefined) delete next[k];
+      else next[k] = v;
+      return next;
+    });
+  }
+  function setRx<K extends keyof Receiver>(k: K, v: Receiver[K] | undefined) {
+    setRxDraft((d) => {
+      const next: Partial<Receiver> = { ...d };
+      if (v === undefined) delete next[k];
+      else next[k] = v;
+      return next;
+    });
+  }
+  function apply() {
+    if (Object.keys(srcDraft).length > 0) onBulkUpdateSources(srcDraft);
+    if (Object.keys(rxDraft).length > 0) onBulkUpdateReceivers(rxDraft);
+    setSrcDraft({});
+    setRxDraft({});
+  }
+  function reset() {
+    setSrcDraft({});
+    setRxDraft({});
+  }
+  const dirty = Object.keys(srcDraft).length + Object.keys(rxDraft).length > 0;
+
   const allSourceKinds = new Set(selectedSources.map((s) => s.kind));
   const allWtg = selectedSources.length > 0 && [...allSourceKinds].every((k) => k === 'wtg');
   const allSameKind = selectedSources.length >= 2 && allSourceKinds.size === 1;
@@ -272,21 +312,18 @@ function BulkEditPanel(props: {
       {sharedKind && modelChoices.length > 0 && (
         <Field label={`Model — ${selectedSources.length} ${sharedKind}${selectedSources.length === 1 ? '' : 's'}`}>
           <select
-            defaultValue=""
+            value={srcDraft.catalogScope && srcDraft.modelId ? `${srcDraft.catalogScope}:${srcDraft.modelId}` : ''}
             onChange={(e) => {
               if (!e.target.value) return;
               const [scope, ...rest] = e.target.value.split(':');
               const modelId = rest.join(':');
               const picked = modelChoices.find((c) => c._scope === scope && c.id === modelId);
-              onBulkUpdateSources({
-                catalogScope: scope as 'global' | 'local',
-                modelId,
-                modeOverride: picked?.defaultMode ?? null,
-              });
-              e.target.value = '';
+              setSrc('catalogScope', scope as 'global' | 'local');
+              setSrc('modelId', modelId);
+              setSrc('modeOverride', picked?.defaultMode ?? null);
             }}
           >
-            <option value="" disabled>Set for all…</option>
+            <option value="" disabled>Choose model…</option>
             {modelChoices.map((m) => (
               <option key={`${m._scope}:${m.id}`} value={`${m._scope}:${m.id}`}>
                 {m.displayName}{m._scope === 'local' ? ' · local' : ''}
@@ -299,15 +336,10 @@ function BulkEditPanel(props: {
       {sharedEntry && (
         <Field label={`Mode (${selectedSources.length} × ${sharedEntry.displayName})`}>
           <select
-            defaultValue=""
-            onChange={(e) => {
-              if (e.target.value) {
-                onBulkUpdateSources({ modeOverride: e.target.value });
-                e.target.value = '';
-              }
-            }}
+            value={srcDraft.modeOverride ?? ''}
+            onChange={(e) => setSrc('modeOverride', e.target.value || null)}
           >
-            <option value="" disabled>Set for all…</option>
+            <option value="" disabled>Choose mode…</option>
             {sharedEntry.modes.map((m) => (
               <option key={m.name} value={m.name}>{m.name}</option>
             ))}
@@ -319,14 +351,9 @@ function BulkEditPanel(props: {
         <Field label={`Hub height — ${selectedSources.length} WTGs (m)`}>
           <input
             type="number" min={50} max={250} step={1}
-            placeholder="Set for all…"
-            onBlur={(e) => {
-              const v = +e.target.value;
-              if (Number.isFinite(v) && v > 0) {
-                onBulkUpdateSources({ hubHeight: v });
-                e.target.value = '';
-              }
-            }}
+            placeholder="—"
+            value={srcDraft.hubHeight ?? ''}
+            onChange={(e) => setSrc('hubHeight', e.target.value === '' ? undefined : +e.target.value)}
           />
         </Field>
       )}
@@ -335,68 +362,48 @@ function BulkEditPanel(props: {
         <>
           <div className="meta-line" style={{ marginTop: 6 }}>
             <b>{selectedReceivers.length} receiver{selectedReceivers.length === 1 ? '' : 's'}</b>
-            {' '}— set the limit for each period independently.
+            {' '}— blank fields are left untouched on Apply.
           </div>
           <div className="grid-2">
             <Field label="Day limit dB(A)">
               <input
-                type="number" min={20} max={80} step={1}
-                placeholder="…"
-                onBlur={(e) => {
-                  const v = +e.target.value;
-                  if (Number.isFinite(v) && v > 0) {
-                    onBulkUpdateReceivers({ limitDayDbA: v });
-                    e.target.value = '';
-                  }
-                }}
+                type="number" min={20} max={80} step={1} placeholder="—"
+                value={rxDraft.limitDayDbA ?? ''}
+                onChange={(e) => setRx('limitDayDbA', e.target.value === '' ? undefined : +e.target.value)}
               />
             </Field>
             <Field label="Evening limit dB(A)">
               <input
-                type="number" min={20} max={80} step={1}
-                placeholder="…"
-                onBlur={(e) => {
-                  const v = +e.target.value;
-                  if (Number.isFinite(v) && v > 0) {
-                    onBulkUpdateReceivers({ limitEveningDbA: v });
-                    e.target.value = '';
-                  }
-                }}
+                type="number" min={20} max={80} step={1} placeholder="—"
+                value={rxDraft.limitEveningDbA ?? ''}
+                onChange={(e) => setRx('limitEveningDbA', e.target.value === '' ? undefined : +e.target.value)}
               />
             </Field>
           </div>
           <div className="grid-2">
             <Field label="Night limit dB(A)">
               <input
-                type="number" min={20} max={80} step={1}
-                placeholder="…"
-                onBlur={(e) => {
-                  const v = +e.target.value;
-                  if (Number.isFinite(v) && v > 0) {
-                    onBulkUpdateReceivers({ limitNightDbA: v });
-                    e.target.value = '';
-                  }
-                }}
+                type="number" min={20} max={80} step={1} placeholder="—"
+                value={rxDraft.limitNightDbA ?? ''}
+                onChange={(e) => setRx('limitNightDbA', e.target.value === '' ? undefined : +e.target.value)}
               />
             </Field>
             <Field label="Height above ground (m)">
               <input
-                type="number" min={0} max={300} step={0.5}
-                placeholder="…"
-                onBlur={(e) => {
-                  const v = +e.target.value;
-                  if (Number.isFinite(v) && v >= 0) {
-                    onBulkUpdateReceivers({ heightAboveGroundM: v });
-                    e.target.value = '';
-                  }
-                }}
+                type="number" min={0} max={300} step={0.5} placeholder="—"
+                value={rxDraft.heightAboveGroundM ?? ''}
+                onChange={(e) => setRx('heightAboveGroundM', e.target.value === '' ? undefined : +e.target.value)}
               />
             </Field>
           </div>
         </>
       )}
 
-      <div className="hint">Tip: drag any selected marker to move them all. Press Tab or click out to apply each value.</div>
+      <div className="add-row" style={{ paddingTop: 6, borderTop: '1px dashed var(--light)', marginTop: 4 }}>
+        <button className="btn primary small" disabled={!dirty} onClick={apply}>Apply</button>
+        <button className="btn small" disabled={!dirty} onClick={reset}>Reset</button>
+      </div>
+      <div className="hint">Tip: drag any selected marker to move them all.</div>
     </div>
   );
 }
@@ -405,7 +412,6 @@ function BulkEditPanel(props: {
 
 function SourcesTab(props: Props) {
   const { project, setProject, results, selectedIds, onSelect, addMode, setAddMode, onSelectGroup } = props;
-  const [editingCatalog, setEditingCatalog] = useState<CatalogEntry | null>(null);
 
   function updateSource(id: string, patch: Partial<Source>) {
     setProject({
@@ -502,23 +508,6 @@ function SourcesTab(props: Props) {
           />
         ))}
       </CollapsibleCard>
-
-      <LocalCatalogCard
-        project={project}
-        setProject={setProject}
-        onEditEntry={setEditingCatalog}
-      />
-
-      {editingCatalog && (
-        <CatalogEntryEditor
-          entry={editingCatalog}
-          onClose={() => setEditingCatalog(null)}
-          onSave={(e) => {
-            setProject(withLocalEntry(project, e));
-            setEditingCatalog(null);
-          }}
-        />
-      )}
     </>
   );
 }
@@ -872,6 +861,7 @@ function Field(props: { label: string; children: React.ReactNode }) {
 function ModeBtn(props: { label: string; mode: AddMode; current: AddMode; onClick(m: AddMode): void }) {
   return (
     <button
+      data-keep-add-mode
       className={`btn small${props.current === props.mode ? ' active' : ''}`}
       onClick={() => props.onClick(props.current === props.mode ? 'none' : props.mode)}
     >{props.label}</button>

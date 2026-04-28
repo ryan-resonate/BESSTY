@@ -58,6 +58,17 @@ export function ProjectScreen() {
   /// auto-switch the panel to Sources / Receivers.
   const [activeTab, setActiveTab] = useState<Tab>('sources');
 
+  // Esc cancels any active add / measure mode and clears the current
+  // selection so the user is back to the default mouse cursor.
+  useEffect(() => {
+    function onKey(ev: KeyboardEvent) {
+      if (ev.key !== 'Escape') return;
+      setAddMode('none');
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   function selectOne(id: string | null) {
     setSelectedIds(id ? new Set([id]) : new Set());
     setSelectedGroupId(null);
@@ -105,6 +116,11 @@ export function ProjectScreen() {
   // Cached point + grid snapshots (gradients) for fast Taylor extrapolation.
   const pointSnapRef = useRef<PointSnapshot | null>(null);
   const gridSnapRef = useRef<GridSnapshot | null>(null);
+  // Generation counters: each new snapshot request bumps these. When an
+  // async result comes back we discard it if a newer request has fired in
+  // the meantime — stops a slow run from clobbering the latest geometry.
+  const pointGenRef = useRef(0);
+  const gridGenRef = useRef(0);
   // Bumps every time a snapshot is refreshed in the background, so the
   // results-dependent UI re-renders against the new exact values.
   const [, setSnapshotVersion] = useState(0);
@@ -143,25 +159,27 @@ export function ProjectScreen() {
       .catch((e) => { console.warn('DEM load failed (continuing flat-ground):', e); setDemStatus('error'); });
   }, [project, demStatus]);
 
-  // Project state changes that trigger re-evaluation:
-  //   - Source/receiver moves and edits → extrapolate from snapshot (fast).
-  //   - Add/remove sources/receivers, change wind speed/mode/model, change
-  //     barriers, change settings, swap DEM → re-snapshot (exact).
+  // Project state changes are split into two reactive surfaces:
   //
-  // We track structural changes via a hash that excludes mutable positions.
-  const structuralKey = useMemo(() => {
+  //   - **Point snapshot** (re-snapshot when this changes): includes everything
+  //     that affects per-pair Lp at named receivers — sources, receivers,
+  //     barriers, settings, DEM, scenario.
+  //   - **Grid snapshot** (re-snapshot when this changes): excludes receiver
+  //     state entirely — grid cells are independent virtual receivers, so
+  //     moving a real receiver can't change any grid cell.
+  //
+  // Source-position changes don't enter either key — those are gradient-
+  // extrapolated and handled by the sourcePosKey effect below.
+  const pointStructuralKey = useMemo(() => {
     if (!project) return '';
     return JSON.stringify({
       windSpeed: project.scenario.windSpeed,
       sources: project.sources.map((s) => ({
-        id: s.id, kind: s.kind, modelId: s.modelId, mode: s.modeOverride,
-        hub: s.hubHeight, eo: s.elevationOffset,
+        id: s.id, kind: s.kind, modelId: s.modelId, scope: s.catalogScope,
+        mode: s.modeOverride, hub: s.hubHeight, eo: s.elevationOffset,
       })),
       receivers: project.receivers.map((r) => ({
-        id: r.id, h: r.heightAboveGroundM,
-        // include latLng so that adding/moving a receiver triggers re-snap
-        // (receiver-drag isn't covered by the source-only gradient cache).
-        ll: r.latLng,
+        id: r.id, h: r.heightAboveGroundM, ll: r.latLng,
       })),
       barriers: project.barriers,
       settings: project.settings,
@@ -169,40 +187,66 @@ export function ProjectScreen() {
     });
   }, [project, dem]);
 
-  // Re-snapshot whenever structure changes, debounced.
+  const gridStructuralKey = useMemo(() => {
+    if (!project) return '';
+    return JSON.stringify({
+      windSpeed: project.scenario.windSpeed,
+      sources: project.sources.map((s) => ({
+        id: s.id, kind: s.kind, modelId: s.modelId, scope: s.catalogScope,
+        mode: s.modeOverride, hub: s.hubHeight, eo: s.elevationOffset,
+      })),
+      barriers: project.barriers,
+      ground: project.settings?.ground,
+      annexD: project.settings?.annexD,
+      gridReceiverHeight: project.settings?.general.defaultReceiverHeight,
+      calc: project.calculationArea,
+      gridSpacingM,
+      hasDem: !!dem,
+    });
+  }, [project, dem, gridSpacingM]);
+
   useEffect(() => {
     if (!project) return;
     setComputing(true);
     setError(null);
     const start = performance.now();
     const handle = setTimeout(() => {
+      const gen = ++pointGenRef.current;
       snapshotProject(project, dem)
         .then(({ results, snapshot }) => {
+          if (gen !== pointGenRef.current) return;       // superseded
           pointSnapRef.current = snapshot;
           setResults(results);
           setLastSolveMs(performance.now() - start);
           setSnapshotVersion((v) => v + 1);
-          // If a grid is currently displayed, refresh its snapshot too so
-          // that subsequent extrapolation uses up-to-date gradients.
-          if (gridSnapRef.current) {
-            const gridStart = performance.now();
-            snapshotGrid(project, dem, gridSpacingM,
-              project.settings?.general.defaultReceiverHeight ?? 1.5)
-              .then((s) => {
-                gridSnapRef.current = s;
-                const { grid: g } = extrapolateGrid(project, s, dem);
-                g.computedMs = performance.now() - gridStart;
-                setGrid(g);
-              })
-              .catch((e) => console.warn('grid re-snapshot failed:', e));
-          }
         })
-        .catch((e) => setError(String(e)))
-        .finally(() => setComputing(false));
+        .catch((e) => { if (gen === pointGenRef.current) setError(String(e)); })
+        .finally(() => { if (gen === pointGenRef.current) setComputing(false); });
     }, 80);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [structuralKey]);
+  }, [pointStructuralKey]);
+
+  // Grid re-snapshot on grid-relevant changes only. Receivers don't trigger.
+  useEffect(() => {
+    if (!project || !gridSnapRef.current) return;        // no grid → nothing to do
+    const handle = setTimeout(() => {
+      const gen = ++gridGenRef.current;
+      const start = performance.now();
+      snapshotGrid(project, dem, gridSpacingM,
+        project.settings?.general.defaultReceiverHeight ?? 1.5)
+        .then((s) => {
+          if (gen !== gridGenRef.current) return;        // superseded
+          gridSnapRef.current = s;
+          const { grid: g } = extrapolateGrid(project, s, dem);
+          g.computedMs = performance.now() - start;
+          setGrid(g);
+        })
+        .catch((e) => console.warn('grid re-snapshot failed:', e));
+    }, 80);
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gridStructuralKey]);
 
   // Source-position changes (drag) → extrapolate immediately from snapshot.
   // Cheap pure-JS arithmetic, no WASM call.
@@ -240,18 +284,22 @@ export function ProjectScreen() {
   useEffect(() => {
     if (!project || !snapshotStale) return;
     const handle = setTimeout(() => {
+      const pGen = ++pointGenRef.current;
       const start = performance.now();
       snapshotProject(project, dem)
         .then(({ results, snapshot }) => {
+          if (pGen !== pointGenRef.current) return;
           pointSnapRef.current = snapshot;
           setResults(results);
           setLastSolveMs(performance.now() - start);
           setSnapshotVersion((v) => v + 1);
           if (gridSnapRef.current) {
+            const gGen = ++gridGenRef.current;
             const gridStart = performance.now();
             snapshotGrid(project, dem, gridSpacingM,
               project.settings?.general.defaultReceiverHeight ?? 1.5)
               .then((s) => {
+                if (gGen !== gridGenRef.current) return;
                 gridSnapRef.current = s;
                 const { grid: g } = extrapolateGrid(project, s, dem);
                 g.computedMs = performance.now() - gridStart;
@@ -260,7 +308,7 @@ export function ProjectScreen() {
               .catch((e) => console.warn('grid re-snapshot failed:', e));
           }
         })
-        .catch((e) => setError(String(e)))
+        .catch((e) => { if (pGen === pointGenRef.current) setError(String(e)); })
         .finally(() => setSnapshotStale(false));
     }, 200);
     return () => clearTimeout(handle);
@@ -271,8 +319,10 @@ export function ProjectScreen() {
     if (!project) return;
     setGridStatus('computing');
     setTimeout(() => {
+      const gen = ++gridGenRef.current;
       snapshotGrid(project, dem, gridSpacingM, project.settings?.general.defaultReceiverHeight ?? 1.5)
         .then((s) => {
+          if (gen !== gridGenRef.current) return;
           gridSnapRef.current = s;
           const { grid: g } = extrapolateGrid(project, s, dem);
           g.computedMs = s.computedMs;
@@ -283,7 +333,7 @@ export function ProjectScreen() {
             setFixedDomain({ min: Math.floor(d.min / 5) * 5, max: Math.ceil(d.max / 5) * 5 });
           }
         })
-        .catch((e) => { setError(String(e)); setGridStatus('idle'); });
+        .catch((e) => { if (gen === gridGenRef.current) { setError(String(e)); setGridStatus('idle'); } });
     }, 0);
   }
 

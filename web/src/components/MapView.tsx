@@ -201,6 +201,8 @@ export function MapView({
   /// time) read the latest set without needing the effect to re-run.
   const selectedIdsRef = useRef<Set<string>>(selectedIds);
   useEffect(() => { selectedIdsRef.current = selectedIds; });
+  /// Lets the marker drag handlers signal the box-select code to stand down.
+  const cancelBoxSelectRef = useRef<() => void>(() => {});
 
   // Stash every callback in a ref so the marker render effect doesn't re-fire
   // on every prop identity change (cursor mousemove updates ProjectScreen
@@ -265,16 +267,33 @@ export function MapView({
     window.addEventListener('mouseup', onMmbUp);
 
     // ---- LMB drag → box-select (only on empty map / when addMode is none) ----
+    //
+    // Wired to DOM mousedown rather than Leaflet's `map.on('mousedown')`
+    // because Leaflet's bubblingMouseEvents:false on markers turns out not
+    // to suppress the map's mousedown reliably across browsers. Filtering
+    // by the actual DOM target gives us full control: anything inside a
+    // .leaflet-marker-icon is the marker's territory; everything else is
+    // treated as empty-map.
     let boxStart: L.LatLng | null = null;
     let boxStartPx: L.Point | null = null;
     let boxRect: L.Rectangle | null = null;
-    map.on('mousedown', (e: L.LeafletMouseEvent) => {
+    cancelBoxSelectRef.current = () => {
+      if (boxRect) { boxRect.remove(); boxRect = null; }
+      boxStart = null;
+      boxStartPx = null;
+    };
+    const onLmbDown = (ev: MouseEvent) => {
+      if (ev.button !== 0) return;
+      const target = ev.target as HTMLElement;
+      if (target.closest('.leaflet-marker-icon, .leaflet-control')) return;
       if (callbacksRef.current.addMode !== 'none') return;
-      const oe = e.originalEvent;
-      if (oe.button !== 0) return;     // LMB only
-      boxStart = e.latlng;
-      boxStartPx = e.containerPoint;
-    });
+      const cr = containerEl.getBoundingClientRect();
+      const cx = ev.clientX - cr.left;
+      const cy = ev.clientY - cr.top;
+      boxStartPx = L.point(cx, cy);
+      boxStart = map.containerPointToLatLng(boxStartPx);
+    };
+    containerEl.addEventListener('mousedown', onLmbDown);
     const onBoxMove = (ev: MouseEvent) => {
       if (!boxStart) return;
       const cr = containerEl.getBoundingClientRect();
@@ -379,6 +398,7 @@ export function MapView({
     return () => {
       if (pendingCursorUpdate != null) cancelAnimationFrame(pendingCursorUpdate);
       containerEl.removeEventListener('mousedown', onMmbDown);
+      containerEl.removeEventListener('mousedown', onLmbDown);
       window.removeEventListener('mousemove', onMmbMove);
       window.removeEventListener('mouseup', onMmbUp);
       window.removeEventListener('mousemove', onBoxMove);
@@ -447,6 +467,7 @@ export function MapView({
         callbacksRef.current.onSelect(s.id, { shift });
       });
       marker.on('dragstart', () => {
+        cancelBoxSelectRef.current();
         const sel = selectedIdsRef.current;
         if (sel.size <= 1 || !sel.has(s.id)) return;
         const siblings = new Map<string, L.LatLng>();
@@ -493,6 +514,7 @@ export function MapView({
         onSelect(r.id, { shift });
       });
       marker.on('dragstart', () => {
+        cancelBoxSelectRef.current();
         const sel = selectedIdsRef.current;
         if (sel.size <= 1 || !sel.has(r.id)) return;
         const siblings = new Map<string, L.LatLng>();

@@ -1,10 +1,16 @@
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 
 interface Props {
   projectBreadcrumb?: string;
 }
 
 export function Header({ projectBreadcrumb }: Props) {
+  // Carry the current project id through to /catalog so the Local tab is
+  // immediately scoped to that project.
+  const location = useLocation();
+  const projectMatch = location.pathname.match(/^\/projects\/([^/]+)/);
+  const projectId = projectMatch?.[1];
+  const catalogTo = projectId ? `/catalog?project=${projectId}` : '/catalog';
   return (
     <header className="app-header">
       <div className="left">
@@ -33,7 +39,7 @@ export function Header({ projectBreadcrumb }: Props) {
         <NavLink to="/projects" end className={({ isActive }) => (isActive ? 'active' : '')}>
           Projects
         </NavLink>
-        <NavLink to="/catalog" className={({ isActive }) => (isActive ? 'active' : '')}>
+        <NavLink to={catalogTo} className={({ isActive }) => (isActive ? 'active' : '')}>
           Catalog
         </NavLink>
       </nav>

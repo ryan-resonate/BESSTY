@@ -1,18 +1,31 @@
-// Global catalog screen — manage source models that any project can pull from.
+// Catalog screen — manages source models in two databases:
 //
-// Two databases are visible side-by-side: the global catalog (this screen
-// edits) and a per-project local catalog (visible / editable in each
-// project's workspace). Entries can be transferred via the per-row actions.
+//   - **Global** — shared across every project on this device.
+//   - **Local**  — lives on a single project; only visible when the screen
+//                  is reached from within a project (URL `?project=<id>`).
+//
+// Tabs at the top switch between the two. Add / edit / delete buttons hit
+// whichever scope is active.
 
-import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useMemo, useRef, useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import {
   deleteGlobalEntry,
   loadGlobalCatalog,
+  localCatalogOf,
   upsertGlobalEntry,
+  withLocalEntry,
+  withoutLocalEntry,
 } from '../lib/catalog';
+import { loadProject, saveProject } from '../lib/storage';
 import { parseCatalogXlsx } from '../lib/xlsxImport';
-import type { CatalogEntry, CatalogModeData, SourceKind } from '../lib/types';
+import type {
+  CatalogBandSystem,
+  CatalogEntry,
+  CatalogModeData,
+  Project,
+  SourceKind,
+} from '../lib/types';
 
 const KIND_ORDER: SourceKind[] = ['wtg', 'bess', 'auxiliary'];
 const KIND_LABEL: Record<SourceKind, string> = {
@@ -21,26 +34,66 @@ const KIND_LABEL: Record<SourceKind, string> = {
   auxiliary: 'Auxiliary',
 };
 
-export function CatalogScreen() {
-  const [entries, setEntries] = useState<CatalogEntry[]>(() => loadGlobalCatalog());
-  const [editing, setEditing] = useState<CatalogEntry | null>(null);
+type Scope = 'global' | 'local';
 
-  function refresh() {
-    setEntries(loadGlobalCatalog());
+export function CatalogScreen() {
+  // Optional `?project=<id>` query selects a project for the Local tab.
+  const location = useLocation();
+  const projectId = useMemo(
+    () => new URLSearchParams(location.search).get('project'),
+    [location.search],
+  );
+
+  const [project, setProject] = useState<Project | null>(() =>
+    projectId ? loadProject(projectId) : null,
+  );
+  const [scope, setScope] = useState<Scope>(projectId ? 'local' : 'global');
+
+  const [globalEntries, setGlobalEntries] = useState<CatalogEntry[]>(() => loadGlobalCatalog());
+  const [editing, setEditing] = useState<{ entry: CatalogEntry; targetScope: Scope } | null>(null);
+
+  function refreshGlobal() {
+    setGlobalEntries(loadGlobalCatalog());
   }
-  useEffect(refresh, []);
+
+  function persistProject(p: Project) {
+    setProject(p);
+    if (projectId) saveProject(projectId, p);
+  }
+
+  function activeEntries(): CatalogEntry[] {
+    if (scope === 'local') return project ? localCatalogOf(project) : [];
+    return globalEntries;
+  }
 
   function handleDelete(e: CatalogEntry) {
-    if (!confirm(`Delete catalog entry "${e.displayName}"? Any project sources still referencing it will fail to evaluate until reassigned.`)) return;
-    deleteGlobalEntry(e.id);
-    refresh();
+    if (!confirm(`Delete catalog entry "${e.displayName}"?`)) return;
+    if (scope === 'global') {
+      deleteGlobalEntry(e.id);
+      refreshGlobal();
+    } else if (project) {
+      persistProject(withoutLocalEntry(project, e.id));
+    }
+  }
+  function handleSave(updated: CatalogEntry, targetScope: Scope) {
+    if (targetScope === 'global') {
+      upsertGlobalEntry(updated);
+      refreshGlobal();
+    } else if (project) {
+      persistProject(withLocalEntry(project, updated));
+    }
+    setEditing(null);
+  }
+  function copyToOtherScope(e: CatalogEntry) {
+    if (scope === 'global' && project) {
+      persistProject(withLocalEntry(project, { ...e, origin: 'user' }));
+    } else if (scope === 'local') {
+      upsertGlobalEntry({ ...e, origin: 'user' });
+      refreshGlobal();
+    }
   }
 
-  function handleSave(updated: CatalogEntry) {
-    upsertGlobalEntry(updated);
-    setEditing(null);
-    refresh();
-  }
+  const entries = activeEntries();
 
   return (
     <div className="catalog-screen">
@@ -48,18 +101,43 @@ export function CatalogScreen() {
         <div>
           <h2>Catalog</h2>
           <div className="subtitle">
-            Global database of source models. Available to every project on
-            this device. Per-project local catalogs live inside each project's
-            workspace (Sources tab → Local catalog).
+            Source-model database. <b>Global</b> is shared across every project
+            on this device; <b>Local</b> belongs to one project. The two are
+            independent — copy entries between them as needed.
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <Link to="/projects" className="btn">← Projects</Link>
-          <UploadButton onLoaded={(es) => { es.forEach(upsertGlobalEntry); refresh(); }} />
-          <button className="btn primary" onClick={() => setEditing(blankEntry('wtg'))}>
+          <Link to={projectId ? `/projects/${projectId}` : '/projects'} className="btn">
+            ← {projectId ? 'Project' : 'Projects'}
+          </Link>
+          <UploadButton onLoaded={(es) => {
+            if (scope === 'global') { es.forEach(upsertGlobalEntry); refreshGlobal(); }
+            else if (project) {
+              let next = project;
+              for (const e of es) next = withLocalEntry(next, e);
+              persistProject(next);
+            }
+          }} />
+          <button className="btn primary" onClick={() => setEditing({ entry: blankEntry('wtg'), targetScope: scope })}>
             + Add entry
           </button>
         </div>
+      </div>
+
+      <div className="seg" style={{ display: 'inline-flex', marginBottom: 16 }}>
+        <button className={scope === 'global' ? 'on' : ''} onClick={() => setScope('global')}>
+          Global ({globalEntries.length})
+        </button>
+        {project && (
+          <button className={scope === 'local' ? 'on' : ''} onClick={() => setScope('local')}>
+            {project.name} · Local ({localCatalogOf(project).length})
+          </button>
+        )}
+        {!project && (
+          <button disabled title="Open this screen from inside a project to edit its local catalog">
+            Local catalog (open from a project)
+          </button>
+        )}
       </div>
 
       {KIND_ORDER.map((kind) => {
@@ -69,7 +147,7 @@ export function CatalogScreen() {
             <h3>{KIND_LABEL[kind]} <span className="muted">· {ofKind.length}</span></h3>
             {ofKind.length === 0 && (
               <div className="empty-state" style={{ padding: 20, marginBottom: 12 }}>
-                No {KIND_LABEL[kind].toLowerCase()} entries yet.
+                No {KIND_LABEL[kind].toLowerCase()} entries in this {scope} catalog.
               </div>
             )}
             {ofKind.length > 0 && (
@@ -105,7 +183,12 @@ export function CatalogScreen() {
                         <span className={`origin-pill ${e.origin}`}>{e.origin}</span>
                       </td>
                       <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                        <button className="btn small" onClick={() => setEditing(e)}>Edit</button>
+                        <button className="btn small" onClick={() => setEditing({ entry: e, targetScope: scope })}>Edit</button>
+                        {(scope === 'global' ? !!project : true) && (
+                          <button className="btn small" onClick={() => copyToOtherScope(e)} title={scope === 'global' ? 'Copy to project local' : 'Push to global'}>
+                            {scope === 'global' ? '→ Local' : '→ Global'}
+                          </button>
+                        )}
                         <button className="btn small" style={{ color: 'var(--red)' }} onClick={() => handleDelete(e)}>✕</button>
                       </td>
                     </tr>
@@ -119,9 +202,9 @@ export function CatalogScreen() {
 
       {editing && (
         <CatalogEntryEditor
-          entry={editing}
+          entry={editing.entry}
           onClose={() => setEditing(null)}
-          onSave={handleSave}
+          onSave={(e) => handleSave(e, editing.targetScope)}
         />
       )}
     </div>
@@ -183,8 +266,73 @@ function UploadButton(props: { onLoaded(entries: CatalogEntry[]): void }) {
   );
 }
 
-/// Edit (or create) a single catalog entry. Supports adding/removing modes,
-/// editing the spectrum cell-by-cell, and tweaking metadata.
+// ============== Frequency picker (start / end dropdowns) ==============
+
+const OCTAVE_BANDS_HZ = [16, 31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000];
+const ONE_THIRD_OCTAVE_BANDS_HZ = [
+  10, 12.5, 16, 20, 25, 31.5, 40,
+  50, 63, 80, 100, 125, 160, 200, 250, 315, 400,
+  500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150,
+  4000, 5000, 6300, 8000, 10000,
+];
+
+function bandList(bandSystem: CatalogBandSystem): number[] {
+  return bandSystem === 'oneThirdOctave' ? ONE_THIRD_OCTAVE_BANDS_HZ : OCTAVE_BANDS_HZ;
+}
+
+function formatHz(f: number): string {
+  if (f >= 1000) {
+    const k = f / 1000;
+    // 1k, 1.25k, 1.6k, 2k, 2.5k etc
+    return Number.isInteger(k) ? `${k}k` : `${k}k`;
+  }
+  return Number.isInteger(f) ? String(f) : String(f);
+}
+
+function FrequencyRangePicker(props: {
+  bandSystem: CatalogBandSystem;
+  frequencies: number[];
+  onChange(frequencies: number[]): void;
+}) {
+  const all = bandList(props.bandSystem);
+  // Snap the entry's first/last frequency to whichever standard band is
+  // closest, so the dropdowns always have a valid selection even after a
+  // manual edit elsewhere.
+  function nearestIdx(target: number) {
+    let bestI = 0; let bestD = Infinity;
+    for (let i = 0; i < all.length; i++) {
+      const d = Math.abs(Math.log(all[i]) - Math.log(target));
+      if (d < bestD) { bestD = d; bestI = i; }
+    }
+    return bestI;
+  }
+  const startIdx = props.frequencies.length > 0 ? nearestIdx(props.frequencies[0]) : 0;
+  const endIdx = props.frequencies.length > 0 ? nearestIdx(props.frequencies[props.frequencies.length - 1]) : all.length - 1;
+
+  function setRange(s: number, e: number) {
+    if (s > e) [s, e] = [e, s];
+    props.onChange(all.slice(s, e + 1));
+  }
+
+  return (
+    <div className="grid-2">
+      <label className="fld">
+        <span>From (lowest band)</span>
+        <select value={startIdx} onChange={(ev) => setRange(+ev.target.value, endIdx)}>
+          {all.map((f, i) => <option key={f} value={i}>{formatHz(f)} Hz</option>)}
+        </select>
+      </label>
+      <label className="fld">
+        <span>To (highest band)</span>
+        <select value={endIdx} onChange={(ev) => setRange(startIdx, +ev.target.value)}>
+          {all.map((f, i) => <option key={f} value={i}>{formatHz(f)} Hz</option>)}
+        </select>
+      </label>
+    </div>
+  );
+}
+
+/// Edit (or create) a single catalog entry.
 export function CatalogEntryEditor(props: {
   entry: CatalogEntry;
   onClose(): void;
@@ -282,33 +430,46 @@ export function CatalogEntryEditor(props: {
                   </label>
                   <label className="fld">
                     <span>Band system</span>
-                    <select value={m.bandSystem}
-                      onChange={(e) => updateMode(activeModeIdx, { bandSystem: e.target.value as CatalogModeData['bandSystem'] })}>
-                      <option value="octave">Octave</option>
-                      <option value="oneThirdOctave">One-third octave</option>
+                    <select
+                      value={m.bandSystem}
+                      onChange={(e) => {
+                        const next = e.target.value as CatalogBandSystem;
+                        // Re-snap frequency range when band system flips.
+                        const all = bandList(next);
+                        updateMode(activeModeIdx, {
+                          bandSystem: next,
+                          frequencies: all.slice(),
+                          spectra: Object.fromEntries(
+                            Object.keys(m.spectra).map((k) => [k, all.map(() => 80)]),
+                          ),
+                        });
+                      }}>
+                      <option value="octave">Octave (16 Hz – 8 kHz)</option>
+                      <option value="oneThirdOctave">One-third octave (10 Hz – 10 kHz)</option>
                     </select>
                   </label>
                 </div>
 
-                <label className="fld">
-                  <span>Frequencies (Hz, comma-separated)</span>
-                  <input
-                    value={m.frequencies.join(', ')}
-                    onChange={(e) => {
-                      const fs = e.target.value.split(/[,\s]+/).map(Number).filter((n) => Number.isFinite(n) && n > 0);
-                      const newSpectra: Record<string, number[]> = {};
-                      for (const k of Object.keys(m.spectra)) {
-                        const old = m.spectra[k];
-                        newSpectra[k] = fs.map((_, i) => old[i] ?? 0);
-                      }
-                      updateMode(activeModeIdx, { frequencies: fs, spectra: newSpectra });
-                    }}
-                  />
-                </label>
+                <FrequencyRangePicker
+                  bandSystem={m.bandSystem}
+                  frequencies={m.frequencies}
+                  onChange={(fs) => {
+                    const newSpectra: Record<string, number[]> = {};
+                    for (const k of Object.keys(m.spectra)) {
+                      const old = m.spectra[k];
+                      const oldFs = m.frequencies;
+                      newSpectra[k] = fs.map((f) => {
+                        const oldIdx = oldFs.indexOf(f);
+                        return oldIdx >= 0 ? old[oldIdx] : 0;
+                      });
+                    }
+                    updateMode(activeModeIdx, { frequencies: fs, spectra: newSpectra });
+                  }}
+                />
 
                 {draft.kind === 'wtg' && (
                   <label className="fld">
-                    <span>Wind speeds (m/s @ 10 m, comma-separated; blank = single broadband entry)</span>
+                    <span>Wind speeds (m/s @ 10 m, comma-separated; blank = broadband)</span>
                     <input
                       value={(m.windSpeeds ?? []).join(', ')}
                       onChange={(e) => {
@@ -344,7 +505,7 @@ export function CatalogEntryEditor(props: {
                     <tbody>
                       {m.frequencies.map((f, i) => (
                         <tr key={`${f}-${i}`}>
-                          <td>{f}</td>
+                          <td>{formatHz(f)}</td>
                           {wsKeys.map((k) => (
                             <td key={k} style={{ textAlign: 'right', padding: 2 }}>
                               <input
