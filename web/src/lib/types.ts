@@ -101,6 +101,34 @@ export interface ProjectSettings {
     capPerBandDb: number;     // default 6 dB per octave band
     capTotalDbA: number;      // default 3 dB(A) on the per-receiver total
   };
+  /// Distance-aware solver settings. Both apply project-wide.
+  propagation?: {
+    /// Sources further than this from a receiver are skipped (treated as
+    /// negligible contribution). Default 20 000 m. Set to 0 / negative to
+    /// disable the cutoff entirely. No upper bound — the user can pin it
+    /// to 0.1 m if they want to inspect a specific source-receiver pair.
+    maxContributionDistanceM: number;
+    /// Sources further than this from a receiver get folded into a single
+    /// equivalent point source (energy-summed Lw at the cluster centroid).
+    /// Below this distance every source is propagated individually so the
+    /// near-field directivity / barrier interaction is preserved.
+    /// Set to 0 / negative to disable clustering. Default 1 500 m.
+    clusterBeyondM: number;
+    /// Maximum number of clusters formed per receiver. Caps memory at very
+    /// large projects (e.g. a 200-WTG portfolio behind a 20-receiver line).
+    maxClustersPerReceiver: number;
+  };
+  /// DEM-driven topography settings. Applies to point + grid solves.
+  topography?: {
+    /// Sample the DEM at N evenly-spaced points along each source→receiver
+    /// path and feed the mean ground height to the General-method ground
+    /// attenuation. 0 disables (flat ground assumed). Default 12.
+    pathSamples: number;
+    /// When the DEM shows a ridge poking above the source-receiver line of
+    /// sight by more than this many metres, treat it as a virtual barrier
+    /// (Abar applies). Default 2 m.
+    virtualBarrierMinHeightM: number;
+  };
 }
 
 /// A named collection of source / receiver IDs. Groups exist purely as

@@ -7,6 +7,7 @@ import type { Palette } from '../lib/colormap';
 import { listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { ImportObjectsModal } from './ImportObjectsModal';
 import { EpsgPicker } from './EpsgPicker';
+import { NumericInput } from './NumericInput';
 import { inferGeoTiffCrs, parseDemGeoTiff } from '../lib/demUpload';
 import { presetForEpsg } from '../lib/projections';
 import type { DemRaster } from '../lib/dem';
@@ -380,11 +381,11 @@ function BulkEditPanel(props: {
 
       {allWtg && (
         <Field label={`Hub height — ${selectedSources.length} WTGs (m)`}>
-          <input
-            type="number" min={50} max={250} step={1}
-            placeholder="—"
-            value={srcDraft.hubHeight ?? ''}
-            onChange={(e) => setSrc('hubHeight', e.target.value === '' ? undefined : +e.target.value)}
+          <NumericInput min={50} max={250} step={1} placeholder="—"
+            value={srcDraft.hubHeight}
+            allowEmpty
+            onChange={() => undefined}
+            onChangeOptional={(v) => setSrc('hubHeight', v)}
           />
         </Field>
       )}
@@ -397,33 +398,33 @@ function BulkEditPanel(props: {
           </div>
           <div className="grid-2">
             <Field label="Day limit dB(A)">
-              <input
-                type="number" min={20} max={80} step={1} placeholder="—"
-                value={rxDraft.limitDayDbA ?? ''}
-                onChange={(e) => setRx('limitDayDbA', e.target.value === '' ? undefined : +e.target.value)}
+              <NumericInput min={20} max={80} step={1} placeholder="—"
+                value={rxDraft.limitDayDbA}
+                allowEmpty onChange={() => undefined}
+                onChangeOptional={(v) => setRx('limitDayDbA', v)}
               />
             </Field>
             <Field label="Evening limit dB(A)">
-              <input
-                type="number" min={20} max={80} step={1} placeholder="—"
-                value={rxDraft.limitEveningDbA ?? ''}
-                onChange={(e) => setRx('limitEveningDbA', e.target.value === '' ? undefined : +e.target.value)}
+              <NumericInput min={20} max={80} step={1} placeholder="—"
+                value={rxDraft.limitEveningDbA}
+                allowEmpty onChange={() => undefined}
+                onChangeOptional={(v) => setRx('limitEveningDbA', v)}
               />
             </Field>
           </div>
           <div className="grid-2">
             <Field label="Night limit dB(A)">
-              <input
-                type="number" min={20} max={80} step={1} placeholder="—"
-                value={rxDraft.limitNightDbA ?? ''}
-                onChange={(e) => setRx('limitNightDbA', e.target.value === '' ? undefined : +e.target.value)}
+              <NumericInput min={20} max={80} step={1} placeholder="—"
+                value={rxDraft.limitNightDbA}
+                allowEmpty onChange={() => undefined}
+                onChangeOptional={(v) => setRx('limitNightDbA', v)}
               />
             </Field>
             <Field label="Height above ground (m)">
-              <input
-                type="number" min={0} max={300} step={0.5} placeholder="—"
-                value={rxDraft.heightAboveGroundM ?? ''}
-                onChange={(e) => setRx('heightAboveGroundM', e.target.value === '' ? undefined : +e.target.value)}
+              <NumericInput min={0} max={300} step={0.5} placeholder="—"
+                value={rxDraft.heightAboveGroundM}
+                allowEmpty onChange={() => undefined}
+                onChangeOptional={(v) => setRx('heightAboveGroundM', v)}
               />
             </Field>
           </div>
@@ -465,10 +466,10 @@ function SourcesTab(props: Props) {
     <>
       <Card title="Scenario">
         <Field label="Project wind speed (m/s @ 10 m)">
-          <input
-            type="number" min={3} max={20} step={0.5}
+          <NumericInput min={3} max={20} step={0.5}
             value={project.scenario.windSpeed}
-            onChange={(e) => updateScenario({ windSpeed: +e.target.value })}
+            fallback={8}
+            onChange={(v) => updateScenario({ windSpeed: v })}
           />
         </Field>
         <Field label="Period">
@@ -582,22 +583,26 @@ function AreaTab(props: Props) {
       <Card title="Calculation area">
         <div className="grid-2">
           <Field label="Centre lat">
-            <input type="number" step={0.0001} value={ca.centerLatLng[0]}
-              onChange={(e) => updateCa({ centerLatLng: [+e.target.value, ca.centerLatLng[1]] })} />
+            <NumericInput step={0.0001} value={ca.centerLatLng[0]}
+              fallback={ca.centerLatLng[0]}
+              onChange={(v) => updateCa({ centerLatLng: [v, ca.centerLatLng[1]] })} />
           </Field>
           <Field label="Centre lng">
-            <input type="number" step={0.0001} value={ca.centerLatLng[1]}
-              onChange={(e) => updateCa({ centerLatLng: [ca.centerLatLng[0], +e.target.value] })} />
+            <NumericInput step={0.0001} value={ca.centerLatLng[1]}
+              fallback={ca.centerLatLng[1]}
+              onChange={(v) => updateCa({ centerLatLng: [ca.centerLatLng[0], v] })} />
           </Field>
         </div>
         <div className="grid-2">
           <Field label="Width (m)">
-            <input type="number" min={500} max={50000} step={500} value={ca.widthM}
-              onChange={(e) => updateCa({ widthM: +e.target.value })} />
+            <NumericInput min={500} max={50000} step={500} value={ca.widthM}
+              fallback={5000}
+              onChange={(v) => updateCa({ widthM: v })} />
           </Field>
           <Field label="Height (m)">
-            <input type="number" min={500} max={50000} step={500} value={ca.heightM}
-              onChange={(e) => updateCa({ heightM: +e.target.value })} />
+            <NumericInput min={500} max={50000} step={500} value={ca.heightM}
+              fallback={5000}
+              onChange={(v) => updateCa({ heightM: v })} />
           </Field>
         </div>
         <div className="add-row">
@@ -692,9 +697,9 @@ function ReceiversTab(props: Props) {
                 ) : <span className="muted">— run to compute</span>}
               </div>
               <div className="item-controls" onClick={(e) => e.stopPropagation()}>
-                <input className="inline-edit" type="number" min={0} max={300} step={0.5}
-                  value={r.heightAboveGroundM}
-                  onChange={(e) => updateReceiver(r.id, { heightAboveGroundM: +e.target.value })}
+                <NumericInput className="inline-edit" min={0} max={300} step={0.5}
+                  value={r.heightAboveGroundM} fallback={1.5}
+                  onChange={(v) => updateReceiver(r.id, { heightAboveGroundM: v })}
                   title="Height above ground (m)" />
                 <PeriodLimitInput
                   label="D" period="day" active={project.scenario.period === 'day'}
@@ -928,12 +933,14 @@ function LayersTab(props: Props) {
         </Field>
         <div className="grid-2">
           <Field label="Min (dB)">
-            <input type="number" step={1} value={contourBounds.min}
-              onChange={(e) => setContourBounds({ ...contourBounds, min: +e.target.value })} />
+            <NumericInput step={1} value={contourBounds.min}
+              fallback={25}
+              onChange={(v) => setContourBounds({ ...contourBounds, min: v })} />
           </Field>
           <Field label="Max (dB)">
-            <input type="number" step={1} value={contourBounds.max}
-              onChange={(e) => setContourBounds({ ...contourBounds, max: +e.target.value })} />
+            <NumericInput step={1} value={contourBounds.max}
+              fallback={60}
+              onChange={(v) => setContourBounds({ ...contourBounds, max: v })} />
           </Field>
         </div>
         <Field label="Step (dB)">
@@ -973,12 +980,14 @@ function LayersTab(props: Props) {
         {domainMode === 'fixed' && (
           <div className="grid-2">
             <Field label="Min">
-              <input type="number" step={1} value={fixedDomain.min}
-                onChange={(e) => setFixedDomain({ ...fixedDomain, min: +e.target.value })} />
+              <NumericInput step={1} value={fixedDomain.min}
+                fallback={25}
+                onChange={(v) => setFixedDomain({ ...fixedDomain, min: v })} />
             </Field>
             <Field label="Max">
-              <input type="number" step={1} value={fixedDomain.max}
-                onChange={(e) => setFixedDomain({ ...fixedDomain, max: +e.target.value })} />
+              <NumericInput step={1} value={fixedDomain.max}
+                fallback={60}
+                onChange={(v) => setFixedDomain({ ...fixedDomain, max: v })} />
             </Field>
           </div>
         )}
@@ -1051,6 +1060,12 @@ function PeriodLimitInput(props: {
   value: number;
   onChange(v: number): void;
 }) {
+  // Anything non-finite (NaN coming through from a botched import) renders
+  // as an empty field rather than crashing the controlled input. The
+  // onChange guard ensures the user can't introduce NaN by editing — empty
+  // entries fall back to a sensible per-period default.
+  const safeValue = Number.isFinite(props.value) ? props.value : '';
+  const fallback = props.period === 'day' ? 50 : props.period === 'evening' ? 45 : 40;
   return (
     <span title={`${props.period} limit dB(A)`} style={{
       display: 'inline-flex', alignItems: 'center', gap: 2,
@@ -1065,8 +1080,11 @@ function PeriodLimitInput(props: {
       }}>{props.label}</span>
       <input
         type="number" min={20} max={80} step={1}
-        value={props.value}
-        onChange={(e) => props.onChange(+e.target.value)}
+        value={safeValue}
+        onChange={(e) => {
+          const n = +e.target.value;
+          props.onChange(Number.isFinite(n) ? n : fallback);
+        }}
         style={{
           width: 36,
           fontFamily: 'var(--font-mono)',
@@ -1236,9 +1254,10 @@ function SourceItem(props: {
           </select>
         )}
         {s.kind === 'wtg' && (
-          <input type="number" min={50} max={250} step={1}
+          <NumericInput min={50} max={250} step={1}
             value={s.hubHeight ?? 100}
-            onChange={(e) => onChange({ hubHeight: +e.target.value })}
+            fallback={100}
+            onChange={(v) => onChange({ hubHeight: v })}
             title="Hub height (m)" />
         )}
         <button className="x-btn" onClick={(e) => { e.stopPropagation(); onRemove(); }}>✕</button>

@@ -15,8 +15,8 @@ interface Props {
   onPan(dxPx: number, dyPx: number): void;
   /// Reset to a view that frames the calc area.
   onHome(): void;
-  /// Switch to 3D — disabled placeholder for now.
-  onToggle3D?(): void;
+  /// Open the 3D MapLibre view.
+  onOpen3D?(): void;
 }
 
 export function MapControls(props: Props) {
@@ -49,7 +49,12 @@ export function MapControls(props: Props) {
               className={`btn small block${props.baseMap === 'osm' ? ' active' : ''}`}
               onClick={() => { props.setBaseMap('osm'); setLayerOpen(false); }}
             >OpenStreetMap</button>
-            <button className="btn small block" disabled title="3D view — coming next iteration">3D (TBD)</button>
+            <button
+              className="btn small block"
+              onClick={() => { props.onOpen3D?.(); setLayerOpen(false); }}
+              disabled={!props.onOpen3D}
+              title="Open 3D terrain view"
+            >🌐 Open 3D view</button>
           </div>
         )}
       </div>

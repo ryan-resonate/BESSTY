@@ -15,6 +15,8 @@ import {
 import { listEntriesByKind } from '../lib/catalog';
 import { toWgs84 } from '../lib/projections';
 import { EpsgPicker } from './EpsgPicker';
+import { ModalBackdrop } from './ModalBackdrop';
+import { NumericInput } from './NumericInput';
 import type { Project, Receiver, Source, SourceKind } from '../lib/types';
 
 type Kind = 'receiver' | 'wtg' | 'bess' | 'auxiliary';
@@ -29,6 +31,21 @@ interface Props {
 
 let nextId = 7000;
 function newId(prefix: string) { nextId += 1; return `${prefix}-${nextId}`; }
+
+/// Coerce an arbitrary import value into a finite number, or fall back to
+/// the default. Anything that becomes NaN/±Infinity (blanks, text, garbled
+/// columns) is replaced — keeps NaN out of the project state, where it
+/// otherwise crashes inputs and produces "no result" rows downstream.
+function safeNum(raw: unknown, fallback: number): number {
+  if (raw == null) return fallback;
+  const s = String(raw).trim();
+  // `+""` and `+"   "` both equal 0, which is finite but very rarely the
+  // intended value for a height / limit. Treat empty cells as missing and
+  // use the user-configured default instead.
+  if (s === '') return fallback;
+  const n = +s;
+  return Number.isFinite(n) ? n : fallback;
+}
 
 const KIND_LABEL: Record<Kind, string> = {
   receiver: 'Receivers',
@@ -125,15 +142,19 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
       const newReceivers: Receiver[] = parsed.features.flatMap((f) => {
         const ll = latLngFor(f);
         if (!ll) return [];
+        // Skip any feature whose final WGS84 coords aren't usable. Belt-and-
+        // braces — `latLngFor` already rejects NaN, but cheap to double-check
+        // (Inf is rare but possible from a bad reprojection).
+        if (!Number.isFinite(ll[0]) || !Number.isFinite(ll[1])) return [];
         const id = newId('R');
         return [{
           id,
           name: nameCol ? String(f.properties[nameCol] || id) : id,
           latLng: ll,
-          heightAboveGroundM: hCol && f.properties[hCol] != null ? +f.properties[hCol] : defaultHeight,
-          limitDayDbA: limDay && f.properties[limDay] != null ? +f.properties[limDay] : defaultLimitDay,
-          limitEveningDbA: limEve && f.properties[limEve] != null ? +f.properties[limEve] : defaultLimitEvening,
-          limitNightDbA: limNight && f.properties[limNight] != null ? +f.properties[limNight] : defaultLimitNight,
+          heightAboveGroundM: hCol ? safeNum(f.properties[hCol], defaultHeight) : defaultHeight,
+          limitDayDbA: limDay ? safeNum(f.properties[limDay], defaultLimitDay) : defaultLimitDay,
+          limitEveningDbA: limEve ? safeNum(f.properties[limEve], defaultLimitEvening) : defaultLimitEvening,
+          limitNightDbA: limNight ? safeNum(f.properties[limNight], defaultLimitNight) : defaultLimitNight,
         }];
       });
       setProject({ ...project, receivers: [...project.receivers, ...newReceivers] });
@@ -151,6 +172,7 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
       const newSources: Source[] = parsed.features.flatMap((f) => {
         const ll = latLngFor(f);
         if (!ll) return [];
+        if (!Number.isFinite(ll[0]) || !Number.isFinite(ll[1])) return [];
         const id = newId(sk.toUpperCase());
         let chosen = fallback;
         if (modelCol && f.properties[modelCol] != null) {
@@ -174,7 +196,7 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
           modeOverride: modeName,
         };
         if (sk === 'wtg') {
-          base.hubHeight = hubCol && f.properties[hubCol] != null ? +f.properties[hubCol] : defaultHubHeight;
+          base.hubHeight = hubCol ? safeNum(f.properties[hubCol], defaultHubHeight) : defaultHubHeight;
         } else {
           base.elevationOffset = 0;
         }
@@ -224,7 +246,7 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
       : null;
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 720 }}>
         <div className="modal-header">
           <h2>Import objects</h2>
@@ -319,25 +341,29 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
                   <div className="grid-2">
                     <label className="fld">
                       <span>Height (m)</span>
-                      <input type="number" min={0} max={300} step={0.5}
-                        value={defaultHeight} onChange={(e) => setDefaultHeight(+e.target.value)} />
+                      <NumericInput min={0} max={300} step={0.5}
+                        value={defaultHeight} fallback={1.5}
+                        onChange={setDefaultHeight} />
                     </label>
                     <label className="fld">
                       <span>Day limit dB(A)</span>
-                      <input type="number" min={20} max={80}
-                        value={defaultLimitDay} onChange={(e) => setDefaultLimitDay(+e.target.value)} />
+                      <NumericInput min={20} max={80}
+                        value={defaultLimitDay} fallback={50}
+                        onChange={setDefaultLimitDay} />
                     </label>
                   </div>
                   <div className="grid-2">
                     <label className="fld">
                       <span>Evening limit dB(A)</span>
-                      <input type="number" min={20} max={80}
-                        value={defaultLimitEvening} onChange={(e) => setDefaultLimitEvening(+e.target.value)} />
+                      <NumericInput min={20} max={80}
+                        value={defaultLimitEvening} fallback={45}
+                        onChange={setDefaultLimitEvening} />
                     </label>
                     <label className="fld">
                       <span>Night limit dB(A)</span>
-                      <input type="number" min={20} max={80}
-                        value={defaultLimitNight} onChange={(e) => setDefaultLimitNight(+e.target.value)} />
+                      <NumericInput min={20} max={80}
+                        value={defaultLimitNight} fallback={40}
+                        onChange={setDefaultLimitNight} />
                     </label>
                   </div>
                 </section>
@@ -348,8 +374,9 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
                   <h3>Defaults</h3>
                   <label className="fld">
                     <span>Hub height (m, when not in file)</span>
-                    <input type="number" min={50} max={250}
-                      value={defaultHubHeight} onChange={(e) => setDefaultHubHeight(+e.target.value)} />
+                    <NumericInput min={50} max={250}
+                      value={defaultHubHeight} fallback={100}
+                      onChange={setDefaultHubHeight} />
                   </label>
                 </section>
               )}
@@ -391,6 +418,6 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

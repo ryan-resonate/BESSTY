@@ -65,6 +65,19 @@ export function loadProject(id: string): Project | null {
     if (p.settings && !p.settings.extrapolation) {
       p.settings.extrapolation = { capPerBandDb: 6, capTotalDbA: 3 };
     }
+    if (p.settings && !p.settings.propagation) {
+      p.settings.propagation = {
+        maxContributionDistanceM: 20000,
+        clusterBeyondM: 1500,
+        maxClustersPerReceiver: 32,
+      };
+    }
+    if (p.settings && !p.settings.topography) {
+      p.settings.topography = {
+        pathSamples: 12,
+        virtualBarrierMinHeightM: 2,
+      };
+    }
     if (!p.groups) p.groups = [];
     // Backfill per-period receiver limits from legacy single `limitDbA`.
     for (const r of p.receivers) {
@@ -113,18 +126,57 @@ export function newProjectId(): string {
   return `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 }
 
-/// Seed a brand-new project with the demo content (so first-time users have
-/// something to look at immediately). The caller chooses the name.
+/// Build an empty project shell — no sources, no receivers, no calc area.
+/// The first-launch demo (`ensureDemoSeeded`) is the only place that drops
+/// in pre-populated content. Everywhere else gets this blank slate so users
+/// don't have to delete the demo before starting a real project.
+function makeEmptyProject(name: string): Project {
+  const now = new Date().toISOString();
+  return {
+    schemaVersion: 1,
+    name,
+    description: 'New project — add sources / receivers, set the calculation area, then Run grid.',
+    createdAt: now,
+    updatedAt: now,
+    owner: 'anonymous',
+    scenario: {
+      windSpeed: 8,
+      windSpeedReferenceHeight: 10,
+      period: 'night',
+      bandSystem: 'octave',
+    },
+    settings: {
+      ground: { defaultG: 0.5 },
+      annexD: {
+        barrierAbarCapDb: 3.0,
+        useElevatedSourceForBarrier: true,
+        applyConcaveCorrection: true,
+        wtReceiverHeightMin: 4.0,
+      },
+      general: { defaultReceiverHeight: 1.5 },
+      extrapolation: { capPerBandDb: 6, capTotalDbA: 3 },
+      propagation: {
+        maxContributionDistanceM: 20000,
+        clusterBeyondM: 1500,
+        maxClustersPerReceiver: 32,
+      },
+      topography: {
+        pathSamples: 12,
+        virtualBarrierMinHeightM: 2,
+      },
+    },
+    sources: [],
+    barriers: [],
+    receivers: [],
+    groups: [],
+  };
+}
+
+/// Create a brand-new empty project. Returns the new project id + the
+/// freshly-saved project document.
 export function createProject(name: string): { id: string; project: Project } {
   const id = newProjectId();
-  const base = makeDemoProject();
-  const project: Project = {
-    ...base,
-    name,
-    description: 'New project — adjust sources and receivers, then Run grid.',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
+  const project = makeEmptyProject(name);
   saveProject(id, project);
   return { id, project };
 }

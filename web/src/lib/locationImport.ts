@@ -231,6 +231,11 @@ export function reprojectShapefileFeature(
 // ---------- Default attribute mapping ----------
 
 /// Default attribute mapping — name-based, kind-aware.
+///
+/// Matching is conservative on purpose: short, ambiguous tokens like "day"
+/// or "h" are NOT auto-matched because real CSVs frequently use them for
+/// unrelated things (day-of-year, hour, header). Anything ambiguous is left
+/// unmapped — the user can pick it explicitly in the modal.
 export function guessLocationMapping(
   attributeNames: string[],
   kind: 'source' | 'receiver',
@@ -253,10 +258,14 @@ export function guessLocationMapping(
     return {
       ...xy,
       name: find('name', 'id', 'receiver', 'label', 'point_name'),
-      heightAboveGroundM: find('height', 'h', 'z', 'height_m'),
-      limitDayDbA: find('limit_day', 'day', 'l_day', 'day_limit'),
-      limitEveningDbA: find('limit_evening', 'evening', 'l_eve', 'evening_limit'),
-      limitNightDbA: find('limit_night', 'night', 'l_night', 'night_limit'),
+      // Avoid matching a bare "h" — too easily a "header" or "hour" column.
+      heightAboveGroundM: find('height', 'height_m', 'height_above_ground', 'z'),
+      // Limits: require an explicit "limit" or "_dba" suffix so that columns
+      // like "day" (day-of-year) or "night" (boolean flag) don't get parsed
+      // as numeric noise limits and produce NaN downstream.
+      limitDayDbA: find('limit_day', 'day_limit', 'l_day', 'limit_day_dba', 'day_dba'),
+      limitEveningDbA: find('limit_evening', 'evening_limit', 'l_eve', 'limit_evening_dba', 'evening_dba'),
+      limitNightDbA: find('limit_night', 'night_limit', 'l_night', 'limit_night_dba', 'night_dba'),
     };
   }
   return {
@@ -264,6 +273,7 @@ export function guessLocationMapping(
     name: find('name', 'id', 'source', 'turbine', 'label', 'point_name'),
     modelId: find('model', 'modelid', 'type'),
     mode: find('mode', 'noise_mode', 'op_mode'),
-    hubHeight: find('hub_height', 'hub', 'hubheight', 'h'),
+    // Avoid bare "h" — same reason as above.
+    hubHeight: find('hub_height', 'hub', 'hubheight'),
   };
 }

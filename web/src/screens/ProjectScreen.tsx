@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import L from 'leaflet';
+import { ErrorBoundary } from '../components/ErrorBoundary';
 import { MapView, type BaseMap, type ContourMode } from '../components/MapView';
+import { Map3DView } from '../components/Map3DView';
 import { MapControls } from '../components/MapControls';
 import { Legend, ResultsDock, StatusBar } from '../components/MapChrome';
 import { SettingsModal } from '../components/SettingsModal';
@@ -26,6 +28,56 @@ let nextId = 1000;
 function newId(prefix: string) {
   nextId += 1;
   return `${prefix}-${nextId}`;
+}
+
+/// Replace any NaN / ±Infinity numeric fields with safe defaults across
+/// every part of the project that gets edited via UI inputs. Acts as a
+/// final firewall right before the project lands in React state —
+/// guarantees that downstream renders never see a non-finite number that
+/// could blow up a controlled input. Add new numeric fields here as they
+/// get edit-able UI surface.
+function sanitizeProject(p: Project): Project {
+  const safe = (v: unknown, fallback: number): number => {
+    const n = typeof v === 'number' ? v : Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  };
+  const fixedReceivers = p.receivers.map((r) => {
+    const out = { ...r };
+    if (!Number.isFinite(r.heightAboveGroundM)) out.heightAboveGroundM = 1.5;
+    if (!Number.isFinite(r.limitDayDbA))     out.limitDayDbA     = 50;
+    if (!Number.isFinite(r.limitEveningDbA)) out.limitEveningDbA = 45;
+    if (!Number.isFinite(r.limitNightDbA))   out.limitNightDbA   = 40;
+    if (!Number.isFinite(r.latLng?.[0]) || !Number.isFinite(r.latLng?.[1])) {
+      // Leave latLng as-is — MapView will skip rendering an invalid marker
+      // and the receiver list still shows it (so the user can fix it).
+    }
+    return out;
+  });
+  const fixedSources = p.sources.map((s) => {
+    const out = { ...s };
+    if (s.hubHeight != null) out.hubHeight = safe(s.hubHeight, 100);
+    if (s.elevationOffset != null) out.elevationOffset = safe(s.elevationOffset, 0);
+    if (s.yawDeg != null) out.yawDeg = safe(s.yawDeg, 0);
+    return out;
+  });
+  const ca = p.calculationArea
+    ? {
+        ...p.calculationArea,
+        widthM: safe(p.calculationArea.widthM, 5000),
+        heightM: safe(p.calculationArea.heightM, 5000),
+        rotationDeg: safe(p.calculationArea.rotationDeg, 0),
+        centerLatLng: [
+          safe(p.calculationArea.centerLatLng[0], 0),
+          safe(p.calculationArea.centerLatLng[1], 0),
+        ] as [number, number],
+      }
+    : p.calculationArea;
+  const scenario = {
+    ...p.scenario,
+    windSpeed: safe(p.scenario.windSpeed, 8),
+    windSpeedReferenceHeight: safe(p.scenario.windSpeedReferenceHeight, 10),
+  };
+  return { ...p, receivers: fixedReceivers, sources: fixedSources, calculationArea: ca, scenario };
 }
 
 // Pick a default model when adding a new source: first available entry
@@ -55,6 +107,7 @@ export function ProjectScreen() {
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [addMode, setAddMode] = useState<AddMode>('none');
   const [showSettings, setShowSettings] = useState(false);
+  const [show3D, setShow3D] = useState(false);
   const [cursorLatLng, setCursorLatLng] = useState<[number, number] | null>(null);
   /// Active tab — lifted into ProjectScreen so placing a new object can
   /// auto-switch the panel to Sources / Receivers.
@@ -166,7 +219,9 @@ export function ProjectScreen() {
       navigate('/projects', { replace: true });
       return;
     }
-    setProjectState(loaded);
+    // Sanitize on load: any NaN that was previously saved (from a botched
+    // import in an older build) gets repaired before it hits the UI.
+    setProjectState(sanitizeProject(loaded));
     undoStackRef.current = [];
     redoStackRef.current = [];
   }, [projectId, navigate]);
@@ -181,13 +236,18 @@ export function ProjectScreen() {
   const UNDO_LIMIT = 50;
 
   function setProject(p: Project) {
+    // Last-ditch sanitizer: strip NaN/Infinity from every numeric receiver
+    // and source field before it lands in state. Anything that slips past
+    // earlier guards (CSV import edge cases, weird user typing) gets
+    // replaced here so render-time inputs never see non-finite values.
+    const clean = sanitizeProject(p);
     if (project) {
       undoStackRef.current.push(project);
       if (undoStackRef.current.length > UNDO_LIMIT) undoStackRef.current.shift();
       redoStackRef.current = [];
     }
-    setProjectState(p);
-    if (projectId) saveProject(projectId, p);
+    setProjectState(clean);
+    if (projectId) saveProject(projectId, clean);
   }
 
   /// Replace project state without recording it on the undo stack — used by
@@ -492,8 +552,14 @@ export function ProjectScreen() {
   /// Move a single object, OR if the dragged object is in a multi-selection,
   /// translate every selected member by the same lat/lng delta. Source kind
   /// (source vs receiver) is auto-detected from the project.
+  ///
+  /// All coordinate writes are NaN-guarded — if anything goes sideways
+  /// (Leaflet sometimes emits non-finite coords during fast group drags),
+  /// we leave the affected marker at its previous position rather than
+  /// corrupting the project state and making it disappear from the map.
   function handleMoveObject(id: string, latLng: [number, number]) {
     if (!project) return;
+    if (!Number.isFinite(latLng[0]) || !Number.isFinite(latLng[1])) return;
 
     const isSource = project.sources.some((s) => s.id === id);
     const isReceiver = project.receivers.some((r) => r.id === id);
@@ -502,6 +568,7 @@ export function ProjectScreen() {
     const draggedFrom = isSource
       ? project.sources.find((s) => s.id === id)!.latLng
       : project.receivers.find((r) => r.id === id)!.latLng;
+    if (!Number.isFinite(draggedFrom[0]) || !Number.isFinite(draggedFrom[1])) return;
     const dLat = latLng[0] - draggedFrom[0];
     const dLng = latLng[1] - draggedFrom[1];
 
@@ -521,14 +588,20 @@ export function ProjectScreen() {
       return;
     }
 
-    // Group move: apply the same delta to every selected member.
+    // Group move: apply the same delta to every selected member, but only
+    // when the source coords are themselves valid — keeps a stale NaN entry
+    // (e.g. from a botched import) from being smeared across the selection.
+    function shift(ll: [number, number]): [number, number] {
+      if (!Number.isFinite(ll[0]) || !Number.isFinite(ll[1])) return ll;
+      return [ll[0] + dLat, ll[1] + dLng];
+    }
     setProject({
       ...project,
       sources: project.sources.map((s) =>
-        selectedIds.has(s.id) ? { ...s, latLng: [s.latLng[0] + dLat, s.latLng[1] + dLng] } : s,
+        selectedIds.has(s.id) ? { ...s, latLng: shift(s.latLng) } : s,
       ),
       receivers: project.receivers.map((r) =>
-        selectedIds.has(r.id) ? { ...r, latLng: [r.latLng[0] + dLat, r.latLng[1] + dLng] } : r,
+        selectedIds.has(r.id) ? { ...r, latLng: shift(r.latLng) } : r,
       ),
     });
   }
@@ -657,6 +730,7 @@ export function ProjectScreen() {
 
   return (
     <div className="workspace">
+      <ErrorBoundary region="Side panel">
       <SidePanel
         project={project}
         results={results}
@@ -697,8 +771,10 @@ export function ProjectScreen() {
         demTilesLoaded={dem?.tilesLoaded ?? null}
         gridSpacingM={gridSpacingM} setGridSpacingM={setGridSpacingM}
       />
+      </ErrorBoundary>
 
       <div className="map-area">
+        <ErrorBoundary region="Map">
         <MapView
           project={project}
           results={results}
@@ -731,6 +807,7 @@ export function ProjectScreen() {
           onZoomOut={() => mapHandleRef.current?.zoomOut()}
           onPan={(dx, dy) => mapHandleRef.current?.panBy([dx, dy], { animate: true })}
           onHome={fitCalcArea}
+          onOpen3D={() => setShow3D(true)}
         />
 
         <div className="back-link">
@@ -751,6 +828,7 @@ export function ProjectScreen() {
         <Legend palette={palette} domain={dbDomain} stepDb={contourStepDb} receiverDb={receiverDbList} />
 
         {error && <div className="map-toast error">solver error: {error}</div>}
+        </ErrorBoundary>
       </div>
 
       {showSettings && (
@@ -758,6 +836,17 @@ export function ProjectScreen() {
           project={project} setProject={setProject}
           onClose={() => setShowSettings(false)}
           gridSpacingM={gridSpacingM} setGridSpacingM={setGridSpacingM}
+        />
+      )}
+
+      {show3D && (
+        <Map3DView
+          project={project}
+          grid={grid}
+          palette={palette}
+          dbDomain={dbDomain}
+          baseMap={baseMap}
+          onClose={() => setShow3D(false)}
         />
       )}
     </div>

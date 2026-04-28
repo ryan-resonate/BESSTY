@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { Project, ProjectSettings } from '../lib/types';
+import { ModalBackdrop } from './ModalBackdrop';
 
 interface Props {
   project: Project;
@@ -39,7 +40,7 @@ export function SettingsModal({ project, setProject, onClose, gridSpacingM, setG
   }
 
   return (
-    <div className="modal-backdrop" onClick={cancel}>
+    <ModalBackdrop onClose={cancel}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>Project settings</h2>
@@ -142,6 +143,83 @@ export function SettingsModal({ project, setProject, onClose, gridSpacingM, setG
           </section>
 
           <section className="settings-section">
+            <h3>Propagation cutoffs</h3>
+            <div className="grid-2">
+              <label className="fld">
+                <span>Max contribution distance (m)</span>
+                <input
+                  type="number" min={0} step={50}
+                  value={draft.propagation?.maxContributionDistanceM ?? 20000}
+                  onChange={(e) => update({
+                    propagation: {
+                      ...(draft.propagation ?? { maxContributionDistanceM: 20000, clusterBeyondM: 1500, maxClustersPerReceiver: 32 }),
+                      maxContributionDistanceM: +e.target.value,
+                    },
+                  })}
+                />
+              </label>
+              <label className="fld">
+                <span>Cluster sources beyond (m)</span>
+                <input
+                  type="number" min={0} step={50}
+                  value={draft.propagation?.clusterBeyondM ?? 1500}
+                  onChange={(e) => update({
+                    propagation: {
+                      ...(draft.propagation ?? { maxContributionDistanceM: 20000, clusterBeyondM: 1500, maxClustersPerReceiver: 32 }),
+                      clusterBeyondM: +e.target.value,
+                    },
+                  })}
+                />
+              </label>
+            </div>
+            <div className="hint">
+              <b>Max distance:</b> sources further than this from a receiver are skipped
+              (no contribution). Set to <b>0</b> to disable. Default 20 km.
+              <br />
+              <b>Clustering:</b> beyond this distance, sources within a cell of this size
+              are folded into one equivalent point source (Lw energy-summed at the centroid).
+              Set to <b>0</b> to always propagate every source individually. Default 1 500 m.
+            </div>
+          </section>
+
+          <section className="settings-section">
+            <h3>Topography (DEM)</h3>
+            <div className="grid-2">
+              <label className="fld">
+                <span>Path samples per source-receiver pair</span>
+                <input
+                  type="number" min={0} max={64} step={1}
+                  value={draft.topography?.pathSamples ?? 12}
+                  onChange={(e) => update({
+                    topography: {
+                      ...(draft.topography ?? { pathSamples: 12, virtualBarrierMinHeightM: 2 }),
+                      pathSamples: Math.max(0, Math.round(+e.target.value)),
+                    },
+                  })}
+                />
+              </label>
+              <label className="fld">
+                <span>Virtual barrier min height (m)</span>
+                <input
+                  type="number" min={0} max={50} step={0.5}
+                  value={draft.topography?.virtualBarrierMinHeightM ?? 2}
+                  onChange={(e) => update({
+                    topography: {
+                      ...(draft.topography ?? { pathSamples: 12, virtualBarrierMinHeightM: 2 }),
+                      virtualBarrierMinHeightM: +e.target.value,
+                    },
+                  })}
+                />
+              </label>
+            </div>
+            <div className="hint">
+              When a DEM is loaded, the solver samples ground heights along the source→receiver
+              line. Ridges that pierce the line of sight by more than the threshold become
+              virtual barriers (Abar applies). Set samples to <b>0</b> to fall back to flat ground.
+            </div>
+          </section>
+
+          <section className="settings-section">
             <h3>Drag extrapolation caps</h3>
             <div className="grid-2">
               <label className="fld">
@@ -177,6 +255,6 @@ export function SettingsModal({ project, setProject, onClose, gridSpacingM, setG
           <button className="btn primary" onClick={commit}>Done</button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

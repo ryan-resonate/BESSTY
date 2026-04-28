@@ -19,6 +19,7 @@ import {
 } from '../lib/catalog';
 import { loadProject, saveProject } from '../lib/storage';
 import { parseCatalogXlsx } from '../lib/xlsxImport';
+import { ModalBackdrop } from '../components/ModalBackdrop';
 import type {
   CatalogBandSystem,
   CatalogEntry,
@@ -370,7 +371,7 @@ export function CatalogEntryEditor(props: {
     : ['broadband'];
 
   return (
-    <div className="modal-backdrop" onClick={props.onClose}>
+    <ModalBackdrop onClose={props.onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 800 }}>
         <div className="modal-header">
           <h2>{draft.id ? `Edit · ${draft.displayName}` : 'New catalog entry'}</h2>
@@ -555,7 +556,7 @@ export function CatalogEntryEditor(props: {
           <button className="btn primary" onClick={() => props.onSave(draft)}>Save</button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 

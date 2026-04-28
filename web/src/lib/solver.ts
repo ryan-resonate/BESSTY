@@ -28,6 +28,13 @@ import type {
 } from './types';
 import { lookupEntry, spectrumFor } from './catalog';
 import type { DemRaster } from './dem';
+import {
+  concatBarriers,
+  effectiveSourcesFor,
+  propagationSettings,
+  topographyBarriers,
+  type EffectiveSource,
+} from './propagation';
 
 /// Band count for the solver, given a scenario's band system.
 /// Matches the Rust crate's `OCTAVE_CENTRES_HZ.len()` (10) and
@@ -142,15 +149,61 @@ function snapshotPair(
   if (source.kind === 'wtg') {
     const hubHeight = source.hubHeight ?? entry.hubHeights?.[0] ?? 100;
     const hubZ = groundSrc + hubHeight;
+    const topoBars = topographyBarriers(
+      project, source, [se, sn, hubZ], rxLatLng, [re, rn, rxZ], origin, dem,
+    );
+    const allBars = concatBarriers(barriersFlat, topoBars);
     const snap = evaluate_wtg_with_grad_src_octave(
-      lw, se, sn, hubZ, re, rn, rxZ, g, barriersFlat,
+      lw, se, sn, hubZ, re, rn, rxZ, g, allBars,
       entry.rotorDiameterM ?? 120, false,
     );
     return { snapshot: snap, srcAbsXyz: [se, sn, hubZ] };
   }
   const sourceZ = groundSrc + (source.elevationOffset ?? 0) + 1.5;
+  const topoBars = topographyBarriers(
+    project, source, [se, sn, sourceZ], rxLatLng, [re, rn, rxZ], origin, dem,
+  );
+  const allBars = concatBarriers(barriersFlat, topoBars);
   const snap = evaluate_general_with_grad_src_octave(
-    lw, se, sn, sourceZ, re, rn, rxZ, g, barriersFlat,
+    lw, se, sn, sourceZ, re, rn, rxZ, g, allBars,
+  );
+  return { snapshot: snap, srcAbsXyz: [se, sn, sourceZ] };
+}
+
+/// Snapshot for a synthetic cluster (an EffectiveSource of kind 'cluster').
+/// The cluster has no catalog entry — we use the precomputed Lw spectrum
+/// directly via `evaluate_general_*` (clusters are treated as omni point
+/// sources). DEM-derived virtual barriers along the cluster→receiver path
+/// still apply, so distant clusters behind ridges get attenuated.
+function snapshotClusterPair(
+  cluster: EffectiveSource,
+  rxLatLng: [number, number],
+  rxHeightAboveGround: number,
+  project: Project,
+  barriersFlat: Float64Array,
+  dem: DemRaster | null,
+  origin: [number, number],
+): { snapshot: Float64Array; srcAbsXyz: [number, number, number] } {
+  const [se, sn] = latLngToLocalMetres(cluster.latLng, origin);
+  const [re, rn] = latLngToLocalMetres(rxLatLng, origin);
+  const g = project.settings?.ground.defaultG ?? 0.5;
+  const groundSrc = dem ? dem.elevation(cluster.latLng[0], cluster.latLng[1]) : 0;
+  const groundRx = dem ? dem.elevation(rxLatLng[0], rxLatLng[1]) : 0;
+  const rxZ = groundRx + rxHeightAboveGround;
+  const sourceZ = groundSrc + (cluster.zAboveGround ?? 1.5);
+  // Topography barriers for the cluster centroid — coarser approximation,
+  // but distant clusters wrapped behind ranges already lose most energy
+  // via Adiv so the precision tradeoff is fine.
+  const topoBars = topographyBarriers(
+    project,
+    // Synthesise a stand-in Source for the topo helper (only its latLng is used).
+    { id: cluster.id, kind: 'auxiliary', name: cluster.id, latLng: cluster.latLng,
+      modelId: '', catalogScope: 'global' },
+    [se, sn, sourceZ], rxLatLng, [re, rn, rxZ], origin, dem,
+  );
+  const allBars = concatBarriers(barriersFlat, topoBars);
+  const snap = evaluate_general_with_grad_src_octave(
+    cluster.lwOverride!, se, sn, sourceZ, re, rn, rxZ, g, allBars,
   );
   return { snapshot: snap, srcAbsXyz: [se, sn, sourceZ] };
 }
@@ -243,22 +296,45 @@ export async function snapshotProject(
   const srcAbsAtSnapshot = new Map<string, [number, number, number]>();
   const rxAbsAtSnapshot = new Map<string, [number, number, number]>();
 
+  const n = bandCount(project.scenario.bandSystem);
   const results: ReceiverResult[] = project.receivers.map((rx) => {
+    // Skip receivers whose coords are non-finite (busted import / glitched
+    // group drag). They still appear in the receiver list with a "—"
+    // result, but we don't try to call into WASM with NaN inputs because
+    // that returns NaN per band and corrupts downstream sums.
+    if (!Number.isFinite(rx.latLng[0]) || !Number.isFinite(rx.latLng[1])) {
+      return { receiverId: rx.id, perBandLp: new Float64Array(n), totalDbA: -Infinity, perSource: [] };
+    }
     const [re, rn] = latLngToLocalMetres(rx.latLng, origin);
     const rxGround = dem ? dem.elevation(rx.latLng[0], rx.latLng[1]) : 0;
     rxAbsAtSnapshot.set(rx.id, [re, rn, rxGround + rx.heightAboveGroundM]);
 
     const perSource: ReceiverResult['perSource'] = [];
-    for (const src of project.sources) {
-      const { snapshot, srcAbsXyz } = snapshotPair(
-        src, rx.latLng, rx.heightAboveGroundM, project, barriersFlat, dem, origin,
-      );
-      pairs.set(`${src.id}|${rx.id}`, { snapshot, srcAbsXyz });
-      srcAbsAtSnapshot.set(src.id, srcAbsXyz);
-      const n = bandCount(project.scenario.bandSystem);
-      const perBandLp = new Float64Array(n);
-      for (let i = 0; i < n; i++) perBandLp[i] = snapshot[i];
-      perSource.push({ sourceId: src.id, perBandLp });
+    // Distance cutoff + clustering — replaces the raw `project.sources`
+    // iteration. Near sources stay individual (gradient tracked); far
+    // sources fold into virtual clusters (no gradients, refreshed each
+    // snapshot).
+    const effective = effectiveSourcesFor(
+      project, rx, project.scenario.bandSystem, project.scenario.windSpeed,
+    );
+    for (const es of effective) {
+      try {
+        const { snapshot, srcAbsXyz } = es.kind === 'real'
+          ? snapshotPair(
+              es.source!, rx.latLng, rx.heightAboveGroundM, project, barriersFlat, dem, origin,
+            )
+          : snapshotClusterPair(
+              es, rx.latLng, rx.heightAboveGroundM, project, barriersFlat, dem, origin,
+            );
+        pairs.set(`${es.id}|${rx.id}`, { snapshot, srcAbsXyz });
+        if (es.kind === 'real') srcAbsAtSnapshot.set(es.id, srcAbsXyz);
+        const perBandLp = new Float64Array(n);
+        for (let i = 0; i < n; i++) perBandLp[i] = Number.isFinite(snapshot[i]) ? snapshot[i] : -Infinity;
+        perSource.push({ sourceId: es.id, perBandLp });
+      } catch (e) {
+        // One bad pair shouldn't take out the whole snapshot.
+        console.warn(`snapshot pair ${es.id}|${rx.id} failed:`, e);
+      }
     }
 
     const summed = energySumPerBand(perSource);
@@ -294,25 +370,40 @@ export function extrapolateProject(
 
   let stale = false;
 
+  const nb = bandCount(project.scenario.bandSystem);
   const results = project.receivers.map((rx) => {
     const perSource: ReceiverResult['perSource'] = [];
     let totalSnapshotEnergy = 0;
-    for (const src of project.sources) {
-      const cached = snapshot.pairs.get(`${src.id}|${rx.id}`);
-      const here = srcAbsNow.get(src.id);
-      if (!cached || !here) continue;
-      const { lp, stale: pairStale } = extrapolateLpClamped(
-        cached.snapshot, cached.srcAbsXyz, here, capPerBand,
-      );
-      if (pairStale) stale = true;
-      perSource.push({ sourceId: src.id, perBandLp: lp });
-      const nb = bandCount(project.scenario.bandSystem);
+    // Walk every cached pair for this receiver — both real-source pairs
+    // (extrapolated against current source position) AND cluster pairs
+    // (frozen at snapshot value, since clusters have no individual
+    // gradient to follow).
+    for (const [pairKey, cached] of snapshot.pairs) {
+      const sep = pairKey.indexOf('|');
+      if (sep < 0) continue;
+      const sourceKey = pairKey.slice(0, sep);
+      const rxKey = pairKey.slice(sep + 1);
+      if (rxKey !== rx.id) continue;
+      const here = srcAbsNow.get(sourceKey);
+      let lp: Float64Array;
+      if (here) {
+        // Real source — extrapolate against current position.
+        const r = extrapolateLpClamped(cached.snapshot, cached.srcAbsXyz, here, capPerBand);
+        lp = r.lp;
+        if (r.stale) stale = true;
+      } else {
+        // Cluster (or source no longer in project) — use snapshot values
+        // verbatim.
+        lp = new Float64Array(nb);
+        for (let i = 0; i < nb; i++) lp[i] = cached.snapshot[i];
+      }
+      perSource.push({ sourceId: sourceKey, perBandLp: lp });
       for (let i = 0; i < nb; i++) {
         totalSnapshotEnergy += Math.pow(10, (cached.snapshot[i] + aw[i]) / 10);
       }
     }
     if (perSource.length === 0) {
-      return { receiverId: rx.id, perBandLp: new Float64Array(bandCount(project.scenario.bandSystem)), totalDbA: -Infinity, perSource };
+      return { receiverId: rx.id, perBandLp: new Float64Array(nb), totalDbA: -Infinity, perSource };
     }
     const summed = energySumPerBand(perSource);
     const total = aWeightedTotal(summed, aw);
@@ -349,15 +440,60 @@ export interface GridSnapshot {
   cols: number;
   rows: number;
   bounds: { sw: [number, number]; ne: [number, number] };
-  /// Source absolute positions at snapshot time, ordered by sourceIds.
+  /// Effective-source ids in slot order: a mix of real source ids and
+  /// `cluster-…` synthetic ids. Used by `extrapolateGrid` to decide which
+  /// slots track current source positions vs. stay frozen.
   sourceIds: string[];
+  /// True for slots backed by a real Source, false for clusters. Frozen
+  /// slots skip the per-source-position delta math during extrapolation.
+  realSourceFlags: Uint8Array;
   srcAbsAtSnapshot: Float32Array;       // length sources × 3
-  /// Per (cell, source): 8 Lp values + 24 gradients (8 bands × 3 axes).
-  /// Layout: cellIdx · sources · 32 + sourceIdx · 32 + (band|grad slot)
+  /// Per (cell, source): n Lp values + 3n gradients (n bands × 3 axes).
+  /// Layout: cellIdx · sources · packLen + sourceIdx · packLen + (band|grad slot)
   cells: Float32Array;
   /// Per-cell precomputed origin-frame coords.
   cellEnZ: Float32Array;                // cellIdx · 3 (e, n, z including DEM)
   computedMs: number;
+}
+
+/// Build the per-grid effective source list (cutoff + clustering applied
+/// once at the grid centre). The list mixes real Sources and synthetic
+/// clusters; clusters are immobile and don't track source moves.
+function effectiveSourcesForGrid(
+  project: Project,
+  ca: NonNullable<Project['calculationArea']>,
+): EffectiveSource[] {
+  // Synthesise a "centre receiver" — used purely as the reference point for
+  // cutoff + cluster decisions. Real per-cell distance varies, but for a
+  // typical 5–10 km grid the difference is small relative to the cluster
+  // distance (1.5 km default). Bumping the cutoff by half the grid diagonal
+  // captures sources that contribute to a far corner.
+  const radius = Math.sqrt(ca.widthM * ca.widthM + ca.heightM * ca.heightM) / 2;
+  const cfg = propagationSettings(project);
+  // Clone settings with cutoff widened so corner cells aren't accidentally
+  // starved of sources at the edge of the cutoff sphere.
+  const widened: Project = {
+    ...project,
+    settings: {
+      ...project.settings!,
+      propagation: {
+        ...cfg,
+        maxContributionDistanceM: cfg.maxContributionDistanceM > 0
+          ? cfg.maxContributionDistanceM + radius
+          : 0,
+      },
+    },
+  };
+  const proxy = {
+    id: '__grid_centre__',
+    name: '__grid_centre__',
+    latLng: ca.centerLatLng,
+    heightAboveGroundM: project.settings?.general.defaultReceiverHeight ?? 1.5,
+    limitDayDbA: 0, limitEveningDbA: 0, limitNightDbA: 0,
+  };
+  return effectiveSourcesFor(
+    widened, proxy, project.scenario.bandSystem, project.scenario.windSpeed,
+  );
 }
 
 /// Exact grid evaluation that also captures per-cell-per-source gradients.
@@ -386,15 +522,27 @@ export async function snapshotGrid(
   const sw: [number, number] = [origin[0] - dLat, origin[1] - dLng];
   const ne: [number, number] = [origin[0] + dLat, origin[1] + dLng];
 
-  const barriersFlat = packBarriers(project.barriers, origin);
+  const userBarriers = packBarriers(project.barriers, origin);
   const g = project.settings?.ground.defaultG ?? 0.5;
 
-  const sources = project.sources;
-  const sourceIds = sources.map((s) => s.id);
-  const srcAbsAtSnapshot = new Float32Array(sources.length * 3);
-  const srcLocal: Array<[number, number]> = sources.map((s) => latLngToLocalMetres(s.latLng, origin));
-  const srcZ = sources.map((s) => sourceAbsZ(s, project, dem) ?? 0);
-  for (let i = 0; i < sources.length; i++) {
+  const eff = effectiveSourcesForGrid(project, ca);
+  const sourceIds = eff.map((es) => es.id);
+  const realSourceFlags = new Uint8Array(eff.length);
+  const srcLocal: Array<[number, number]> = [];
+  const srcZ: number[] = [];
+  for (let i = 0; i < eff.length; i++) {
+    const es = eff[i];
+    realSourceFlags[i] = es.kind === 'real' ? 1 : 0;
+    srcLocal.push(latLngToLocalMetres(es.latLng, origin));
+    if (es.kind === 'real') {
+      srcZ.push(sourceAbsZ(es.source!, project, dem) ?? 0);
+    } else {
+      const groundSrc = dem ? dem.elevation(es.latLng[0], es.latLng[1]) : 0;
+      srcZ.push(groundSrc + (es.zAboveGround ?? 1.5));
+    }
+  }
+  const srcAbsAtSnapshot = new Float32Array(eff.length * 3);
+  for (let i = 0; i < eff.length; i++) {
     srcAbsAtSnapshot[i * 3] = srcLocal[i][0];
     srcAbsAtSnapshot[i * 3 + 1] = srcLocal[i][1];
     srcAbsAtSnapshot[i * 3 + 2] = srcZ[i];
@@ -402,7 +550,7 @@ export async function snapshotGrid(
 
   const cellCount = cols * rows;
   const PACK = packLen(project.scenario.bandSystem);
-  const cells = new Float32Array(cellCount * sources.length * PACK);
+  const cells = new Float32Array(cellCount * eff.length * PACK);
   const cellEnZ = new Float32Array(cellCount * 3);
 
   for (let row = 0; row < rows; row++) {
@@ -418,22 +566,40 @@ export async function snapshotGrid(
       cellEnZ[cellIdx * 3 + 1] = n;
       cellEnZ[cellIdx * 3 + 2] = rxZ;
 
-      for (let si = 0; si < sources.length; si++) {
-        const src = sources[si];
+      for (let si = 0; si < eff.length; si++) {
+        const es = eff[si];
         const [se, sn] = srcLocal[si];
-        const entry = lookupEntry(project, src);
-        if (!entry) continue;
-        const modeName = src.modeOverride ?? entry.defaultMode;
-        const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
-        const snap = src.kind === 'wtg'
+        // Per-cell topography barriers (DEM-derived ridges between source
+        // and this cell). Cheap relative to the WASM call.
+        const proxySrc: Source = es.kind === 'real'
+          ? es.source!
+          : { id: es.id, kind: 'auxiliary', name: es.id, latLng: es.latLng, modelId: '', catalogScope: 'global' };
+        const topoBars = topographyBarriers(
+          project, proxySrc, [se, sn, srcZ[si]], [lat, lng], [e, n, rxZ], origin, dem,
+        );
+        const allBars = concatBarriers(userBarriers, topoBars);
+
+        let lw: Float64Array;
+        let isWtg = false;
+        let rotorD = 120;
+        if (es.kind === 'real') {
+          const entry = lookupEntry(project, es.source!);
+          if (!entry) continue;
+          const modeName = es.source!.modeOverride ?? entry.defaultMode;
+          lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
+          isWtg = es.source!.kind === 'wtg';
+          rotorD = entry.rotorDiameterM ?? 120;
+        } else {
+          lw = es.lwOverride!;
+        }
+        const snap = isWtg
           ? evaluate_wtg_with_grad_src_octave(
-              lw, se, sn, srcZ[si], e, n, rxZ, g, barriersFlat,
-              entry.rotorDiameterM ?? 120, false,
+              lw, se, sn, srcZ[si], e, n, rxZ, g, allBars, rotorD, false,
             )
           : evaluate_general_with_grad_src_octave(
-              lw, se, sn, srcZ[si], e, n, rxZ, g, barriersFlat,
+              lw, se, sn, srcZ[si], e, n, rxZ, g, allBars,
             );
-        const base = (cellIdx * sources.length + si) * PACK;
+        const base = (cellIdx * eff.length + si) * PACK;
         for (let k = 0; k < PACK; k++) cells[base + k] = snap[k];
       }
     }
@@ -441,7 +607,7 @@ export async function snapshotGrid(
 
   return {
     cols, rows, bounds: { sw, ne },
-    sourceIds, srcAbsAtSnapshot, cells, cellEnZ,
+    sourceIds, realSourceFlags, srcAbsAtSnapshot, cells, cellEnZ,
     computedMs: performance.now() - t0,
   };
 }
@@ -467,38 +633,36 @@ export function extrapolateGrid(
 
   const ca = project.calculationArea!;
   const origin = ca.centerLatLng;
-  const sources = project.sources;
-  const srcSlotById = new Map<string, number>();
-  for (let i = 0; i < snapshot.sourceIds.length; i++) {
-    srcSlotById.set(snapshot.sourceIds[i], i);
-  }
-  const srcDelta = new Float32Array(sources.length * 3);
-  const srcSlot = new Int32Array(sources.length);
-  for (let i = 0; i < sources.length; i++) {
-    const s = sources[i];
-    const slot = srcSlotById.get(s.id) ?? -1;
-    srcSlot[i] = slot;
-    if (slot < 0) continue;
+  // The snapshot's effective source list contains a mix of real sources
+  // (which we extrapolate against current latLng) and clusters (frozen at
+  // snapshot value). For each slot, compute the position delta — clusters
+  // get a zero delta so the predicted value equals the baseline.
+  const sourcesInSnap = snapshot.sourceIds.length;
+  const slotDelta = new Float32Array(sourcesInSnap * 3);
+  const realById = new Map<string, Source>();
+  for (const s of project.sources) realById.set(s.id, s);
+  for (let slot = 0; slot < sourcesInSnap; slot++) {
+    const isReal = snapshot.realSourceFlags?.[slot] === 1;
+    if (!isReal) continue;     // cluster: zero delta (already set)
+    const s = realById.get(snapshot.sourceIds[slot]);
+    if (!s) continue;          // source deleted since snapshot — leave at baseline
     const [se, sn] = latLngToLocalMetres(s.latLng, origin);
     const z = sourceAbsZ(s, project, dem) ?? 0;
-    srcDelta[i * 3] = se - snapshot.srcAbsAtSnapshot[slot * 3];
-    srcDelta[i * 3 + 1] = sn - snapshot.srcAbsAtSnapshot[slot * 3 + 1];
-    srcDelta[i * 3 + 2] = z - snapshot.srcAbsAtSnapshot[slot * 3 + 2];
+    slotDelta[slot * 3] = se - snapshot.srcAbsAtSnapshot[slot * 3];
+    slotDelta[slot * 3 + 1] = sn - snapshot.srcAbsAtSnapshot[slot * 3 + 1];
+    slotDelta[slot * 3 + 2] = z - snapshot.srcAbsAtSnapshot[slot * 3 + 2];
   }
 
-  const sourcesInSnap = snapshot.sourceIds.length;
   const PACK = packLen(project.scenario.bandSystem);
   const NB = bandCount(project.scenario.bandSystem);
   for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
     let aSum = 0;
     let aSumBaseline = 0;
-    for (let i = 0; i < sources.length; i++) {
-      const slot = srcSlot[i];
-      if (slot < 0) continue;
+    for (let slot = 0; slot < sourcesInSnap; slot++) {
       const base = (cellIdx * sourcesInSnap + slot) * PACK;
-      const dx = srcDelta[i * 3];
-      const dy = srcDelta[i * 3 + 1];
-      const dz = srcDelta[i * 3 + 2];
+      const dx = slotDelta[slot * 3];
+      const dy = slotDelta[slot * 3 + 1];
+      const dz = slotDelta[slot * 3 + 2];
       for (let band = 0; band < NB; band++) {
         const gIdx = base + NB + band * 3;
         const baseline = snapshot.cells[base + band];
@@ -562,9 +726,28 @@ export async function evaluateGrid(
   const sw: [number, number] = [origin[0] - dLat, origin[1] - dLng];
   const ne: [number, number] = [origin[0] + dLat, origin[1] + dLng];
 
-  const barriersFlat = packBarriers(project.barriers, origin);
+  const userBarriers = packBarriers(project.barriers, origin);
   const aw = aWeights(project.scenario.bandSystem);
-  const srcLocal = project.sources.map((s) => latLngToLocalMetres(s.latLng, origin));
+  const ca2 = project.calculationArea!;
+  const eff = effectiveSourcesForGrid(project, ca2);
+  const effLocal = eff.map((es) => latLngToLocalMetres(es.latLng, origin));
+  const effZ = eff.map((es) => {
+    if (es.kind === 'real') return sourceAbsZ(es.source!, project, dem) ?? 0;
+    const groundSrc = dem ? dem.elevation(es.latLng[0], es.latLng[1]) : 0;
+    return groundSrc + (es.zAboveGround ?? 1.5);
+  });
+  // Per-source catalog metadata (lookup once, reused per cell).
+  type EffMeta = { lw: Float64Array; isWtg: boolean; rotorD: number } | null;
+  const effMeta: EffMeta[] = eff.map((es): EffMeta => {
+    if (es.kind === 'real') {
+      const entry = lookupEntry(project, es.source!);
+      if (!entry) return null;
+      const modeName = es.source!.modeOverride ?? entry.defaultMode;
+      const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
+      return { lw, isWtg: es.source!.kind === 'wtg', rotorD: entry.rotorDiameterM ?? 120 };
+    }
+    return { lw: es.lwOverride!, isWtg: false, rotorD: 120 };
+  });
 
   const dbA = new Float32Array(cols * rows);
 
@@ -579,17 +762,21 @@ export async function evaluateGrid(
 
       let aSum = 0;
       const g = project.settings?.ground.defaultG ?? 0.5;
-      for (let si = 0; si < project.sources.length; si++) {
-        const src = project.sources[si];
-        const [se, sn] = srcLocal[si];
-        const entry = lookupEntry(project, src);
-        if (!entry) continue;
-        const modeName = src.modeOverride ?? entry.defaultMode;
-        const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
-        const srcZ = sourceAbsZ(src, project, dem) ?? 0;
-        const lp = src.kind === 'wtg'
-          ? evaluate_wtg_octave(lw, se, sn, srcZ, e, n, rxZ, g, barriersFlat, entry.rotorDiameterM ?? 120, false)
-          : evaluate_general_octave(lw, se, sn, srcZ, e, n, rxZ, g, barriersFlat);
+      for (let si = 0; si < eff.length; si++) {
+        const meta = effMeta[si];
+        if (!meta) continue;
+        const es = eff[si];
+        const [se, sn] = effLocal[si];
+        const proxySrc: Source = es.kind === 'real'
+          ? es.source!
+          : { id: es.id, kind: 'auxiliary', name: es.id, latLng: es.latLng, modelId: '', catalogScope: 'global' };
+        const topoBars = topographyBarriers(
+          project, proxySrc, [se, sn, effZ[si]], [lat, lng], [e, n, rxZ], origin, dem,
+        );
+        const allBars = concatBarriers(userBarriers, topoBars);
+        const lp = meta.isWtg
+          ? evaluate_wtg_octave(meta.lw, se, sn, effZ[si], e, n, rxZ, g, allBars, meta.rotorD, false)
+          : evaluate_general_octave(meta.lw, se, sn, effZ[si], e, n, rxZ, g, allBars);
         for (let i = 0; i < lp.length; i++) aSum += Math.pow(10, (lp[i] + aw[i]) / 10);
       }
       dbA[row * cols + col] = aSum > 0 ? 10 * Math.log10(aSum) : -120;

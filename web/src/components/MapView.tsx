@@ -459,7 +459,15 @@ export function MapView({
     const isSelected = (id: string) => selectedIds.has(id);
     const dimNonSelected = (id: string) => (anySelected && !isSelected(id) ? 0.55 : 1);
 
+    function validLatLng(ll: [number, number]): boolean {
+      return Number.isFinite(ll[0]) && Number.isFinite(ll[1])
+        && Math.abs(ll[0]) <= 90 && Math.abs(ll[1]) <= 180;
+    }
     for (const s of project.sources) {
+      // Skip rendering objects with broken coords — they remain in the
+      // project state and the per-tab list, but Leaflet won't try to place
+      // them at NaN (which silently breaks every subsequent group op).
+      if (!validLatLng(s.latLng)) continue;
       const sel = isSelected(s.id);
       const marker = L.marker(s.latLng, {
         icon: sourceMarker(s, sel, groupColorById.get(s.id)),
@@ -506,6 +514,7 @@ export function MapView({
     }
 
     for (const r of project.receivers) {
+      if (!validLatLng(r.latLng)) continue;
       const dbA = results?.find((x) => x.receiverId === r.id)?.totalDbA ?? null;
       const sel = isSelected(r.id);
       const activeLimit = limitForPeriod(r, project.scenario.period);

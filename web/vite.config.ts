@@ -20,6 +20,14 @@ export default defineConfig({
   build: {
     target: 'es2022',
   },
+  resolve: {
+    // Prefer the .tsx / .ts source over any .js that sneaks in. Vite's
+    // default order is ['.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx',
+    // '.json'] — `.js` first — which means a stale `tsc`-emitted `.js`
+    // sitting next to a `.tsx` would be served instead of the live
+    // TypeScript. Reordering here makes that impossible.
+    extensions: ['.mjs', '.tsx', '.ts', '.jsx', '.mts', '.js', '.json'],
+  },
   worker: {
     plugins: () => [wasm(), topLevelAwait()],
     format: 'es',

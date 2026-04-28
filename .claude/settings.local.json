@@ -39,7 +39,8 @@
       "Bash(curl -sS -o /dev/null -w \"Esri tile -> HTTP %{http_code}\\\\n\" \"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/12/2531/3779\")",
       "Bash(curl -sS http://localhost:5176/src/wasm/beesty_solver.js)",
       "Bash(curl -sS -o /dev/null -w \"/ on 5176 -> %{http_code}\\\\n\" http://localhost:5176/)",
-      "Bash(python -c \"import openpyxl; print\\('openpyxl', openpyxl.__version__\\)\")"
+      "Bash(python -c \"import openpyxl; print\\('openpyxl', openpyxl.__version__\\)\")",
+      "Bash(grep -n \"</div>$\" src/components/ImportObjectsModal.tsx)"
     ]
   }
 }
