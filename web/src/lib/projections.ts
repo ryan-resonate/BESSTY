@@ -1,5 +1,5 @@
 // Tiny proj4 wrapper with a curated EPSG registry. Used wherever the user
-// can hand BEESTY data in something other than WGS84 lat/lng — CSV imports,
+// can hand BESSTY data in something other than WGS84 lat/lng — CSV imports,
 // GeoTIFF DEMs, and (eventually) shapefile bundles missing a .prj sidecar.
 //
 // The full EPSG database is ~6000 entries. We ship a curated list of CRSs
@@ -9,7 +9,7 @@
 // via the "Custom proj4" entry — the registry is open at runtime via
 // `registerCustomEpsg`.
 //
-// Convention: throughout BEESTY, "lat/lng" always means EPSG:4326 (WGS84
+// Convention: throughout BESSTY, "lat/lng" always means EPSG:4326 (WGS84
 // geographic). Projected coords are stored in their CRS' native units —
 // metres for UTM/MGA, metres for British National Grid, etc. The two
 // transforms below are the only place that's allowed to cross that line.

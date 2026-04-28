@@ -1,4 +1,5 @@
 import { NavLink, useLocation } from 'react-router-dom';
+import { Logo } from './Logo';
 
 interface Props {
   projectBreadcrumb?: string;
@@ -14,10 +15,10 @@ export function Header({ projectBreadcrumb }: Props) {
   return (
     <header className="app-header">
       <div className="left">
-        <img className="logo" src="/ResonateLogo.svg" alt="Resonate" />
+        <Logo height={32} className="logo" title="Resonate Consultants" />
         <div className="pipe" />
         <h1>
-          BEESTY <small>WTG + BESS Noise Modeller</small>
+          BESSTY <small>WTG + BESS Noise Modeller</small>
         </h1>
         {projectBreadcrumb && (
           <span

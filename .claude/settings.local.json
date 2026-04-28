@@ -40,7 +40,10 @@
       "Bash(curl -sS http://localhost:5176/src/wasm/beesty_solver.js)",
       "Bash(curl -sS -o /dev/null -w \"/ on 5176 -> %{http_code}\\\\n\" http://localhost:5176/)",
       "Bash(python -c \"import openpyxl; print\\('openpyxl', openpyxl.__version__\\)\")",
-      "Bash(grep -n \"</div>$\" src/components/ImportObjectsModal.tsx)"
+      "Bash(grep -n \"</div>$\" src/components/ImportObjectsModal.tsx)",
+      "Bash(rm -rf node_modules/@mapbox/shp-write)",
+      "Bash(rm src/types/shp-write.d.ts)",
+      "mcp__Claude_Preview__preview_start"
     ]
   }
 }

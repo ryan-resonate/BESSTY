@@ -5,8 +5,37 @@
 import type { Project, ProjectSummary } from './types';
 import { makeDemoProject } from './demoProject';
 
-const INDEX_KEY = 'beesty.projects.index';
-const PROJECT_KEY = (id: string) => `beesty.projects.${id}`;
+const INDEX_KEY = 'bessty.projects.index';
+const PROJECT_KEY = (id: string) => `bessty.projects.${id}`;
+
+// One-time rename from the old "beesty.*" storage namespace. Runs at
+// module load and is a no-op once the new keys exist. Kept inline rather
+// than gated by a feature flag so the migration is impossible to forget.
+(function migrateLegacyKeys() {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (!localStorage.getItem(INDEX_KEY) && localStorage.getItem('beesty.projects.index')) {
+      const movedKeys: string[] = [];
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (!k || !k.startsWith('beesty.')) continue;
+        const newK = 'bessty.' + k.slice('beesty.'.length);
+        const v = localStorage.getItem(k);
+        if (v != null) {
+          localStorage.setItem(newK, v);
+          localStorage.removeItem(k);
+          movedKeys.push(`${k} → ${newK}`);
+        }
+      }
+      if (movedKeys.length > 0) {
+        // eslint-disable-next-line no-console
+        console.info(`[BESSTY] migrated ${movedKeys.length} legacy localStorage key(s) from beesty.* to bessty.*`);
+      }
+    }
+  } catch {
+    /* migration is best-effort — never block app load */
+  }
+})();
 
 interface IndexEntry {
   id: string;
@@ -68,7 +97,7 @@ export function loadProject(id: string): Project | null {
     if (p.settings && !p.settings.propagation) {
       p.settings.propagation = {
         maxContributionDistanceM: 20000,
-        treeAcceptanceTheta: 0.5,
+        treeAcceptanceTheta: 1.25,
       };
     } else if (p.settings && p.settings.propagation && p.settings.propagation.treeAcceptanceTheta == null) {
       // v0.x projects had `clusterBeyondM`/`maxClustersPerReceiver` only.
@@ -160,7 +189,7 @@ function makeEmptyProject(name: string): Project {
       extrapolation: { capPerBandDb: 6, capTotalDbA: 3 },
       propagation: {
         maxContributionDistanceM: 20000,
-        treeAcceptanceTheta: 0.5,
+        treeAcceptanceTheta: 1.25,
       },
       topography: {
         pathSamples: 12,

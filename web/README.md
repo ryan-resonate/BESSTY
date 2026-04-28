@@ -1,6 +1,6 @@
-# `beesty-web`
+# `bessty-web`
 
-React + Vite front end for BEESTY. Loads the Rust+WASM solver directly in the browser. Firebase project persistence stub-wired (mock data fallback).
+React + Vite front end for BESSTY. Loads the Rust+WASM solver directly in the browser. Firebase project persistence stub-wired (mock data fallback).
 
 ## Status
 

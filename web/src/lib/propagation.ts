@@ -69,7 +69,7 @@ export interface PropagationSettings {
 
 const DEFAULT_PROP: PropagationSettings = {
   maxContributionDistanceM: 20000,
-  treeAcceptanceTheta: 0.5,
+  treeAcceptanceTheta: 1.25,
 };
 
 export function propagationSettings(project: Project): PropagationSettings {

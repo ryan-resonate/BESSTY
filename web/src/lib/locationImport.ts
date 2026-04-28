@@ -135,7 +135,7 @@ async function parseShapefileLocations(file: File): Promise<ImportResult> {
   }
   warnings.push(
     'Shapefile coordinates appear to be in a projected CRS (no .prj sidecar found, ' +
-    'or the CRS is unknown to BEESTY). Pick a CRS below to reproject.',
+    'or the CRS is unknown to BESSTY). Pick a CRS below to reproject.',
   );
   return geojsonToImportResult(fc, 'shapefile', warnings, null, false);
 }

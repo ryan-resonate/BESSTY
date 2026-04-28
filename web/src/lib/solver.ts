@@ -29,10 +29,9 @@ import type {
 import { lookupEntry, spectrumFor } from './catalog';
 import type { DemRaster } from './dem';
 import {
-  buildEffectiveSourcesContext,
+  approxDistanceM,
   concatBarriers,
   effectiveSourcesFor,
-  effectiveSourcesForReceiver,
   propagationSettings,
   topographyBarriers,
   type EffectiveSource,
@@ -173,42 +172,9 @@ function snapshotPair(
 }
 
 /// Snapshot for a synthetic cluster (an EffectiveSource of kind 'cluster').
-/// The cluster has no catalog entry — we use the precomputed Lw spectrum
-/// directly via `evaluate_general_*` (clusters are treated as omni point
-/// sources). DEM-derived virtual barriers along the cluster→receiver path
-/// still apply, so distant clusters behind ridges get attenuated.
-function snapshotClusterPair(
-  cluster: EffectiveSource,
-  rxLatLng: [number, number],
-  rxHeightAboveGround: number,
-  project: Project,
-  barriersFlat: Float64Array,
-  dem: DemRaster | null,
-  origin: [number, number],
-): { snapshot: Float64Array; srcAbsXyz: [number, number, number] } {
-  const [se, sn] = latLngToLocalMetres(cluster.latLng, origin);
-  const [re, rn] = latLngToLocalMetres(rxLatLng, origin);
-  const g = project.settings?.ground.defaultG ?? 0.5;
-  const groundSrc = dem ? dem.elevation(cluster.latLng[0], cluster.latLng[1]) : 0;
-  const groundRx = dem ? dem.elevation(rxLatLng[0], rxLatLng[1]) : 0;
-  const rxZ = groundRx + rxHeightAboveGround;
-  const sourceZ = groundSrc + (cluster.zAboveGround ?? 1.5);
-  // Topography barriers for the cluster centroid — coarser approximation,
-  // but distant clusters wrapped behind ranges already lose most energy
-  // via Adiv so the precision tradeoff is fine.
-  const topoBars = topographyBarriers(
-    project,
-    // Synthesise a stand-in Source for the topo helper (only its latLng is used).
-    { id: cluster.id, kind: 'auxiliary', name: cluster.id, latLng: cluster.latLng,
-      modelId: '', catalogScope: 'global' },
-    [se, sn, sourceZ], rxLatLng, [re, rn, rxZ], origin, dem,
-  );
-  const allBars = concatBarriers(barriersFlat, topoBars);
-  const snap = evaluate_general_with_grad_src_octave(
-    cluster.lwOverride!, se, sn, sourceZ, re, rn, rxZ, g, allBars,
-  );
-  return { snapshot: snap, srcAbsXyz: [se, sn, sourceZ] };
-}
+// Note: snapshotClusterPair was removed when the receiver path stopped
+// using Barnes-Hut clustering. Clusters now only appear in the grid
+// snapshot path, which builds + evaluates them inline (see snapshotGrid).
 
 /// Linear Taylor extrapolation with a per-band clamp. Returns the new Lp
 /// values plus a `stale` flag set when any band's predicted change exceeded
@@ -299,12 +265,13 @@ export async function snapshotProject(
   const rxAbsAtSnapshot = new Map<string, [number, number, number]>();
 
   const n = bandCount(project.scenario.bandSystem);
-  // Build the Barnes-Hut tree once for the whole snapshot. Each receiver
-  // walks it independently — much cheaper than recomputing for every
-  // receiver in the inner loop.
-  const ctx = buildEffectiveSourcesContext(
-    project, project.scenario.bandSystem, project.scenario.windSpeed,
-  );
+  // Point receivers always solve every source directly — no Barnes-Hut
+  // clustering. Per-source contribution rows in the receiver export need
+  // real source IDs (not "cluster-N" aggregates), and there are typically
+  // few enough named receivers (~5–500) that the O(R × S) cost is fine.
+  // Distance cutoff + topography barriers still apply via snapshotPair.
+  // The Barnes-Hut tree only kicks in for the dense grid path below.
+  const cutoffM = propagationSettings(project).maxContributionDistanceM;
   const results: ReceiverResult[] = project.receivers.map((rx) => {
     // Skip receivers whose coords are non-finite (busted import / glitched
     // group drag). They still appear in the receiver list with a "—"
@@ -318,28 +285,25 @@ export async function snapshotProject(
     rxAbsAtSnapshot.set(rx.id, [re, rn, rxGround + rx.heightAboveGroundM]);
 
     const perSource: ReceiverResult['perSource'] = [];
-    // Distance cutoff + clustering — replaces the raw `project.sources`
-    // iteration. Near sources stay individual (gradient tracked); far
-    // sources fold into virtual clusters (no gradients, refreshed each
-    // snapshot).
-    const effective = effectiveSourcesForReceiver(ctx, rx.latLng);
-    for (const es of effective) {
+    for (const src of project.sources) {
+      if (!Number.isFinite(src.latLng[0]) || !Number.isFinite(src.latLng[1])) continue;
+      // Distance cutoff: skip sources that are over the project's max
+      // contribution distance from this receiver.
+      if (cutoffM > 0) {
+        const d = approxDistanceM(rx.latLng, src.latLng);
+        if (d > cutoffM) continue;
+      }
       try {
-        const { snapshot, srcAbsXyz } = es.kind === 'real'
-          ? snapshotPair(
-              es.source!, rx.latLng, rx.heightAboveGroundM, project, barriersFlat, dem, origin,
-            )
-          : snapshotClusterPair(
-              es, rx.latLng, rx.heightAboveGroundM, project, barriersFlat, dem, origin,
-            );
-        pairs.set(`${es.id}|${rx.id}`, { snapshot, srcAbsXyz });
-        if (es.kind === 'real') srcAbsAtSnapshot.set(es.id, srcAbsXyz);
+        const { snapshot, srcAbsXyz } = snapshotPair(
+          src, rx.latLng, rx.heightAboveGroundM, project, barriersFlat, dem, origin,
+        );
+        pairs.set(`${src.id}|${rx.id}`, { snapshot, srcAbsXyz });
+        srcAbsAtSnapshot.set(src.id, srcAbsXyz);
         const perBandLp = new Float64Array(n);
         for (let i = 0; i < n; i++) perBandLp[i] = Number.isFinite(snapshot[i]) ? snapshot[i] : -Infinity;
-        perSource.push({ sourceId: es.id, perBandLp });
+        perSource.push({ sourceId: src.id, perBandLp });
       } catch (e) {
-        // One bad pair shouldn't take out the whole snapshot.
-        console.warn(`snapshot pair ${es.id}|${rx.id} failed:`, e);
+        console.warn(`snapshot pair ${src.id}|${rx.id} failed:`, e);
       }
     }
 
@@ -530,6 +494,7 @@ export async function snapshotGrid(
 
   const userBarriers = packBarriers(project.barriers, origin);
   const g = project.settings?.ground.defaultG ?? 0.5;
+  const cutoffM = propagationSettings(project).maxContributionDistanceM;
 
   const eff = effectiveSourcesForGrid(project, ca);
   const sourceIds = eff.map((es) => es.id);
@@ -559,6 +524,21 @@ export async function snapshotGrid(
   const cells = new Float32Array(cellCount * eff.length * PACK);
   const cellEnZ = new Float32Array(cellCount * 3);
 
+  // Pre-compute per-source metadata once (was previously looked up inside
+  // the per-cell loop, which is equivalent to N_cells × N_sources catalog
+  // lookups for no good reason).
+  type EffMeta = { lw: Float64Array; isWtg: boolean; rotorD: number } | null;
+  const effMeta: EffMeta[] = eff.map((es): EffMeta => {
+    if (es.kind === 'real') {
+      const entry = lookupEntry(project, es.source!);
+      if (!entry) return null;
+      const modeName = es.source!.modeOverride ?? entry.defaultMode;
+      const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
+      return { lw, isWtg: es.source!.kind === 'wtg', rotorD: entry.rotorDiameterM ?? 120 };
+    }
+    return { lw: es.lwOverride!, isWtg: false, rotorD: 120 };
+  });
+
   for (let row = 0; row < rows; row++) {
     const n = (row - (rows - 1) / 2) * dyM;
     const lat = origin[0] + (n / R) * (180 / Math.PI);
@@ -573,31 +553,31 @@ export async function snapshotGrid(
       cellEnZ[cellIdx * 3 + 2] = rxZ;
 
       for (let si = 0; si < eff.length; si++) {
+        const meta = effMeta[si];
+        if (!meta) continue;
         const es = eff[si];
         const [se, sn] = srcLocal[si];
-        // Per-cell topography barriers (DEM-derived ridges between source
-        // and this cell). Cheap relative to the WASM call.
-        const proxySrc: Source = es.kind === 'real'
-          ? es.source!
-          : { id: es.id, kind: 'auxiliary', name: es.id, latLng: es.latLng, modelId: '', catalogScope: 'global' };
-        const topoBars = topographyBarriers(
-          project, proxySrc, [se, sn, srcZ[si]], [lat, lng], [e, n, rxZ], origin, dem,
-        );
-        const allBars = concatBarriers(userBarriers, topoBars);
-
-        let lw: Float64Array;
-        let isWtg = false;
-        let rotorD = 120;
-        if (es.kind === 'real') {
-          const entry = lookupEntry(project, es.source!);
-          if (!entry) continue;
-          const modeName = es.source!.modeOverride ?? entry.defaultMode;
-          lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
-          isWtg = es.source!.kind === 'wtg';
-          rotorD = entry.rotorDiameterM ?? 120;
-        } else {
-          lw = es.lwOverride!;
+        // Per-cell distance cutoff: cheap pre-filter before the WASM call.
+        if (cutoffM > 0) {
+          const dx = se - e;
+          const dy = sn - n;
+          if (dx * dx + dy * dy > cutoffM * cutoffM) continue;
         }
+        // Per-cell topography barriers (DEM-derived ridges between source
+        // and this cell). Skipped for clusters since they're aggregates —
+        // sampling along a centroid→cell line for a virtual source isn't
+        // meaningful enough to justify the per-cell cost. Real sources
+        // still get the ridge analysis.
+        const allBars = es.kind === 'real'
+          ? concatBarriers(
+              userBarriers,
+              topographyBarriers(
+                project, es.source!, [se, sn, srcZ[si]], [lat, lng], [e, n, rxZ], origin, dem,
+              ),
+            )
+          : userBarriers;
+
+        const { lw, isWtg, rotorD } = meta;
         const snap = isWtg
           ? evaluate_wtg_with_grad_src_octave(
               lw, se, sn, srcZ[si], e, n, rxZ, g, allBars, rotorD, false,
@@ -736,6 +716,10 @@ export async function evaluateGrid(
   const aw = aWeights(project.scenario.bandSystem);
   const ca2 = project.calculationArea!;
   const eff = effectiveSourcesForGrid(project, ca2);
+  // Hoist these out of the per-cell loop body — they don't change between
+  // cells, and the previous code was re-reading them every iteration.
+  const g = project.settings?.ground.defaultG ?? 0.5;
+  const cutoffM = propagationSettings(project).maxContributionDistanceM;
   const effLocal = eff.map((es) => latLngToLocalMetres(es.latLng, origin));
   const effZ = eff.map((es) => {
     if (es.kind === 'real') return sourceAbsZ(es.source!, project, dem) ?? 0;
@@ -767,19 +751,27 @@ export async function evaluateGrid(
       const rxZ = groundZ + rxHeightAboveGround;
 
       let aSum = 0;
-      const g = project.settings?.ground.defaultG ?? 0.5;
       for (let si = 0; si < eff.length; si++) {
         const meta = effMeta[si];
         if (!meta) continue;
         const es = eff[si];
         const [se, sn] = effLocal[si];
-        const proxySrc: Source = es.kind === 'real'
-          ? es.source!
-          : { id: es.id, kind: 'auxiliary', name: es.id, latLng: es.latLng, modelId: '', catalogScope: 'global' };
-        const topoBars = topographyBarriers(
-          project, proxySrc, [se, sn, effZ[si]], [lat, lng], [e, n, rxZ], origin, dem,
-        );
-        const allBars = concatBarriers(userBarriers, topoBars);
+        // Per-cell distance cutoff: cheap pre-filter that skips the WASM
+        // call entirely for sources / clusters too far to contribute.
+        if (cutoffM > 0) {
+          const dx = se - e;
+          const dy = sn - n;
+          if (dx * dx + dy * dy > cutoffM * cutoffM) continue;
+        }
+        // Skip topo barriers for clusters (see snapshotGrid for rationale).
+        const allBars = es.kind === 'real'
+          ? concatBarriers(
+              userBarriers,
+              topographyBarriers(
+                project, es.source!, [se, sn, effZ[si]], [lat, lng], [e, n, rxZ], origin, dem,
+              ),
+            )
+          : userBarriers;
         const lp = meta.isWtg
           ? evaluate_wtg_octave(meta.lw, se, sn, effZ[si], e, n, rxZ, g, allBars, meta.rotorD, false)
           : evaluate_general_octave(meta.lw, se, sn, effZ[si], e, n, rxZ, g, allBars);

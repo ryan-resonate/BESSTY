@@ -2,7 +2,7 @@
 //
 // Two databases of source models live alongside each other:
 //
-//   - **Global catalog** — stored in `localStorage['beesty.catalog.global']`,
+//   - **Global catalog** — stored in `localStorage['bessty.catalog.global']`,
 //     shared across every project on this device. Eventually backed by
 //     Firestore so multiple users share the same set of vendor models.
 //
@@ -17,7 +17,7 @@
 import type { CatalogEntry, Project, Source, SourceKind } from './types';
 import { SEED_CATALOG } from './seedCatalog';
 
-const GLOBAL_CATALOG_KEY = 'beesty.catalog.global';
+const GLOBAL_CATALOG_KEY = 'bessty.catalog.global';
 
 // ---------- Global catalog ----------
 

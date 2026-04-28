@@ -65,7 +65,15 @@ header.app-header::after {
   background: var(--yellow);
 }
 header.app-header .left { display: flex; align-items: center; gap: 14px; }
-header.app-header img.logo { height: 28px; display: block; }
+/* Logo: rendered as inline SVG via the React `<Logo>` component with
+ * `fill="currentColor"`, so the CSS color here fully controls the
+ * rendered colour. The brand-yellow accent stays as the underline
+ * strip below the header. */
+header.app-header .logo {
+  display: inline-block;
+  color: var(--ink);
+  vertical-align: middle;
+}
 header.app-header .pipe { width: 1px; height: 24px; background: var(--light); }
 header.app-header h1 {
   font-size: 16px;
@@ -223,10 +231,14 @@ header.app-header nav a:hover { background: var(--slate-1); }
   display: inline-block;
 }
 
-/* ---- Workspace layout ---- */
+/* ---- Workspace layout ----
+ * The side panel width lives in a CSS variable so the drag-handle below
+ * can bump it without re-laying out via React state on every mousemove.
+ * Min/max keep it usable and prevent it eating the entire window.
+ */
 .workspace {
   display: grid;
-  grid-template-columns: 360px 1fr;
+  grid-template-columns: var(--side-panel-w, 420px) 6px 1fr;
   height: calc(100vh - 56px);
   overflow: hidden;
 }
@@ -238,23 +250,43 @@ header.app-header nav a:hover { background: var(--slate-1); }
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-width: 280px;
 }
 
-/* Top-level tabs */
+/* Vertical splitter between side panel and map. Wider hit-area than the
+ * visible bar so the cursor doesn't have to be pixel-perfect. */
+.side-panel-splitter {
+  background: var(--light);
+  cursor: col-resize;
+  user-select: none;
+  position: relative;
+}
+.side-panel-splitter:hover,
+.side-panel-splitter.dragging {
+  background: var(--ink-soft);
+}
+.side-panel-splitter::after {
+  content: '';
+  position: absolute;
+  inset: 0 -4px;
+}
+
+/* Top-level tabs — wrap to two rows when the panel is narrow rather than
+ * forcing a horizontal scroll, which is hard to discover. */
 .tabs {
   display: flex;
-  gap: 0;
+  flex-wrap: wrap;
+  gap: 2px;
   background: #fff;
   border-bottom: 1px solid var(--light);
-  padding: 6px 8px 0;
-  overflow-x: auto;
+  padding: 6px 6px 0;
   flex-shrink: 0;
 }
 .tab {
   background: transparent;
   border: 1px solid transparent;
   border-bottom: none;
-  padding: 7px 12px 8px;
+  padding: 7px 10px 8px;
   font-size: 13px;
   font-weight: 500;
   color: var(--mid);

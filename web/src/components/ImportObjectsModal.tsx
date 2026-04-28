@@ -368,7 +368,7 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
                     onChange={setCrsEpsg}
                     label="Source CRS"
                     hint={parsed.format === 'csv'
-                      ? 'Pick the CRS the X / Y columns are in. BEESTY reprojects to WGS84 on import.'
+                      ? 'Pick the CRS the X / Y columns are in. BESSTY reprojects to WGS84 on import.'
                       : 'Shapefile lacks a usable .prj — pick the CRS its coordinates are in.'}
                   />
                 </section>

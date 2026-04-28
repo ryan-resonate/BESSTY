@@ -152,20 +152,20 @@ export function SettingsModal({ project, setProject, onClose, gridSpacingM, setG
                   value={draft.propagation?.maxContributionDistanceM ?? 20000}
                   onChange={(e) => update({
                     propagation: {
-                      ...(draft.propagation ?? { maxContributionDistanceM: 20000, treeAcceptanceTheta: 0.5 }),
+                      ...(draft.propagation ?? { maxContributionDistanceM: 20000, treeAcceptanceTheta: 1.25 }),
                       maxContributionDistanceM: +e.target.value,
                     },
                   })}
                 />
               </label>
               <label className="fld">
-                <span>Tree acceptance θ (0.1–1.5)</span>
+                <span>Tree acceptance θ (0.1–2.0)</span>
                 <input
-                  type="number" min={0.1} max={1.5} step={0.05}
-                  value={draft.propagation?.treeAcceptanceTheta ?? 0.5}
+                  type="number" min={0.1} max={2} step={0.05}
+                  value={draft.propagation?.treeAcceptanceTheta ?? 1.25}
                   onChange={(e) => update({
                     propagation: {
-                      ...(draft.propagation ?? { maxContributionDistanceM: 20000, treeAcceptanceTheta: 0.5 }),
+                      ...(draft.propagation ?? { maxContributionDistanceM: 20000, treeAcceptanceTheta: 1.25 }),
                       treeAcceptanceTheta: +e.target.value,
                     },
                   })}

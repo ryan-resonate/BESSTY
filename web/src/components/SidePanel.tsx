@@ -83,10 +83,14 @@ interface Props {
   setContourStepDb(v: number): void;
   palette: Palette;
   setPalette(p: Palette): void;
-  domainMode: 'auto' | 'fixed';
-  setDomainMode(m: 'auto' | 'fixed'): void;
-  fixedDomain: { min: number; max: number };
-  setFixedDomain(d: { min: number; max: number }): void;
+  /// Legacy fields kept on the prop interface so existing call sites still
+  /// type-check while we phase the auto/fixed-domain toggle out — both
+  /// `contourBounds` (Min/Max in the Layers tab) now drives the colour
+  /// scale directly, so these are no longer consulted.
+  domainMode?: 'auto' | 'fixed';
+  setDomainMode?(m: 'auto' | 'fixed'): void;
+  fixedDomain?: { min: number; max: number };
+  setFixedDomain?(d: { min: number; max: number }): void;
   /// Setting the user can edit in the Layers tab to override the
   /// auto-computed contour bounds. `min`/`max`/`step` are in dB.
   contourBounds: { min: number; max: number; step: number };
@@ -105,6 +109,9 @@ interface Props {
   /// Latest contour grid — needed by the Results tab's GeoTIFF / KML / SHP
   /// exporters. Null when no grid has been computed yet.
   grid: GridResult | null;
+  /// Replace contour Min/Max with the grid's measured range. Wired to the
+  /// "Auto-fit" button in the Layers tab.
+  onAutoFitContourBounds?(): void;
 }
 
 const TABS: Array<{ id: Tab; label: string; numbered?: number }> = [
@@ -917,8 +924,7 @@ function ResultsTab(props: Props) {
     if (format === 'kml') {
       download(exportContoursKml(project, sets), 'contours', 'kml');
     } else {
-      // SHP returns a Promise<Blob>.
-      exportContoursShp(project, sets).then((blob) => download(blob, 'contours', 'zip'));
+      download(exportContoursShp(project, sets), 'contours', 'zip');
     }
   }
 
@@ -1014,7 +1020,7 @@ function LayersTab(props: Props) {
     contourOpacity, setContourOpacity, palette, setPalette,
     contourStepDb, setContourStepDb,
     contourBounds, setContourBounds,
-    domainMode, setDomainMode, fixedDomain, setFixedDomain,
+    onAutoFitContourBounds,
     demStatus, demTilesLoaded,
   } = props;
   return (
@@ -1069,6 +1075,18 @@ function LayersTab(props: Props) {
             <option value={10}>10</option>
           </select>
         </Field>
+        <div className="hint">
+          Min / Max above drive both the contour line thresholds and the
+          filled-grid colour scale. Press <b>Auto-fit</b> to clamp them to
+          the current grid's measured range (snapped to 5 dB).
+        </div>
+        <div className="add-row">
+          <button
+            className="btn small"
+            onClick={() => onAutoFitContourBounds?.()}
+            disabled={!onAutoFitContourBounds}
+          >Auto-fit to grid</button>
+        </div>
         <Field label="Palette">
           <div className="palette-row">
             {PALETTES.map((p) => (
@@ -1084,26 +1102,6 @@ function LayersTab(props: Props) {
             ))}
           </div>
         </Field>
-        <Field label="Domain (dB)">
-          <div className="seg block">
-            <button className={domainMode === 'auto' ? 'on' : ''} onClick={() => setDomainMode('auto')}>Auto</button>
-            <button className={domainMode === 'fixed' ? 'on' : ''} onClick={() => setDomainMode('fixed')}>Fixed</button>
-          </div>
-        </Field>
-        {domainMode === 'fixed' && (
-          <div className="grid-2">
-            <Field label="Min">
-              <NumericInput step={1} value={fixedDomain.min}
-                fallback={25}
-                onChange={(v) => setFixedDomain({ ...fixedDomain, min: v })} />
-            </Field>
-            <Field label="Max">
-              <NumericInput step={1} value={fixedDomain.max}
-                fallback={60}
-                onChange={(v) => setFixedDomain({ ...fixedDomain, max: v })} />
-            </Field>
-          </div>
-        )}
       </Card>
 
       <Card title="Terrain">

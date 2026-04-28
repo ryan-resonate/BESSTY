@@ -30,6 +30,47 @@ function newId(prefix: string) {
   return `${prefix}-${nextId}`;
 }
 
+/// Vertical splitter between the side panel and the map area. Drag with
+/// the mouse to resize. Width is stored as a CSS variable on the workspace
+/// so the resize doesn't trigger a React re-render on every mousemove —
+/// we just write to the DOM and the grid track follows.
+function SidePanelSplitter() {
+  function onMouseDown(e: React.MouseEvent<HTMLDivElement>) {
+    e.preventDefault();
+    const workspace = (e.currentTarget.parentElement) as HTMLElement | null;
+    if (!workspace) return;
+    workspace.classList.add('dragging-splitter');
+    e.currentTarget.classList.add('dragging');
+    const startX = e.clientX;
+    const startWidth = workspace.getBoundingClientRect().width
+      ? parseInt(getComputedStyle(workspace).getPropertyValue('--side-panel-w') || '420', 10) || 420
+      : 420;
+    const minW = 280;
+    const maxW = Math.max(minW + 100, window.innerWidth - 320);
+    function onMove(ev: MouseEvent) {
+      const dx = ev.clientX - startX;
+      const w = Math.max(minW, Math.min(maxW, startWidth + dx));
+      workspace!.style.setProperty('--side-panel-w', `${w}px`);
+    }
+    function onUp() {
+      workspace!.classList.remove('dragging-splitter');
+      const splitter = workspace!.querySelector('.side-panel-splitter');
+      splitter?.classList.remove('dragging');
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }
+  return (
+    <div
+      className="side-panel-splitter"
+      onMouseDown={onMouseDown}
+      title="Drag to resize the side panel"
+    />
+  );
+}
+
 /// Replace any NaN / ±Infinity numeric fields with safe defaults across
 /// every part of the project that gets edited via UI inputs. Acts as a
 /// final firewall right before the project lands in React state —
@@ -536,10 +577,6 @@ export function ProjectScreen() {
           g.computedMs = s.computedMs;
           setGrid(g);
           setGridStatus('ready');
-          if (domainMode === 'fixed') {
-            const d = gridDomain(g.dbA);
-            setFixedDomain({ min: Math.floor(d.min / 5) * 5, max: Math.ceil(d.max / 5) * 5 });
-          }
         })
         .catch((e) => { if (gen === gridGenRef.current) { setError(String(e)); setGridStatus('idle'); } });
     }, 0);
@@ -755,23 +792,46 @@ export function ProjectScreen() {
     setDemStatus('idle');
   }
 
-  // dB colormap domain — auto-fit to grid (or to receivers if no grid yet)
-  // unless the user has chosen a fixed range, in which case the explicit
-  // min / max from `contourBounds` is authoritative.
-  const dbDomain = useMemo(() => {
-    if (domainMode === 'fixed') return { min: contourBounds.min, max: contourBounds.max };
-    if (grid) return gridDomain(grid.dbA);
+  // dB colormap domain. `contourBounds` (Min/Max in the Layers tab → Contours)
+  // is the single source of truth for both the contour line thresholds and
+  // the filled-grid colour scale — editing it updates everything together.
+  // The "Auto-fit" button below copies the current grid's measured range
+  // into contourBounds; until pressed, the user's manual edits are honoured.
+  const dbDomain = useMemo(
+    () => ({ min: contourBounds.min, max: contourBounds.max }),
+    [contourBounds.min, contourBounds.max],
+  );
+
+  /// Replace contourBounds with the grid's actual measured range, snapped
+  /// to multiples of 5 dB for cleaner band boundaries. Wired to the
+  /// "Auto-fit" button in the Layers tab.
+  function autoFitContourBoundsToGrid() {
+    const target = grid ? gridDomain(grid.dbA) : null;
+    if (target && Number.isFinite(target.min) && Number.isFinite(target.max)) {
+      setContourBounds({
+        min: Math.floor(target.min / 5) * 5,
+        max: Math.ceil(target.max / 5) * 5,
+        step: contourBounds.step,
+      });
+      return;
+    }
+    // No grid yet — fall back to the receiver point cloud's range.
     if (results && results.length > 0) {
-      let min = Infinity, max = -Infinity;
+      let mn = Infinity, mx = -Infinity;
       for (const r of results) {
         if (!isFinite(r.totalDbA)) continue;
-        if (r.totalDbA < min) min = r.totalDbA;
-        if (r.totalDbA > max) max = r.totalDbA;
+        if (r.totalDbA < mn) mn = r.totalDbA;
+        if (r.totalDbA > mx) mx = r.totalDbA;
       }
-      if (isFinite(min) && isFinite(max) && max > min) return { min, max };
+      if (isFinite(mn) && isFinite(mx) && mx > mn) {
+        setContourBounds({
+          min: Math.floor(mn / 5) * 5,
+          max: Math.ceil(mx / 5) * 5,
+          step: contourBounds.step,
+        });
+      }
     }
-    return { min: 25, max: 60 };
-  }, [domainMode, contourBounds, grid, results]);
+  }
 
   if (!project) {
     return <div style={{ padding: 32 }}>Loading…</div>;
@@ -824,8 +884,11 @@ export function ProjectScreen() {
         onAfterImport={fitToBounds}
         onFitCalcAreaToObjects={fitCalcAreaToObjects}
         grid={grid}
+        onAutoFitContourBounds={autoFitContourBoundsToGrid}
       />
       </ErrorBoundary>
+
+      <SidePanelSplitter />
 
       <div className="map-area">
         <ErrorBoundary region="Map">

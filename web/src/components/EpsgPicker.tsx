@@ -67,7 +67,7 @@ export function EpsgPicker({ value, onChange, label = 'Coordinate system', hint 
         <div className="settings-section" style={{ marginTop: 6 }}>
           <div className="hint">
             Paste a proj4 definition (e.g. from <a href="https://epsg.io" target="_blank" rel="noreferrer">epsg.io</a>).
-            BEESTY will register it for the rest of this session.
+            BESSTY will register it for the rest of this session.
           </div>
           <label className="fld">
             <span>EPSG code</span>

@@ -28,7 +28,7 @@ export class ErrorBoundary extends Component<Props, State> {
     // Log to the console with full stack — useful when the user has
     // devtools open and reports the issue.
     // eslint-disable-next-line no-console
-    console.error(`[BEESTY ErrorBoundary · ${this.props.region}]`, error, info);
+    console.error(`[BESSTY ErrorBoundary · ${this.props.region}]`, error, info);
     this.setState({ info });
   }
 
