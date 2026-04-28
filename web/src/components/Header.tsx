@@ -1,5 +1,6 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import { Logo } from './Logo';
+import { logout } from '../lib/auth';
 
 interface Props {
   projectBreadcrumb?: string;
@@ -47,13 +48,14 @@ export function Header({ projectBreadcrumb }: Props) {
 
       <div className="header-right">
         <button className="ic-btn" title="Help" type="button">?</button>
-        <div
+        <button
           className="ic-btn"
-          title="Account (auth not enabled)"
-          style={{ background: 'var(--paper-2)', cursor: 'default' }}
+          title="Sign out (Stage-1 placeholder auth)"
+          type="button"
+          onClick={() => { logout(); window.location.reload(); }}
         >
-          —
-        </div>
+          ⎋
+        </button>
       </div>
     </header>
   );

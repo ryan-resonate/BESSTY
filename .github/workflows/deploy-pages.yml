@@ -1,0 +1,82 @@
+# Build the BESSTY web app and publish it to GitHub Pages.
+#
+# Trigger:
+#   - On every push to `main`.
+#   - Manually via the "Actions" tab → "Deploy to GitHub Pages" → "Run workflow".
+#
+# Required one-time setup (see DEPLOY.md for screenshots):
+#   1. Settings → Pages → "Source" = **GitHub Actions** (not "Deploy from a branch").
+#   2. Make sure the workflow has `pages: write` and `id-token: write`
+#      permissions — already set below.
+#
+# How `base` is computed:
+#   The Vite config reads the `BESSTY_BASE` env var. We set it here to
+#   `/<repo-name>/` using the `github.event.repository.name` context, so
+#   the same workflow works regardless of the repo name (and you don't
+#   have to hardcode it anywhere). If you ever set up a custom domain via
+#   a CNAME, change this to `/`.
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read       # checkout
+  pages: write         # publish to Pages
+  id-token: write      # OIDC token for the Pages deploy action
+
+# Only one Pages deploy at a time; cancel in-flight runs when a new commit lands.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web   # everything below runs inside web/
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run lint
+
+      - name: Build
+        env:
+          # Vite reads this in vite.config.ts to set the asset base path.
+          # `/<repo-name>/` matches the URL GitHub Pages serves project
+          # sites from. For a custom-domain (CNAME) deploy, change to `/`.
+          BESSTY_BASE: /${{ github.event.repository.name }}/
+        run: npm run build
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

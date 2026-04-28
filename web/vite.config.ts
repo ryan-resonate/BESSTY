@@ -15,7 +15,16 @@ import topLevelAwait from 'vite-plugin-top-level-await';
 //   'Cross-Origin-Embedder-Policy': 'require-corp',
 // };
 
+// GitHub Pages serves project sites from `https://<user>.github.io/<repo>/`,
+// so every asset URL has to be prefixed with `/<repo>/`. We read the prefix
+// from `BESSTY_BASE` at build time — the GitHub Actions workflow sets it
+// to `/${{ github.event.repository.name }}/` automatically. Local `npm run
+// dev` and `npm run build` (without the env) leave it as `/`, which is what
+// you want when serving from the root.
+const BASE = process.env.BESSTY_BASE ?? '/';
+
 export default defineConfig({
+  base: BASE,
   plugins: [react(), wasm(), topLevelAwait()],
   build: {
     target: 'es2022',

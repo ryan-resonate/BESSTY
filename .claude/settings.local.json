@@ -43,7 +43,8 @@
       "Bash(grep -n \"</div>$\" src/components/ImportObjectsModal.tsx)",
       "Bash(rm -rf node_modules/@mapbox/shp-write)",
       "Bash(rm src/types/shp-write.d.ts)",
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "Bash(git checkout *)"
     ]
   }
 }
