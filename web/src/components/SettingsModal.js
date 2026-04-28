@@ -1,0 +1,34 @@
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { useState } from 'react';
+/// Settings modal that buffers edits locally and only commits to the project
+/// state when the user presses Done. This stops every input keystroke from
+/// kicking off a re-evaluation, which previously froze the modal mid-typing.
+export function SettingsModal({ project, setProject, onClose, gridSpacingM, setGridSpacingM }) {
+    // Local working copies — updated freely without touching project state.
+    const [draft, setDraft] = useState(project.settings ?? null);
+    const [draftBandSystem, setDraftBandSystem] = useState(project.scenario.bandSystem);
+    const [draftSpacing, setDraftSpacing] = useState(gridSpacingM);
+    if (!draft)
+        return null;
+    function update(patch) {
+        setDraft((prev) => (prev ? { ...prev, ...patch } : prev));
+    }
+    function commit() {
+        setProject({
+            ...project,
+            settings: draft,
+            scenario: { ...project.scenario, bandSystem: draftBandSystem },
+        });
+        if (draftSpacing !== gridSpacingM)
+            setGridSpacingM(draftSpacing);
+        onClose();
+    }
+    function cancel() {
+        onClose();
+    }
+    return (_jsx("div", { className: "modal-backdrop", onClick: cancel, children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), children: [_jsxs("div", { className: "modal-header", children: [_jsx("h2", { children: "Project settings" }), _jsx("button", { className: "x-btn", onClick: cancel, children: "\u2715" })] }), _jsxs("div", { className: "modal-body", children: [_jsxs("section", { className: "settings-section", children: [_jsx("h3", { children: "Band system" }), _jsxs("label", { className: "fld", children: [_jsx("span", { children: "Solve in" }), _jsxs("select", { value: draftBandSystem, onChange: (e) => setDraftBandSystem(e.target.value), children: [_jsx("option", { value: "octave", children: "Octave (10 bands \u00B7 16 Hz \u2013 8 kHz)" }), _jsx("option", { value: "oneThirdOctave", children: "One-third octave (31 bands \u00B7 10 Hz \u2013 10 kHz)" })] })] }), _jsx("div", { className: "hint", children: "Octave is faster; one-third octave catches narrowband content. Source data in the other band system is folded automatically (third \u2192 octave by energy sum; octave \u2192 third by equal distribution across the three children)." })] }), _jsxs("section", { className: "settings-section", children: [_jsx("h3", { children: "Ground" }), _jsxs("label", { className: "fld", children: [_jsx("span", { children: "Default ground factor G (0 = hard, 1 = porous)" }), _jsx("input", { type: "number", min: 0, max: 1, step: 0.05, value: draft.ground.defaultG, onChange: (e) => update({ ground: { ...draft.ground, defaultG: +e.target.value } }) })] }), _jsx("div", { className: "hint", children: "Annex D rules cap G at 0.5 for wind turbine sources regardless of this setting." })] }), _jsxs("section", { className: "settings-section", children: [_jsx("h3", { children: "Annex D \u2014 wind turbines" }), _jsxs("label", { className: "fld", children: [_jsx("span", { children: "Barrier Abar cap (dB)" }), _jsx("input", { type: "number", min: 0, max: 25, step: 0.5, value: draft.annexD.barrierAbarCapDb, onChange: (e) => update({ annexD: { ...draft.annexD, barrierAbarCapDb: +e.target.value } }) })] }), _jsxs("label", { className: "fld checkbox", children: [_jsx("input", { type: "checkbox", checked: draft.annexD.useElevatedSourceForBarrier, onChange: (e) => update({ annexD: { ...draft.annexD, useElevatedSourceForBarrier: e.target.checked } }) }), _jsx("span", { children: "Use tip height as barrier source (Annex D.3)" })] }), _jsxs("label", { className: "fld checkbox", children: [_jsx("input", { type: "checkbox", checked: draft.annexD.applyConcaveCorrection, onChange: (e) => update({ annexD: { ...draft.annexD, applyConcaveCorrection: e.target.checked } }) }), _jsx("span", { children: "Apply concave-ground correction (Annex D.5, \u22123 dB)" })] }), _jsxs("label", { className: "fld", children: [_jsx("span", { children: "WT receiver minimum height (m)" }), _jsx("input", { type: "number", min: 1, max: 20, step: 0.5, value: draft.annexD.wtReceiverHeightMin, onChange: (e) => update({ annexD: { ...draft.annexD, wtReceiverHeightMin: +e.target.value } }) })] })] }), _jsxs("section", { className: "settings-section", children: [_jsx("h3", { children: "General sources" }), _jsxs("label", { className: "fld", children: [_jsx("span", { children: "Default receiver height (m) for non-WT calcs" }), _jsx("input", { type: "number", min: 1, max: 5, step: 0.1, value: draft.general.defaultReceiverHeight, onChange: (e) => update({ general: { ...draft.general, defaultReceiverHeight: +e.target.value } }) })] })] }), _jsxs("section", { className: "settings-section", children: [_jsx("h3", { children: "Contour grid" }), _jsxs("label", { className: "fld", children: [_jsx("span", { children: "Grid spacing (m)" }), _jsxs("select", { value: draftSpacing, onChange: (e) => setDraftSpacing(+e.target.value), children: [_jsx("option", { value: 25, children: "25 m (fine)" }), _jsx("option", { value: 50, children: "50 m (default)" }), _jsx("option", { value: 100, children: "100 m (coarse)" }), _jsx("option", { value: 200, children: "200 m (preview)" })] })] }), _jsx("div", { className: "hint", children: "Smaller spacing = sharper contours but slower Run." })] }), _jsxs("section", { className: "settings-section", children: [_jsx("h3", { children: "Drag extrapolation caps" }), _jsxs("div", { className: "grid-2", children: [_jsxs("label", { className: "fld", children: [_jsx("span", { children: "Per-band cap (dB)" }), _jsx("input", { type: "number", min: 1, max: 20, step: 0.5, value: draft.extrapolation?.capPerBandDb ?? 6, onChange: (e) => update({
+                                                        extrapolation: { ...(draft.extrapolation ?? { capPerBandDb: 6, capTotalDbA: 3 }), capPerBandDb: +e.target.value },
+                                                    }) })] }), _jsxs("label", { className: "fld", children: [_jsx("span", { children: "Total dB(A) cap" }), _jsx("input", { type: "number", min: 0.5, max: 20, step: 0.5, value: draft.extrapolation?.capTotalDbA ?? 3, onChange: (e) => update({
+                                                        extrapolation: { ...(draft.extrapolation ?? { capPerBandDb: 6, capTotalDbA: 3 }), capTotalDbA: +e.target.value },
+                                                    }) })] })] }), _jsx("div", { className: "hint", children: "When Taylor extrapolation predicts a change larger than these caps the displayed value is clamped and an exact re-snapshot is queued." })] })] }), _jsxs("div", { className: "modal-footer", children: [_jsx("button", { className: "btn", onClick: cancel, children: "Cancel" }), _jsx("button", { className: "btn primary", onClick: commit, children: "Done" })] })] }) }));
+}

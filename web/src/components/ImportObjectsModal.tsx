@@ -1,16 +1,20 @@
 // One modal for importing receiver / source location lists from any of:
 // CSV, KML, or shapefile bundles. The user picks the file, picks the
-// **kind** (Receivers / WTGs / BESS / Auxiliary), maps attributes, and
-// commits.
+// **kind** (Receivers / WTGs / BESS / Auxiliary), maps attributes,
+// optionally picks a CRS (CSV always; shapefile if no .prj sidecar),
+// and commits.
 
 import { useState } from 'react';
 import {
   guessLocationMapping,
   parseLocations,
+  reprojectShapefileFeature,
   type ImportFormat,
   type ImportResult,
 } from '../lib/locationImport';
 import { listEntriesByKind } from '../lib/catalog';
+import { toWgs84 } from '../lib/projections';
+import { EpsgPicker } from './EpsgPicker';
 import type { Project, Receiver, Source, SourceKind } from '../lib/types';
 
 type Kind = 'receiver' | 'wtg' | 'bess' | 'auxiliary';
@@ -37,6 +41,10 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
   const [parsed, setParsed] = useState<ImportResult | null>(null);
   const [kind, setKind] = useState<Kind>(initialKind);
   const [mapping, setMapping] = useState<Record<string, string | null>>({});
+  /// CRS the user has selected for the imported coords. Defaults to WGS84.
+  /// For CSV → applied to (X, Y) columns. For shapefile-without-prj →
+  /// applied to native (x, y) stored on each feature. KML always 4326.
+  const [crsEpsg, setCrsEpsg] = useState(4326);
 
   const [defaultLimitDay, setDefaultLimitDay] = useState(50);
   const [defaultLimitEvening, setDefaultLimitEvening] = useState(45);
@@ -58,6 +66,10 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
       setParsed(result);
       setMapping(guessLocationMapping(result.attributeNames, objectKindToImportKind(kind), result.format));
       setDefaultHeight(kind === 'receiver' ? 1.5 : 100);
+      // Initialise the CRS picker from whatever the parser inferred.
+      // KML → 4326 (locked); shapefile w/ prj → 4326 (locked); else WGS84
+      // as a sensible default the user can change.
+      setCrsEpsg(result.nativeEpsg ?? 4326);
     } catch (e) {
       setError(String(e));
     }
@@ -77,8 +89,9 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
     if (!parsed) return;
     const ik = objectKindToImportKind(kind);
     const isCsv = parsed.format === 'csv';
+    const isShapefileNoPrj = parsed.format === 'shapefile' && parsed.nativeEpsg !== 4326;
     if (isCsv && (!mapping.x || !mapping.y)) {
-      alert('CSV import needs columns assigned to X (longitude) and Y (latitude).');
+      alert('CSV import needs columns assigned to X (longitude / easting) and Y (latitude / northing).');
       return;
     }
 
@@ -91,9 +104,16 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
         const x = parseFloat(String(f.properties[xCol!]));
         const y = parseFloat(String(f.properties[yCol!]));
         if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-        return [y, x];
+        if (crsEpsg === 4326) return [y, x];
+        try { return toWgs84(crsEpsg, x, y); } catch { return null; }
       }
-      // KML / shapefile carry geometry directly in latLng.
+      if (isShapefileNoPrj) {
+        try {
+          const ll = reprojectShapefileFeature(f, crsEpsg);
+          return ll;
+        } catch { return null; }
+      }
+      // KML / shapefile-with-prj — geometry already in WGS84.
       return Number.isFinite(f.latLng[0]) && Number.isFinite(f.latLng[1]) ? f.latLng : null;
     }
 
@@ -169,8 +189,8 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
   // so X/Y rows are hidden for those formats.
   const fieldsFor = (k: Kind, fmt: ImportFormat | null): Array<{ key: string; label: string; required?: boolean }> => {
     const xy = (fmt === 'csv') ? [
-      { key: 'x', label: 'X column (longitude)', required: true },
-      { key: 'y', label: 'Y column (latitude)', required: true },
+      { key: 'x', label: 'X column (longitude / easting)', required: true },
+      { key: 'y', label: 'Y column (latitude / northing)', required: true },
     ] : [];
     if (k === 'receiver') {
       return [
@@ -190,6 +210,18 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
       { key: 'hubHeight', label: 'Hub height (WTG only)' },
     ];
   };
+
+  // CRS picker is shown for CSV (always) and shapefile-without-prj. KML
+  // and shapefile-with-prj are locked to WGS84.
+  const showCrsPicker = parsed != null && (
+    parsed.format === 'csv'
+    || (parsed.format === 'shapefile' && parsed.nativeEpsg !== 4326)
+  );
+  const crsLockedNote = parsed?.format === 'kml'
+    ? 'KML is always WGS84 (EPSG:4326).'
+    : (parsed?.format === 'shapefile' && parsed.shapefileHadPrj)
+      ? 'Shapefile reprojected from .prj to WGS84.'
+      : null;
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -225,9 +257,10 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
             </div>
             <div className="hint">
               Accepts <b>.csv</b>, <b>.kml</b>, or a <b>.zip</b> containing a
-              shapefile bundle (.shp + .dbf + .prj). CSV is interpreted as
-              WGS84 lat/lng. KML is always WGS84. Shapefiles auto-reproject
-              to WGS84 when a .prj sidecar is present.
+              shapefile bundle (.shp + .dbf + .prj). CSV defaults to WGS84 lat/lng
+              but accepts any registered projected CRS (UTM, MGA, NZTM, …). KML is
+              always WGS84. Shapefiles auto-reproject from the .prj sidecar when
+              present; otherwise pick a CRS below.
             </div>
             {parsing && <div className="hint">Parsing…</div>}
             {error && <div className="hint" style={{ color: 'var(--red)' }}>Error: {error}</div>}
@@ -235,6 +268,25 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
 
           {parsed && (
             <>
+              {showCrsPicker && (
+                <section className="settings-section">
+                  <h3>Coordinate system</h3>
+                  <EpsgPicker
+                    value={crsEpsg}
+                    onChange={setCrsEpsg}
+                    label="Source CRS"
+                    hint={parsed.format === 'csv'
+                      ? 'Pick the CRS the X / Y columns are in. BEESTY reprojects to WGS84 on import.'
+                      : 'Shapefile lacks a usable .prj — pick the CRS its coordinates are in.'}
+                  />
+                </section>
+              )}
+              {crsLockedNote && (
+                <section className="settings-section">
+                  <div className="hint">{crsLockedNote}</div>
+                </section>
+              )}
+
               <section className="settings-section">
                 <h3>Map attributes</h3>
                 <div className="hint">

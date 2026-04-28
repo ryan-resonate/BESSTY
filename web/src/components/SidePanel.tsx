@@ -6,7 +6,9 @@ import type { BaseMap, ContourMode } from './MapView';
 import type { Palette } from '../lib/colormap';
 import { listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { ImportObjectsModal } from './ImportObjectsModal';
-import { parseDemGeoTiff } from '../lib/demUpload';
+import { EpsgPicker } from './EpsgPicker';
+import { inferGeoTiffCrs, parseDemGeoTiff } from '../lib/demUpload';
+import { presetForEpsg } from '../lib/projections';
 import type { DemRaster } from '../lib/dem';
 import { paletteCss } from '../lib/colormap';
 
@@ -724,21 +726,53 @@ function ReceiversTab(props: Props) {
 function ImportTab(props: Props) {
   const { project, setProject, setDem, demSource } = props;
   const [importOpen, setImportOpen] = useState(false);
+
+  // Two-step DEM upload: (1) user picks file → we sniff the CRS and stash
+  // the file for confirmation; (2) user confirms / overrides the CRS and
+  // hits "Use this DEM" → we actually parse the raster.
+  const [demFile, setDemFile] = useState<File | null>(null);
+  const [demEpsg, setDemEpsg] = useState<number>(4326);
+  const [demInferredEpsg, setDemInferredEpsg] = useState<number | null>(null);
   const [demBusy, setDemBusy] = useState(false);
   const [demError, setDemError] = useState<string | null>(null);
   const [demName, setDemName] = useState<string | null>(null);
 
-  async function handleDemUpload(file: File) {
+  async function pickDemFile(file: File) {
+    setDemError(null);
+    setDemFile(file);
+    try {
+      const inferred = await inferGeoTiffCrs(file);
+      setDemInferredEpsg(inferred);
+      setDemEpsg(inferred ?? 4326);
+    } catch (e) {
+      // Couldn't even read the GeoTIFF header — surface the error and
+      // keep the picker open with the WGS84 default.
+      setDemError(String(e));
+      setDemInferredEpsg(null);
+      setDemEpsg(4326);
+    }
+  }
+
+  async function commitDemUpload() {
+    if (!demFile) return;
     setDemError(null);
     setDemBusy(true);
     try {
-      const dem = await parseDemGeoTiff(file);
+      const dem = await parseDemGeoTiff(demFile, { epsgOverride: demEpsg });
       setDem(dem, 'upload');
-      setDemName(file.name);
+      setDemName(demFile.name);
+      setDemFile(null);
+      setDemInferredEpsg(null);
     } catch (e) {
       setDemError(String(e));
     }
     setDemBusy(false);
+  }
+
+  function cancelDemUpload() {
+    setDemFile(null);
+    setDemInferredEpsg(null);
+    setDemError(null);
   }
 
   return (
@@ -748,6 +782,7 @@ function ImportTab(props: Props) {
           Receiver and source locations from <b>CSV</b>, <b>KML</b>, or <b>shapefile</b>
           (.zip bundle). The dialog asks which kind to import as — receivers, WTGs,
           BESS, or auxiliary equipment — and lets you map attributes to project fields.
+          CSV and shapefile (without .prj) accept any registered projected CRS.
         </div>
         <button className="btn primary block" onClick={() => setImportOpen(true)}>
           📁 Import locations…
@@ -757,32 +792,52 @@ function ImportTab(props: Props) {
       <Card title="Digital elevation model">
         <div className="hint">
           DEM is auto-loaded from <b>AWS Terrain Tiles</b> by default. Upload a custom
-          GeoTIFF (WGS84) to override it for this project — useful for site-specific
-          LiDAR data.
+          GeoTIFF to override it for this project — useful for site-specific LiDAR.
+          Both geographic (WGS84) and projected (UTM, MGA, NZTM, …) CRSs are supported.
         </div>
         <div className="meta-line">
           Active source: <b>{demSource === 'upload' ? `upload · ${demName ?? 'GeoTIFF'}` : 'auto (AWS Terrain Tiles)'}</b>
         </div>
-        <div className="add-row">
-          <label className="btn small" style={{ cursor: 'pointer' }}>
-            {demBusy ? 'Parsing…' : '↑ Upload .tif'}
-            <input
-              type="file" accept=".tif,.tiff"
-              style={{ display: 'none' }}
-              disabled={demBusy}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) handleDemUpload(f);
-                e.target.value = '';
-              }}
-            />
-          </label>
-          {demSource === 'upload' && (
-            <button className="btn small" onClick={() => { setDem(null, 'auto'); setDemName(null); }}>
-              Reset to auto
-            </button>
-          )}
-        </div>
+
+        {!demFile ? (
+          <div className="add-row">
+            <label className="btn small" style={{ cursor: 'pointer' }}>
+              ↑ Upload .tif
+              <input
+                type="file" accept=".tif,.tiff"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) pickDemFile(f);
+                  e.target.value = '';
+                }}
+              />
+            </label>
+            {demSource === 'upload' && (
+              <button className="btn small" onClick={() => { setDem(null, 'auto'); setDemName(null); }}>
+                Reset to auto
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="settings-section" style={{ marginTop: 8 }}>
+            <div className="meta-line">Selected: <b>{demFile.name}</b></div>
+            <div className="hint">
+              {demInferredEpsg
+                ? <>Inferred CRS: <b>EPSG:{demInferredEpsg}</b>
+                    {presetForEpsg(demInferredEpsg) ? ` (${presetForEpsg(demInferredEpsg)!.label})` : ' — not in preset list, override below'}.
+                    Confirm or override below.</>
+                : 'No CRS tag found in the GeoTIFF — pick the source CRS below.'}
+            </div>
+            <EpsgPicker value={demEpsg} onChange={setDemEpsg} label="DEM CRS" />
+            <div className="add-row">
+              <button className="btn small primary" disabled={demBusy} onClick={commitDemUpload}>
+                {demBusy ? 'Parsing…' : 'Use this DEM'}
+              </button>
+              <button className="btn small" disabled={demBusy} onClick={cancelDemUpload}>Cancel</button>
+            </div>
+          </div>
+        )}
         {demError && <div className="hint" style={{ color: 'var(--red)' }}>Error: {demError}</div>}
       </Card>
 

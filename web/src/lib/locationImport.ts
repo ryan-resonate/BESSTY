@@ -5,20 +5,27 @@
 // then runs a single attribute-mapping UI on top.
 //
 // Coordinate handling:
-//   - CSV     — assumes WGS84 lat/lng (X = lng, Y = lat).
+//   - CSV     — defaults to WGS84 lat/lng (X = lng, Y = lat). The user can
+//               supply any registered projected CRS (UTM, MGA, NZTM, …)
+//               via `parseLocations(file, { csvEpsg: 28355 })`; columns
+//               are then projected back to WGS84 at apply time.
 //   - KML     — always WGS84 (per the OGC spec).
 //   - .shp/.zip — uses shpjs which auto-reprojects to WGS84 when the .prj
-//                 sidecar is present. Without .prj, the user is warned and
-//                 the data is left in its native coords.
+//                 sidecar is present. Without .prj, the data lands in its
+//                 native coords and `nativeEpsg` on the result is null —
+//                 the modal then asks the user to pick a CRS, and we
+//                 re-project on apply.
 
 import * as toGeoJson from '@tmcw/togeojson';
 import * as shpjs from 'shpjs';
 import { parseCsv, type ParsedCsv } from './csvImport';
+import { toWgs84 } from './projections';
 
 export type ImportFormat = 'csv' | 'kml' | 'shapefile';
 
 export interface ImportFeature {
-  /// WGS84 [lat, lng].
+  /// WGS84 [lat, lng]. NaN/NaN if the feature still needs CRS mapping
+  /// (CSV before X/Y/EPSG selection; shapefile without a .prj sidecar).
   latLng: [number, number];
   properties: Record<string, string | number>;
 }
@@ -28,6 +35,20 @@ export interface ImportResult {
   features: ImportFeature[];
   attributeNames: string[];
   warnings: string[];
+  /// Best guess at the source CRS:
+  ///   - 'csv'   → null (user picks via the modal; defaults to 4326)
+  ///   - 'kml'   → 4326 (always)
+  ///   - 'shp'   → 4326 if shpjs reported the .prj was present, else null
+  nativeEpsg: number | null;
+  /// True if shpjs found and applied a .prj-driven reprojection. Used by
+  /// the modal to suppress the CRS picker for shapefile bundles.
+  shapefileHadPrj?: boolean;
+}
+
+export interface ParseOptions {
+  /// Override the CRS of the source file. Currently honoured for CSV and
+  /// shapefile-without-prj. Defaults to WGS84 if not supplied.
+  csvEpsg?: number;
 }
 
 /// Detect format by file extension. `.zip` is treated as a shapefile
@@ -41,7 +62,7 @@ export function detectFormat(file: File): ImportFormat | null {
 }
 
 /// Read any supported file into the common ImportResult shape.
-export async function parseLocations(file: File): Promise<ImportResult> {
+export async function parseLocations(file: File, _opts: ParseOptions = {}): Promise<ImportResult> {
   const fmt = detectFormat(file);
   if (!fmt) throw new Error(`Unsupported file extension: ${file.name}`);
   if (fmt === 'csv') return parseCsvLocations(file);
@@ -56,7 +77,7 @@ async function parseCsvLocations(file: File): Promise<ImportResult> {
   const parsed: ParsedCsv = parseCsv(text);
   // We don't yet know which columns are X / Y — the modal asks the user.
   // For CSV, every row becomes a "feature" but with placeholder coords;
-  // the modal converts to actual latLng once columns are mapped.
+  // the modal converts to actual latLng once columns + CRS are mapped.
   const features: ImportFeature[] = parsed.rows.map((row) => ({
     latLng: [NaN, NaN],
     properties: row,
@@ -66,6 +87,7 @@ async function parseCsvLocations(file: File): Promise<ImportResult> {
     features,
     attributeNames: parsed.headers,
     warnings: [],
+    nativeEpsg: null,
   };
 }
 
@@ -75,7 +97,7 @@ async function parseKmlLocations(file: File): Promise<ImportResult> {
   const text = await file.text();
   const xml = new DOMParser().parseFromString(text, 'application/xml');
   const geojson = toGeoJson.kml(xml) as GeoJSON.FeatureCollection;
-  return geojsonToImportResult(geojson, 'kml', []);
+  return geojsonToImportResult(geojson, 'kml', [], 4326);
 }
 
 // ---------- Shapefile ----------
@@ -103,7 +125,33 @@ async function parseShapefileLocations(file: File): Promise<ImportResult> {
   } else {
     fc = geojson;
   }
-  return geojsonToImportResult(fc, 'shapefile', warnings);
+  // Heuristic: if all coordinates fall inside [-180,180] × [-90,90] then
+  // the data is geographic (either shpjs reprojected via .prj, or it was
+  // already WGS84). Otherwise the file lacked a usable .prj and the coords
+  // are in some projected CRS the user has to identify.
+  const looksGeographic = featuresLookGeographic(fc);
+  if (looksGeographic) {
+    return geojsonToImportResult(fc, 'shapefile', warnings, 4326, true);
+  }
+  warnings.push(
+    'Shapefile coordinates appear to be in a projected CRS (no .prj sidecar found, ' +
+    'or the CRS is unknown to BEESTY). Pick a CRS below to reproject.',
+  );
+  return geojsonToImportResult(fc, 'shapefile', warnings, null, false);
+}
+
+function featuresLookGeographic(fc: GeoJSON.FeatureCollection): boolean {
+  // Sample at most ~50 points to keep this O(1) for big files.
+  let checked = 0;
+  for (const f of fc.features) {
+    if (!f.geometry || checked > 50) break;
+    const pt = pickRepresentativePoint(f.geometry);
+    if (!pt) continue;
+    const [lng, lat] = pt;
+    if (Math.abs(lng) > 180 || Math.abs(lat) > 90) return false;
+    checked += 1;
+  }
+  return true;
 }
 
 // ---------- GeoJSON → ImportResult ----------
@@ -112,6 +160,8 @@ function geojsonToImportResult(
   fc: GeoJSON.FeatureCollection,
   format: ImportFormat,
   warnings: string[],
+  nativeEpsg: number | null,
+  shapefileHadPrj?: boolean,
 ): ImportResult {
   const features: ImportFeature[] = [];
   const attrSet = new Set<string>();
@@ -119,17 +169,26 @@ function geojsonToImportResult(
     if (!f.geometry) continue;
     const props = (f.properties ?? {}) as Record<string, string | number>;
     for (const k of Object.keys(props)) attrSet.add(k);
-    // Pull a representative point — first vertex of any geometry.
+    // Pull a representative point — first vertex / centroid of any geometry.
     const pt = pickRepresentativePoint(f.geometry);
     if (!pt) continue;
-    features.push({
+    if (nativeEpsg === 4326) {
       // GeoJSON Position is [lng, lat]; flip to our [lat, lng].
-      latLng: [pt[1], pt[0]],
-      properties: props,
-    });
+      features.push({ latLng: [pt[1], pt[0]], properties: props });
+    } else {
+      // Projected coords — store native (x, y) in latLng for now and
+      // reproject at apply time once the user has picked a CRS.
+      features.push({ latLng: [pt[1], pt[0]], properties: { ...props, __native_x: pt[0], __native_y: pt[1] } });
+    }
   }
   if (features.length === 0) warnings.push('No point-like geometry found in this file.');
-  return { format, features, attributeNames: Array.from(attrSet), warnings };
+  return {
+    format, features,
+    attributeNames: Array.from(attrSet),
+    warnings,
+    nativeEpsg,
+    shapefileHadPrj,
+  };
 }
 
 function pickRepresentativePoint(g: GeoJSON.Geometry): [number, number] | null {
@@ -154,6 +213,22 @@ function pickRepresentativePoint(g: GeoJSON.Geometry): [number, number] | null {
   }
   return null;
 }
+
+/// Project a feature stored in projected coords (via `__native_x` /
+/// `__native_y`) into WGS84 using the supplied CRS. Returns the WGS84
+/// (lat, lng) or null if the feature has no projected coords (e.g. KML,
+/// or shapefile that already had a .prj).
+export function reprojectShapefileFeature(
+  f: ImportFeature,
+  epsg: number,
+): [number, number] | null {
+  const x = f.properties.__native_x;
+  const y = f.properties.__native_y;
+  if (typeof x !== 'number' || typeof y !== 'number') return null;
+  return toWgs84(epsg, x, y);
+}
+
+// ---------- Default attribute mapping ----------
 
 /// Default attribute mapping — name-based, kind-aware.
 export function guessLocationMapping(
