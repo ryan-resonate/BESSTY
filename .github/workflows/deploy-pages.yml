@@ -42,22 +42,56 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
+      # ---- Rust + wasm-pack toolchain ----
+      # The Rust solver in `solver/` compiles to WebAssembly via wasm-pack
+      # and the output lands in `web/src/wasm/` (which `.gitignore` excludes
+      # — those files are treated as build artefacts, not source). Without
+      # this step the front-end build would fail to import
+      # `../wasm/beesty_solver.js`.
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            solver/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('solver/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install wasm-pack
+        # Pinned tag = reproducible CI; bump when we want a newer wasm-pack.
+        uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: 'latest'
+
+      # ---- Node + dependencies ----
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Install dependencies
+      - name: Install npm dependencies
         run: npm ci
+
+      # ---- Compile WASM, then type-check + bundle ----
+      - name: Build WASM solver
+        # `npm run build:wasm` is `cd ../solver && wasm-pack build --target web --out-dir ../web/src/wasm`
+        run: npm run build:wasm
 
       - name: Type-check
         run: npm run lint
 
-      - name: Build
+      - name: Build front end
         env:
           # Vite reads this in vite.config.ts to set the asset base path.
           # `/<repo-name>/` matches the URL GitHub Pages serves project
@@ -66,7 +100,7 @@ jobs:
         run: npm run build
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: web/dist
 
@@ -80,3 +114,5 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+        # Note: actions/deploy-pages doesn't have a v5 yet (as of 2026-04);
+        # bump this when one ships to clear the Node 20 deprecation notice.

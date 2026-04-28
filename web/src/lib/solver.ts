@@ -64,7 +64,15 @@ function aWeights(bs: 'octave' | 'oneThirdOctave'): Float64Array {
 let initialized: Promise<void> | null = null;
 
 export function ensureSolverReady(): Promise<void> {
-  if (!initialized) initialized = init().then(() => undefined);
+  // Wrap in an explicit `Promise<void>` rather than relying on the chained
+  // `.then(() => undefined)` to settle the type. When CI couldn't resolve
+  // the WASM module (because the artefacts hadn't been generated yet),
+  // `init()`'s inferred return type collapsed to `unknown`, and the
+  // resulting `unknown.then(...)` was no longer a `Promise<void>`. The
+  // explicit `Promise.resolve(init()).then(...)` keeps the type pinned.
+  if (!initialized) {
+    initialized = Promise.resolve(init()).then(() => undefined);
+  }
   return initialized;
 }
 
