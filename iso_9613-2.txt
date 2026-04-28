@@ -1,0 +1,2696 @@
+Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+              ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+                   Single user licence only, copying and networking prohibited.
+
+                                   International
+                                   Standard
+
+Acoustics -- Attenuation of sound                                 ISO 9613-2
+during propagation outdoors --
+                                                                  Second edition
+Part 2:                                                           2024-01
+Engineering method for the
+prediction of sound pressure levels
+outdoors
+
+Acoustique -- Atténuation du son lors de sa propagation à l'air
+libre --
+
+Partie 2: Méthode d'ingénierie pour la prédiction des niveaux de
+pression acoustique en extérieur
+
+                          Please share your feedback about        © ISO 2024
+                          the standard. Scan the QR code
+                          with your phone or click the link
+                          Customer Feedback Form
+
+Reference number
+ISO 9613-2:2024(en)
+                          Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                        ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                      Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+            COPYRIGHT PROTECTED DOCUMENT
+
+© ISO 2024
+
+All rights reserved. Unless otherwise specified, or required in the context of its implementation, no part of this publication may
+be reproduced or utilized otherwise in any form or by any means, electronic or mechanical, including photocopying, or posting on
+the internet or an intranet, without prior written permission. Permission can be requested from either ISO at the address below
+or ISO's member body in the country of the requester.
+
+ISO copyright office
+CP 401 · Ch. de Blandonnet 8
+
+CH-1214 Vernier, Geneva
+Phone: +41 22 749 01 11
+
+Email: copyright@iso.org
+Website: www.iso.org
+
+Published in Switzerland
+
+                                                
+                              © ISO 2024 ­ All rights reserved
+
+                              ii
+          Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+
+                        ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                             Single user licence only, copying and networking prohibited.
+
+                                   ISO 9613-2:2024(en)
+
+Contents                                                                                     Page
+
+Foreword..................................................................................................................................................................................................................................................... iv
+
+Introduction............................................................................................................................................................................................................................................vi
+
+1  Scope.............................................................................................................................................................................................................................................. 1
+
+2  Normative references.................................................................................................................................................................................................. 2
+
+3  Terms, definitions, symbols and units...................................................................................................................................................... 2
+
+   3.1 Terms and definitions....................................................................................................................................................................................2
+
+   3.2 Symbols and units.............................................................................................................................................................................................3
+
+4  Source description.......................................................................................................................................................................................................... 4
+
+5  Meteorological conditions...................................................................................................................................................................................... 6
+
+6  Basic formulae..................................................................................................................................................................................................................... 7
+
+7  Calculation of the attenuation terms.......................................................................................................................................................... 8
+
+   7.1 Geometric divergence, Adiv........................................................................................................................................................................8
+   7.2 Atmospheric absorption, Aatm.................................................................................................................................................................9
+   7.3 Ground attenuation, Agr................................................................................................................................................................................9
+
+           7.3.1 General method of calculation.............................................................................................................................................9
+
+   7.3.2 Simplified method of calculation for A-weighted sound pressure levels................................... 12
+
+   7.4 Screening, Abar.................................................................................................................................................................................................. 13
+           7.4.1 General method of calculation......................................................................................................................................... 13
+
+   7.4.2 Alternative method to calculate the path length difference z with one edge or
+
+          with more parallel edges.......................................................................................................................................................17
+
+   7.4.3 Lateral diffraction around vertical edges...............................................................................................................19
+
+   7.4.4 Combining vertical and lateral diffractions and limitations................................................................ 20
+
+   7.5 Reflections............................................................................................................................................................................................................ 20
+
+   7.5.1 General.................................................................................................................................................................................................. 20
+
+   7.5.2 Single reflection at a flat surface ­ conditions and calculation.......................................................... 20
+
+   7.5.3 Multi-reflection up to higher orders............................................................................................................................21
+
+   7.5.4 Reflections at cylindrical surfaces............................................................................................................................... 22
+
+8  Meteorological correction, Cmet......................................................................................................................................................................23
+
+9  Accuracy and limitations of the method............................................................................................................................................... 25
+
+Annex A (informative)  Additional types of attenuation, Amisc........................................................................................................... 27
+Annex B (informative)  Directivity correction, Dc, for chimney stacks....................................................................................34
+Annex C (informative)  Meteorological correction due to the dependency of C0 from the angular
+
+         wind distribution..........................................................................................................................................................................................................38
+
+Annex D (informative)  Calculation of sound pressure levels caused by wind turbines........................................42
+
+Bibliography.......................................................................................................................................................................................................................................... 45
+
+                            
+          © ISO 2024 ­ All rights reserved
+
+                          iii
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+                                                        Single user licence only, copying and networking prohibited.
+
+                                                  ISO 9613-2:2024(en)
+
+Foreword
+
+ISO (the International Organization for Standardization) is a worldwide federation of national standards
+bodies (ISO member bodies). The work of preparing International Standards is normally carried out through
+ISO technical committees. Each member body interested in a subject for which a technical committee
+has been established has the right to be represented on that committee. International organizations,
+governmental and non-governmental, in liaison with ISO, also take part in the work. ISO collaborates closely
+with the International Electrotechnical Commission (IEC) on all matters of electrotechnical standardization.
+
+The procedures used to develop this document and those intended for its further maintenance are described
+in the ISO/IEC Directives, Part 1. In particular, the different approval criteria needed for the different types
+of ISO document should be noted. This document was drafted in accordance with the editorial rules of the
+ISO/IEC Directives, Part 2 (see www.iso.org/directives).
+
+ISO draws attention to the possibility that the implementation of this document may involve the use of (a)
+patent(s). ISO takes no position concerning the evidence, validity or applicability of any claimed patent
+rights in respect thereof. As of the date of publication of this document, ISO had not received notice of (a)
+patent(s) which may be required to implement this document. However, implementers are cautioned that
+this may not represent the latest information, which may be obtained from the patent database available at
+www.iso.org/patents. ISO shall not be held responsible for identifying any or all such patent rights.
+
+Any trade name used in this document is information given for the convenience of users and does not
+constitute an endorsement.
+
+For an explanation of the voluntary nature of standards, the meaning of ISO specific terms and expressions
+related to conformity assessment, as well as information about ISO's adherence to the World Trade
+Organization (WTO) principles in the Technical Barriers to Trade (TBT), see www.iso.org/iso/foreword.html.
+
+This document was prepared by Technical Committee ISO/TC 43, Acoustics, Subcommittee SC 1, Noise.
+
+This second edition cancels and replaces the first edition (ISO 9613-2:1996), which has been technically
+revised.
+
+The main changes are as follows:
+
+-- subdivision of extended sources improved (more detailed to decrease uncertainty with software
+     implementations);
+
+-- improved classification of the source-directivity;
+
+-- improved and more detail specified in the determination of the ground factor G (projection to horizontal
+     plane);
+
+-- integration of a correction for Agr to account for the decreasing ground effect for small values of distance/
+     height ­ harmonizing the General method 7.3.1 and the Simplified method 7.3.2;
+
+-- modified definition of the mean height hm for the application of the Simplified method 7.3.2;
+
+-- integration of the strategy to calculate screening as it was developed with ISO/TR 17534-3;
+
+-- modified specification of the barrier attenuation Dz and the correction for meteorological effects Kmet to
+     eliminate well known shortcomings with low barriers and large source-to-receiver distances;
+
+-- inclusion of clear specifications on how to combine vertical and lateral diffraction (from ISO/TR 17534-3);
+
+-- improved specification of the minimal extension (width or height) of a reflecting surface;
+
+-- multi-reflections up to higher orders (in accordance with ISO/TR 17534-3);
+
+-- reflections at vertical cylindrical surfaces;
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                     iv
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+                                                        Single user licence only, copying and networking prohibited.
+
+                                                  ISO 9613-2:2024(en)
+-- additional to the simple method for the attenuation of foliage without any parameter dependencies of the
+
+     old version ISO 9613-2:1996, A.2.2, a new and more detailed method including the influence of forestal
+     parameters (see A.2.3);
+-- the directivity correction Dc for chimney stacks (see Annex B);
+-- proposal for a meteorological correction derived from the local wind-climatology (see Annex C);
+-- calculation of sound pressure levels caused by wind turbines (see Annex D).
+A list of all parts in the ISO 9613 series can be found on the ISO website.
+Any feedback or questions on this document should be directed to the user's national standards body. A
+complete listing of these bodies can be found at www.iso.org/members.html.
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                     v
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+                                                        Single user licence only, copying and networking prohibited.
+
+                                                  ISO 9613-2:2024(en)
+
+Introduction
+
+The ISO 1996 series[1][2][3] of standards specifies methods for the description of noise outdoors in community
+environments. Other standards specify methods for determining the sound power levels emitted by
+various noise sources, such as machinery and specified equipment (ISO 3740 series[4]), or industrial plants
+(ISO 8297[5]). This document is intended to bridge the gap between these two types of standards, to enable
+noise levels in the community to be predicted from sources of known sound emission. The method described
+in this document is general in the sense that it may be applied to a wide variety of noise sources and covers
+most of the major mechanisms of attenuation. There are, however, constraints on its use, which arise
+principally from the description of environmental noise in the ISO 1996 series.
+This version includes the modifications developed for reasons of quality assurance if the method is
+implemented in software as described in ISO 17534-1[6] and ISO/TR 17534-3[7] and some improvements to
+make the applied strategy fit for broad software-based application.
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                     vi
+Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+              ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+                   Single user licence only, copying and networking prohibited.
+
+International Standard  ISO 9613-2:2024(en)
+
+Acoustics -- Attenuation of sound during propagation
+outdoors --
+
+Part 2:
+Engineering method for the prediction of sound pressure
+levels outdoors
+
+1 Scope
+
+This document specifies an engineering method for calculating the attenuation of sound during propagation
+outdoors in order to predict the levels of environmental noise at a distance from a variety of sources. The
+method predicts the equivalent continuous A-weighted sound pressure level (as described in ISO 1996-series)
+under meteorological conditions favourable to propagation from sources of known sound emission.
+
+These conditions are for downwind propagation or, equivalently, propagation under a well-developed
+moderate groundbased temperature inversion, such as commonly occurs in clear, calm nights. Inversion
+conditions over extended water surfaces are not covered and may result in higher sound pressure levels
+than predicted from this document (see e.g. References [11] and [12]).
+
+The method also predicts a long-term average Aweighted sound pressure level as specified in ISO 1996-1
+and ISO 1996-2. The long-term average Aweighted sound pressure level encompasses levels for a wide
+variety of meteorological conditions.
+
+Guidance has been provided to derive a meteorological correction based on the angular wind distribution
+relevant for the reference or long-term time interval as specified in ISO 1996-1:2016, 3.2.1 and 3.2.2.
+Examples for reference time intervals are day, night, or the hour of the night with the largest value of the
+sound pressure level. Long-term time intervals over which the sound of a series of reference time intervals is
+averaged or assessed representing a significant fraction of a year (e.g. 3 months, 6 months or 1 year).
+
+The method specified in this document consists specifically of octave band algorithms (with nominal mid-
+band frequencies from 63 Hz to 8 kHz) for calculating the attenuation of sound which originates from a point
+sound source, or an assembly of point sources. The source (or sources) may be moving or stationary. Specific
+terms are provided in the algorithms for the following physical effects:
+
+-- geometrical divergence;
+
+-- atmospheric absorption;
+
+-- ground effect;
+
+-- reflection from surfaces;
+
+-- screening by obstacles.
+
+Additional information concerning propagation through foliage, industrial sites and housing is given in
+Annex A. The directivity of chimney-stacks to support the sound predictions for industrial sites has been
+included with Annex B. An example how the far-distance meteorological correction C0 can be determined
+from the local wind-climatology is given in Annex C. Experiences of the last decades how to predict the
+sound pressure levels caused by wind turbines is summarized in Annex D.
+
+The method is applicable in practice to a great variety of noise sources and environments. It is applicable,
+directly, or indirectly, to most situations concerning road or rail traffic, industrial noise sources, construction
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                     1
+                         Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                       ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+activities, and many other ground-based noise sources. It does not apply to sound from aircraft in flight, or
+to blast waves from mining, military, or similar operations.
+
+To apply the method of this document, several parameters need to be known with respect to the geometry of
+the source and of the environment, the ground surface characteristics, and the source strength in terms of
+octave band sound power levels for directions relevant to the propagation.
+
+If only Aweighted sound power levels of the sources are known, the attenuation terms for 500 Hz may be
+used to estimate the resulting attenuation.
+
+The accuracy of the method and the limitations to its use in practice are described in Clause 9.
+
+2 Normative references
+
+The following documents are referred to in the text in such a way that some or all of their content constitutes
+requirements of this document. For dated references, only the edition cited applies. For undated references,
+the latest edition of the referenced document (including any amendments) applies.
+
+ISO 9613-1:1993, Acoustics -- Attenuation of sound during propagation outdoors -- Part 1: Calculation of the
+absorption of sound by the atmosphere
+
+3 Terms, definitions, symbols and units
+
+3.1 Terms and definitions
+
+For the purposes of this document, the following terms and definitions apply.
+
+ISO and IEC maintain terminology databases for use in standardization at the following addresses:
+
+-- ISO Online browsing platform: available at https://w ww.iso.org/o bp
+
+-- IEC Electropedia: available at https://www.electropedia.org/
+
+3.1.1
+A-weighted equivalent continuous sound pressure level
+LAT
+sound pressure level defined by Formula (1):
+
+ LAT   =  10  lg      1   T    (t  )  dt    /  p02    dB                                                           (1)
+                      T                             
+                          p2A                       
+
+                          0
+
+where
+
+     pA(t) is the instantaneous A-weighted sound pressure, expressed in pascals;
+
+     p0 is the reference sound pressure (= 20 × 10-6 Pa);
+
+     T is a specified time interval, expressed in seconds
+
+Note 1 to entry: The A-frequency weighting is that specified for sound level meters in IEC 61672-1[10].
+
+Note 2 to entry: The time interval T should be long enough to average the effects of varying meteorological parameters.
+Two different situations are considered in this document, namely short-term downwind and long-term overall
+averages.
+
+                                                                        
+                                                      © ISO 2024 ­ All rights reserved
+
+                                                                      2
+                   Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                 ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                               Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+3.1.2
+equivalent continuous downwind octave band sound pressure level
+LfT (DW)
+sound pressure level is given as follows:
+
+( DW )               1   T    (t           p02  
+ L fT    =           T                          
+            10 lg        p2f      )dt   /         dB                                                         (2)
+
+                         0                      
+
+where pf(t) is the instantaneous octave band sound pressure downwind, in pascals, and the subscript f
+represents a nominal mid-band frequency of an octave band filter
+
+Note 1 to entry: The electrical characteristics of the octave band filters should comply at least with the class 2
+requirements of IEC 61260-1[8].
+
+3.1.3
+insertion loss (of a barrier)
+difference between the sound pressure levels in decibels at a receiver in a specified position under two
+conditions:
+
+a) with the barrier removed; and
+
+b) with the barrier present (inserted);
+
+and no other significant changes that affect the propagation of sound
+
+Note 1 to entry: The insertion loss is expressed in decibels.
+
+3.2 Symbols and units
+Table 1 provides a summary of symbols and units.
+
+                                        Table 1 -- Symbols and units
+
+Symbol                                                        Definition                                     Unit
+    a    component distance parallel to the barrier edge between source and receiver                          m
+         octave band attenuation                                                                              dB
+    A    attenuation due to atmospheric absorption                                                            dB
+         attenuation due to a barrier, including possible correction                                          dB
+  Aatm   attenuation due to geometrical divergence                                                            dB
+  Abar   attenuation due to reflection at a cylindrical surface                                               dB
+  Adiv   attenuation due to the ground effect                                                                 dB
+  Acurv  middle region                                                                                        --
+   Agr   attenuation due to miscellaneous other effects                                                       dB
+   Am    meteorological correction                                                                            dB
+  Amisc  factor, which depends on local meteorological statistics for wind speed and direction, and           dB
+  Cmet   temperature gradients
+   C0    distance from point source to receiver projected onto the ground plane (see Figure 3)                m
+         distance between source and point of reflection on the reflecting obstacle (see Figure 13)           m
+   dp    distance between point of reflection on the reflecting obstacle and receiver (see Figure 13)         m
+  dS,O   directivity correction                                                                               dB
+  dO,R   barrier attenuation                                                                                  dB
+   Dc    apparent large-distance directivity                                                                  dB
+   Dz    distance between the first and last diffraction edge                                                 m
+  Dwd    ground factor                                                                                        --
+
+    e
+
+    G
+
+                                                             
+                                           © ISO 2024 ­ All rights reserved
+
+                                                           3
+         Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                       ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+         Table 1 (continued)
+
+Symbol                                                        Definition                            Unit
+    hS   height of point source above ground                                                          m
+    hR   height of receiver above ground                                                              m
+    hm   mean height of the propagation path above the ground                                         m
+     k   raster factor                                                                                --
+   Kgeo  correction factor for geometry                                                               --
+    Lp   sound pressure level                                                                        dB
+         equivalent continuous A-weighted downwind sound pressure level                              dB
+LAT(DW)  long-term average A-weighted sound pressure level                                           dB
+LAT(LT)  equivalent continuous downwind octave band sound pressure level                             dB
+LfT(DW)  at a receiver location
+         sound power level                                                                           dB
+    LW   atmospheric attenuation coefficient                                                       dB/km
+   atm   absorption coefficient
+         angle of incidence                                                                           --
+         angle of incidence projected to the horizontal plane                                        rad
+         angle of incidence projected to a vertical plane rectangular to the reflecting surface      rad
+    b    wavelength of sound                                                                         rad
+    h                                                                                                 m
+     
+
+4 Source description
+
+Formulae to be used are for the attenuation of sound from point sources.
+
+Extended noise sources, therefore, such as road and rail traffic or an industrial site (which may include
+several installations or plants, together with traffic moving on the site) shall be broken down into small
+sections that can be replaced by a central point source as starting point for the calculation of sound
+propagation, see Figure 1. This subdivision shall be chosen in such a way that the propagation conditions
+from each point of a section to the receiver can be considered representative. If no acoustically opaque
+objects block the direct path between any point of a section and the receiver, the propagation conditions
+shall be considered representative if no extent of the section is larger than the distance of its centre from the
+receiver multiplied by the raster factor k. A well proven value for the factor k is 0,5.
+
+Key
+R receiver
+
+                                 Figure 1 -- Principle of subdivision for a line source
+
+If buildings, barriers or other screening objects are located between the extended source and the receiver,
+the subdivision of the source is made in such a way that all points of a section are either screened or not
+screened. The subsections can be separated by lines connecting the receiver with the edges of all facades or
+with the two edges of each object forming the largest possible angle between them in 2D top view.
+
+                           
+         © ISO 2024 ­ All rights reserved
+
+                         4
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+                                                            a) Line source
+
+                                                            b) Area source
+
+                        c) Area source (dark grey), partitioned in 5 sub-parts (light grey)
+Key
+1 projection lines
+2 barriers
+3 area source
+
+                           Figure 2 -- Projection method for line source and area source
+The principle is shown with Figure 2 a) for a line source and Figures 2 b) and 2 c) for an area source. A
+further subdivision is made if a sloping edge of a screening object is only partially blocking the direct view.
+This subdivision caused by screening objects is called "projection method".
+For line sources that are geometrically defined by successive polygon points the subdivision is performed in
+three steps:
+a) each polygon point is the edge point of one or two polygon elements;
+b) if the direct propagation path is blocked by a screening object, a further subdivision is carried out by
+
+     applying the projection method;
+                                                                            
+
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                     5
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+c) finally, these resulting parts are further subdivided according to the distance criterion applying the
+     raster factor k.
+
+Area sources are subdivided applying a similar strategy.
+
+The area source is separated in convex shaped parts. These parts are subdivided further depending on the
+receiver position and all screening objects (walls, buildings, and other objects). This is carried out by cutting
+the subsections obtained in the first step by straight lines between receiver and edge-points of all screening
+objects (producing smaller subsections of second order). Then it is checked if the individual sources of
+each subsection meet the distance criterion. If not, they are subdivided further till the distance criterion is
+fulfilled.
+
+Similar as with extended sources, a group of point sources may be described by an equivalent point sound
+source situated in the middle of the group, in particular if
+
+a) the sources have approximately the same strength and height above the local ground, and
+
+b) the same propagation conditions exist from the sources to the receiver, and
+
+c) no extent of the group of point sources is larger than the distance of its centre from the receiver
+     multiplied by the raster factor k. A well proven value for the factor k is 0,5.
+
+If the distance d is smaller (as expressed in c)) or if the propagation conditions for the component point
+sources are different (e.g. due to screening), the total sound source shall be divided into its component point
+sources.
+
+NOTE In addition to the real sources described above, image sources will be introduced to describe the reflection
+of sound from walls and ceilings (but not by the ground) as described in 7.5. Images of extended sources are
+constructed taking into account the extension of all relevant reflectors between original source and receiver.
+
+5 Meteorological conditions
+
+Downwind propagation conditions for the method specified in this document are namely:
+
+-- wind direction within an angle of ±45° of the direction connecting the centre of the dominant sound
+     source and the centre of the specified receiver region, with the wind blowing from source to receiver,
+     and
+
+-- wind speed between approximately 1 m/s and 5 m/s, measured at a height of 3 m to 11 m above the
+     ground.
+
+When applying this standard to wind turbines, higher wind speeds may be considered (see Annex D).
+
+The formulae for calculating the equivalent continuous A-weighted downwind sound pressure level LAT(DW)
+in this document, including the formulae for attenuation given in Clause 7, are the average for meteorological
+conditions within these limits. The term average here means the average over a short time interval.
+
+These formulae also hold, equivalently, for average propagation under a well-developed moderate
+groundbased temperature inversion, such as commonly occurs on clear, calm nights.
+
+The long-term averaged Aweighted sound pressure level LAT(LT) can be determined by applying the
+meteorological correction described in Clause 8. It depends generally on the long-term variation of the
+angular distribution of the horizontal wind speed and the effective vertical sound speed gradient. Owing to
+this influence of the sound speed gradient the vertical gradients of the wind speed and the air temperature
+may be important and should generally be considered.
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                     6
+                       Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                     ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                   Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+6 Basic formulae
+
+The equivalent continuous downwind octave band sound pressure level at a receiver location, LfT(DW), shall
+be calculated for each point source, and its image sources, and for the eight octave bands with nominal mid-
+band frequencies from 63 Hz to 8 kHz from Formula (3):
+
+LfT (DW ) = LW + Dc - A                                                                                              (3)
+
+where
+
+LW is the octave band sound power level produced by the point sound source relative to a reference
+        sound power of one picowatt (1 pW), expressed in decibels;
+
+Dc is the directivity correction, in decibels, that describes the extent by which the equivalent continuous
+        sound pressure level from the point sound source deviates in a specified direction from the level of
+        an omnidirectional point sound source producing the sound power level LW, expressed in decibels;
+
+A is the octave band attenuation that occurs during propagation from the point sound source to the
+        receiver, expressed in decibels.
+
+Sound power levels in Formula (3) can be determined from measurements, for example as described in the
+ISO 3740 series (for machinery) or in ISO 8297 (for industrial plants).
+
+NOTE 1 The letter symbol A (in italic type) signifies attenuation in this document except in subscripts, where it
+designates the A-frequency weighting (in roman type).
+
+The directivity correction Dc in connection with the sound power level LW describes
+-- the direction-dependent emission of the real source (case 1), or
+
+-- an apparent direction-dependent emission, resulting from reflecting structures near the source that
+     reduce the solid angle available for radiation (case 2).
+
+In case 1 Dc is a necessary part of the source emission data for all directions relevant for the calculation at
+receiver positions.
+
+In case 2 the directivity Dc with an omnidirectional point source due to nearby reflecting surfaces is given
+by Formula (4):
+
+Dc     = 10  lg   4    dB                                                                                            (4)
+                  
+
+where  is the solid angle remaining for radiation.
+
+Table 2 gives values for the resulting directivity of an omnidirectional point source near reflecting surfaces.
+
+Table 2 -- Resulting directivity Dc of an omnidirectional point source near reflecting surfaces
+
+                     Reflecting surface             Solid angle                                                  Dc
+
+       Configuration                     Number     rad                                                          dB
+
+       Surface                           1          4/2                                                          3
+
+       Edge                              2          4/4                                                          6
+
+       Corner                            3          4/8                                                          9
+
+NOTE 2 Formula (4) and the values of Dc in Table 2 are based on the premise of the superposition of sound energies.
+In case of distances of source-to-reflector smaller /4 coherent superposition will occur, the factor 10 in Formula (4)
+and the values of Dc in Table 2 will increase up to twice the values given. However, an increase over the values shown is
+only possible if the source can produce and radiate the additional sound power.
+
+                                                           
+                                         © ISO 2024 ­ All rights reserved
+
+                                                         7
+                         Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                       ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+NOTE 3 In software-based calculations of the increase of sound pressure levels from an omnidirectional point
+source caused by reflecting surfaces nearby a directivity Dc with Formula (4) or with values from Table 2 replaces the
+calculation of reflections at these surfaces with image sources (see 7.5).
+
+The attenuation term A in Formula (3) is given by Formula (5):
+
+A = Adiv + Aatm + Agr + Abar + Amisc                                                                               (5)
+
+where
+
+     Adiv is the attenuation due to geometrical divergence, expressed in decibels (see 7.1);
+
+     Aatm is the attenuation due to atmospheric absorption, expressed in decibels (see 7.2);
+
+     Agr is the attenuation due to the ground effect, expressed in decibels (see 7.3);
+
+     Abar is the attenuation due to a barrier, expressed in decibels (see 7.4);
+
+     Amisc is the attenuation due to miscellaneous other effects, expressed in decibels (see 7.5.4 and Annex A).
+General methods for calculating the first four terms in Formula (5) are specified in this document.
+Information on four contributions to the last term Amisc is given in Annex A (the attenuation due to the
+curvature of reflecting surfaces in 7.5.4, the attenuation due to propagation through foliage, industrial sites
+and through regions built up of houses).
+
+The equivalent continuous A-weighted downwind sound pressure level shall be obtained by summing the
+contributing time-mean-square sound pressures calculated according to Formulae (3) and (5) for each point
+sound source, for each of their image sources, and for each octave band, as specified by Formula (6):
+
+  LAT                     n       8              (i  , j)+Af  (  j )   
+       ( DW )  = 10  lg                                                  dB                                        (6)
+                          i =1       100 ,1L fT
+
+                                  j=1
+
+where
+
+n is the number of contributions i (sources and paths);
+
+j is an index indicating the eight standard octave mid-band frequencies from 63 Hz to 8 kHz;
+
+Af denotes the standard A-weighting (see IEC 61672-1).
+
+The long-term average A-weighted sound pressure level LAT(LT) shall be calculated according to Formula (7).
+
+LAT (LT) = LAT (DW ) - Cmet                                                                                        (7)
+
+where Cmet is the meteorological correction described in Clause 8.
+The calculation and significance of the various terms in Formulae (1) to (7) are explained in Clauses 7 and 8.
+
+7 Calculation of the attenuation terms
+
+7.1 Geometric divergence, Adiv
+
+The geometrical divergence accounts for spherical spreading in the free field from a point sound source,
+making the attenuation, in decibels, equal to Formula (8):
+
+Adiv = [20 lg (d / d0 ) + 11] dB                                                                                   (8)
+
+                                                                       
+                                                     © ISO 2024 ­ All rights reserved
+
+                                                                     8
+       Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                     ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                   Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+where
+
+     d is the distance from the source to receiver, expressed in metres;
+
+     d0 is the reference distance (= 1 m).
+
+NOTE 1 The constant in Formula (8) relates the sound power level to the sound pressure level at a reference
+distance d0 which is 1 m from an omnidirectional point sound source.
+
+7.2 Atmospheric absorption, Aatm
+
+The attenuation due to atmospheric absorption Aatm, expressed in decibels, during propagation through a
+distance d, in metres, is given by Formula (9):
+
+Aatm = atmd /1 000                                                                               (9)
+
+where atm is the atmospheric attenuation coefficient for each octave band at the mid-band frequency,
+expressed in decibels per kilometre.
+
+It shall be calculated with ISO 9613-1:1993, Formulae (2) to (6) in connection with ISO 9613-1:1993, B.1
+to B.3. With ISO 9613-1:1993, Formula (6) the exact octave band related centre-frequencies are applied
+(different to all other frequency dependent calculations based on the nominal and rounded octave band
+centre-frequencies).
+
+If no specific requirements are defined, default values should be defined related to representative conditions
+for the investigated area.
+
+NOTE For example, a temperature of 10 °C and a relative humidity of 70 % are typical default parameters applied
+in some countries in Mid-Europe. The atmospheric attenuation coefficient depends strongly on the frequency of the
+sound, the ambient temperature and relative humidity of the air, but only weakly on the ambient pressure.
+
+For calculation of environmental noise levels, the atmospheric attenuation coefficient should be based on
+average values determined by the range of ambient weather, which is relevant to the locality.
+
+7.3 Ground attenuation, Agr
+
+7.3.1 General method of calculation
+
+Ground attenuation, Agr, is mainly the result of sound reflected by the ground surface interfering with the
+sound propagating directly from source to receiver.
+
+The downward-curving propagation path (downwind) ensures that this attenuation is determined primarily
+by the ground surfaces near the source and near the receiver. This method of calculating the ground effect
+is based on a scenario with ground, which is approximately flat, either horizontally or with a constant slope.
+Three distinct regions for ground attenuation are specified (see Figure 3):
+
+a) the source region, stretching over a distance from the source towards the receiver of 30 hS, with a
+     maximum distance of dp (hS is the source height, and dp the distance from source to receiver, as projected
+     on the ground plane);
+
+b) the receiver region, stretching over a distance from the receiver back towards the source of 30 hR, with
+     a maximum distance of dp (hR is the receiver height);
+
+c) a middle region, stretching over the distance between the source and receiver regions. If
+     dp < (30 hS + 30 hR), the source and receiver regions will overlap, and there is no middle region.
+
+According to this scheme, the ground attenuation does not increase with the size of the middle region but is
+mostly dependent on the properties of source and receiver regions.
+
+The acoustical properties of each ground region are taken into account through a ground factor G.
+
+                                                    
+                                  © ISO 2024 ­ All rights reserved
+
+                                                  9
+                        Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                      ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                    Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+If a region is characterized by N sections with length dn and ground factor Gn for section n the ground factor
+of the region is given by Formula (10):
+
+                   N              N
+
+  G (region) = Gndn / dn                                                                                          (10)
+
+                   n=1        n=1
+
+The source, middle and receiver regions are projections to the horizontal reference plane.
+
+Key
+1 source region
+2 middle region
+3 receiver region
+hS height of point source above ground
+hR height of receiver above ground
+
+                 Figure 3 -- Three distinct regions for determination of ground attenuation
+
+Three categories of reflecting surface are specified as follows:
+
+a) Hard ground, which includes paving, water, ice, concrete, and all other ground surfaces having a low
+     porosity. Tamped ground, for example, as often occurs around industrial sites, can be considered hard.
+     For hard ground G = 0.
+
+b) Porous ground, which includes ground covered by grass, trees or other vegetation, and all other ground
+     surfaces suitable for the growth of vegetation, such as farming land. For porous ground G = 1. For more
+     information, see e.g Reference [19].
+
+c) Mixed ground, if the surface consists of both hard and porous ground, then G takes on values ranging
+     from 0 to 1, the value being the fraction of the region that is porous.
+
+NOTE 1 Instead of the term "porous ground," the term "absorbing ground" is used in some countries.
+
+To calculate the ground attenuation for a specific octave band, first calculate the component attenuations AS
+for the source region specified by the ground factor GS (for that region). Then calculate AR for the receiver
+region specified by the ground factor GR, and Am for the middle region specified by the ground factor Gm,
+using the expressions in Table 3. (The functions a', b', c' and d' in Table 3 are shown as curves in Figure 4.)
+The total ground attenuation for that octave band shall be obtained from Formulae (11), (12) and (13):
+
+                     - Ag r          10              
+Agr    =  -10  lg  1 +   10              -1   K geo    dB                                                         (11)
+                                                     
+
+where
+
+Agr = AS + AR + Am                                                                                                (12)
+
+K geo  =  dp2  + (hS    - hR  )2                                                                                  (13)
+          dp2  + (hS    + hR  )2
+
+                                                                       
+                                                     © ISO 2024 ­ All rights reserved
+
+                                                                    10
+                               Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                             ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                           Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+     hS the height of the source above ground, expressed in metres;
+     hR the height of the receiver above ground, expressed in metres;
+     dp the distance source-to-receiver projected on the horizontal plane, expressed in metres
+NOTE 2 Formula (10) characterizes the 2D-projected surface between source and receiver independent of screening
+by elevated terrain or objects like buildings.
+
+NOTE 3 Formula (11) with Formula (12) and (13) accounts for the vanishing ground influence if the distance dp < hS
+and/or dp < hR.
+
+Table 3 -- Expressions to be used for calculating ground attenuation contributions AS, AR and Am in
+                                                           octave bands
+
+Nominal midband frequency                                                            AS or ARa                           Am
+
+                       Hz                                                                 dB                             dB
+
+                       63                                                                 -1,5                           -3qb
+
+                       125                                                       -1,5 + G × a'(h)
+
+                       250                                                       -1,5 + G × b'(h)
+
+                       500                                                       -1,5 + G × c'(h)
+
+                 1 000                                                           -1,5 + G × d'(h)                -3q(1-Gm)
+                 2 000
+
+                 4 000                                                               -1,5(1 - G)
+
+                 8 000
+
+NOTE
+
+a(h) = 1,5 + 3,0× e-0,12(h-5)2                      - dp                         h2          e-2,8×10-6  ×dp2  
+                                                                                                               
+                                           1  -  e  50      +  5,7  ×  e-0  ,09        1  -
+                                                          
+
+                       e-0,09 h2   -dp 
+                                                      
+b(h)  =  1,5 +   8,6×                1  -  e  50      
+
+                       e-0,46 h2      -dp 
+                                                        
+c(h)  =  1,5  + 14,0×                  1  -   e  50     
+
+                 5,0× e-0,9 h2   -dp 
+                                                    
+d(h)  =  1,5  +                   1  -  e    50     
+
+a For calculating AS, take G = GS and h = hS. For calculating AR, take G =GR and h = hR. See 7.3.1 for values of G for various ground
+surfaces.
+
+b q = 0 when dp  30(hS + hR)
+
+         q = 1 - 30(hS + hR )  when  dp    > 30(hS        + hR )
+
+                    dp
+
+where dp is the source-to-receiver distance, in metres, projected onto the ground plane.
+
+                                                                                    
+                                                                  © ISO 2024 ­ All rights reserved
+
+                                                                                 11
+                         Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                       ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+Key
+dp distance source-to-receiver projected on the horizontal plane, expressed in metres
+
+Figure 4 -- Functions a', b', c' and d' representing the influence of the source-to-receiver distance dp
+   and the source or receiver height h, respectively, on the ground attenuation Agr (computed from
+                                                       Formulae in Table 3)
+
+7.3.2 Simplified method of calculation for A-weighted sound pressure levels
+
+The ground influence calculated with the simplified method is independent from the observable ground
+cover and its acoustic properties.
+
+Under the following specific conditions and for ground surfaces of any shape, the ground attenuation can be
+calculated from Formula (14):
+
+-- only the A-weighted sound pressure level at the receiver position is of interest;
+
+-- the sound propagation occurs over porous ground or mixed ground most of which is porous (see 7.3.1);
+
+-- the sound is not a pure tone.
+
+Agr  =  4  ,8  -    2hm    17  +    300      0 dB                                                                  (14)
+                     d               d
+
+                                                               
+                                             © ISO 2024 ­ All rights reserved
+
+                                                            12
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+where
+
+     hm is the mean height of the propagation path above the ground, expressed in metres;
+     d is the distance from the source to receiver, expressed in metres.
+The mean height hm is evaluated by hm = F/dg, applying the method shown in Figure 5. Negative values for
+Agr from Formula (14) shall be replaced by zeros.
+
+Key
+1 ground profile
+S source
+R receiver
+F is the area limited by the ground profile and the straight line from the source to the receiver;
+d distance between source and receiver;
+dg is the distance between the base points of source and receiver;
+hS the height of the source above ground, expressed in metres;
+hR the height of the receiver above ground, expressed in metres;
+
+Figure 5 -- Method for evaluating the mean height hm
+
+When the ground attenuation is calculated using Formula (14), the directivity correction Dc in Formula (3)
+shall include a term D in decibels, to account for the apparent increase in sound power level of the source
+due to reflection from the ground without any reflection-loss.
+
+D = 10 lg (1 + Kgeo ) dB                                                                            (15)
+
+Kgeo defined in Formula (13) is the correction for geometry due to distance-height relations.
+
+NOTE The influence of the ground relative to free-field propagation calculated with this simplified method is
+comparable to that calculated with the "General method" described in 7.3.1 with reflecting ground (G = 0) near the
+source and porous or vegetated ground (G = 1) in larger distances.
+
+7.4 Screening, Abar
+
+7.4.1 General method of calculation
+
+An object shall be taken into account as a screening obstacle (often called a barrier), if it meets the following
+requirements:
+-- the surface density is at least 10 kg/m2;
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                    13
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+-- the object has a closed surface without large cracks or gaps (consequently process installations in
+     chemical plants, for example, are ignored);
+
+-- the horizontal dimension of the object normal to the source-to-receiver line is larger than the acoustic
+     wavelength, , at the nominal midband frequency for the octave band of interest (based on a reference
+     sound speed of 340 m/s); in other words, ll + lr >  (see Figure 6).
+
+Each object that fulfils these requirements shall be represented by a barrier with vertical edges. The top
+edge of the barrier is a straight line that may be sloping.
+
+Key
+S source
+R receiver
+ll, lr extention of the object to the left/right in the direction of propagation
+
+              Figure 6 -- Plan view of an obstacle between the source (S) and the receiver (R)
+
+For the purposes of this document, the attenuation by a barrier, Abar, shall be given by the insertion loss.
+Diffraction over the top edge and around vertical edges of a barrier may both be important (see Figure 7).
+For downwind sound propagation, the effect of diffraction (expressed in decibels) over top edges when
+Agr > 0 shall be calculated by Formula (16):
+
+Abar = Dz - Agr > 0                                                                             (16)
+
+and for diffraction around vertical edges or over top with Agr < 0 by Formula (17):
+
+Abar = Dz > 0                                                                                   (17)
+
+where
+
+Dz is the barrier attenuation for each octave band;
+Agr is the ground attenuation in the absence of the barrier (i.e. with the screening obstacle removed)
+
+        (see 7.3).
+
+                                       
+                     © ISO 2024 ­ All rights reserved
+
+                                    14
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+Key
+S source
+R receiver
+
+                             Figure 7 -- Different sound propagation paths at a barrier
+NOTE 1 For large distances and high barriers, the insertion loss calculated by Formula (16) is not sufficiently
+confirmed by measurements.
+In calculation of the insertion loss for multi-source industrial plants by high buildings (more than 10 m
+above the ground) and for high-noise sources within the plant, Formula (17) should be used in both cases for
+determining the long-term average sound pressure level LAT(LT), using Formula (7).
+NOTE 2 For sound from a depressed highway, there can be attenuation due to a ground surface outside the
+depression in addition to the attenuation given in Formula (16).
+To calculate the barrier attenuation Dz assume that only one significant sound-propagation path exists
+from the sound source to the receiver. The final insertion loss caused by objects blocking the direct straight
+propagation from source to receiver may be influenced by further contributions of sound energy diffracted
+around the vertical edges, see Formula (25).
+Independent from the number of screening obstacles and from their relative orientation, the ray path over
+the top is constructed like a rubber-band in a vertical plane perpendicular to the reference plane xy and
+containing source and receiver and thus forming a polygon with straight segments (example see Figure 8).
+
+ Figure 8 -- Three objects blocking the line of sight, the vertical plane with source and receiver and
+                               the ray paths to determine the path length difference z
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                    15
+                            Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                          ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                        Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+The barrier attenuation Dz in decibels, shall be calculated for this path by Formula (18) with Formula (19):
+
+     Dz  = 10lg   1 +    2  +    C2     C3  z    K  met    dB  for z > zmin                                           (18)
+                                                         
+
+and
+
+      Dz = 0 dB                                                for z  zmin
+
+with
+
+     zmin = -2 / (C2C3 )                                                                                              (19)
+
+where
+
+     C2 is equal to 20, and includes the effect of ground reflections; if in special cases ground reflections
+             are taken into account separately by image sources, C2 = 40;
+
+     C3 is equal to 1 for single diffraction (e = 0);
+
+     C3 is calculated by Formula 20 for multiple diffraction;
+
+     e is the length of the ray path between the first diffracting edge behind the source and the last dif-
+             fracting edge in front of the receiver in case of more than one diffracting edge, expressed in metres.
+             In case of one single diffracting edge e equals zero;
+
+      is the wavelength of sound at the nominal mid-band frequency of the octave band, expressed in
+             metres;
+
+     z is the difference between the path lengths of diffracted and direct sound, as calculated by
+             Formulae (22) or (24), expressed in metres;
+
+     Kmet is the correction factor for meteorological effects, given by Formula (21).
+
+     C3  =  1  +  (5  /  e )2    /    1    +   (5   /  e )2                                                           (20)
+                                      3                      
+
+     { } Kmet = exp -(1 / 2000) [max (dSS ,dSR ) + e]min(dSS ,dSR )d /[2(z - zmin )]                                  (21)
+
+where
+
+     dSS is the length of the ray path from the source to the (first) diffraction edge, expressed in metres (S-E1
+           in Figure 9);
+
+     dSR is the length of the ray path from the (last) diffraction edge to the receiver, expressed in metres (E4-R
+           in Figure 9);
+
+     d is the distance from the source to the receiver; expressed in metres (S-R in Figure 9).
+For lateral diffraction around obstacles, it shall be assumed that Kmet = 1 .
+With example Figures 8 and 9 the first and last diffracting edges are E1 and E4 ­ e is consequently the sum of
+the lengths E1-E2, E2-E3 and E3-E4.
+
+                                                                               
+                                                             © ISO 2024 ­ All rights reserved
+
+                                                                            16
+              Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                            ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                          Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+Key
+S source
+R receiver
+En diffracting edges
+
+ Figure 9 -- Plan- and side-view of the three buildings with the relevant edges E1 ­ E4 for diffraction
+                                                                over top
+
+The path length difference shall be calculated by means of Formula (22):
+
+z = (dSS + dSR + e) - d                                                                                 (22)
+
+If the line of sight between the source S and receiver R passes above the top edge of a single barrier, z is given
+a negative sign.
+
+If the direct line of sight is not blocked and the ray surpasses more edges En along the profile S-R, the largest
+value determines the relevant path length difference according to Formula (23):
+
+z = max(zn )                                                                                            (23)
+
+where zn is the negative path length difference to the edge n and where all edges under the propagation path
+are included to find the maximum value with Formula (22) with e equal 0.
+
+7.4.2 Alternative method to calculate the path length difference z with one edge or with more
+parallel edges
+
+The construction of the ray path in a vertical plane according to 7.4.1 constitutes the general method of this
+document. Based on this model the sound wave propagating from the source to the receiver with diffraction
+is approximated by a ray path that is a straight line in plan view.
+
+In special cases it is possible, and can be appropriate, to calculate the path length difference z on the basis
+of the shortest possible polygon line crossing the diffracting edge(s). The resultant barrier attenuation will
+then be lower and more accurate.
+
+                                           
+                         © ISO 2024 ­ All rights reserved
+
+                                        17
+Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+              ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+            Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+a)   Original scenario with two projection-planes to b)   Projection-plane P2 to find the relevant
+determine the parameters a, dSS, dSR and e  diffracting edges with the ribbon-band method
+
+                                            in a first step and the to determine the parame-
+
+                                                                       ters dSS, dSR and e
+
+Key
+
+S source
+R receiver
+
+P1 vertical projection-plane parallel to the (parallel) diffracting edges
+P2 projection-plane vertical to the (parallel) diffracting edges
+E barrier edge (any one of the barrier edges projected to plane P1)
+a component distance between S and R in direction of barrier edge E (see projection-plane P1)
+e summarized partial distances between all adjacent relevant diffraction edges (see projection-plane P2)
+dSS distance between source and nearest relevant diffraction edge (see projection-plane P2)
+dSR distance between receiver and nearest relevant diffraction edge (see projection-plane P2)
+
+Figure 10 -- The relevant parameters to calculate the path length difference z shown in case of a
+                                 bended barrier (here not parallel to the ground)
+
+This is the case if the line between the source and receiver is not perpendicular to the diffracting edge in
+plan view and the heights of source and receiver are different or/and the diffracting edge is sloping. In such
+cases the shortest ray path is generally not a straight line in plan view. The path length difference z for this
+shortest ray path can be calculated for one or more parallel potentially diffracting edges with the following
+steps:
+
+-- source, receiver and edge(s) are projected to a plane perpendicular to the edges (plane P2 in Figure 10);
+
+-- with a polygon line like a rubber-band from source to receiver enveloping the edge/s (points in this
+     projection) the relevant edges are found (see Figure 10 b));
+
+-- the parameters dSS, e, dSR and a are determined.
+The path length difference z shall be calculated by means of Formula (24):
+
+z = [(dSS + dSR + e)2 + a2 ]1/2 - d                                                                       (24)
+
+where d is the 3D distance between the source and the receiver; expressed in metres;
+NOTE For this alternative method, dSS and dSR are distances point-edge and therefore perpendicular to the
+relevant edge. This is different from the general method where dSS and dSR are the lengths of the first and the last
+segment of the ray path in the vertical propagation plane.
+
+                                                       
+                                     © ISO 2024 ­ All rights reserved
+
+                                                    18
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+7.4.3 Lateral diffraction around vertical edges
+Lateral diffraction around vertical edges of obstacles, as shown in Figure 7 for a single barrier, and in
+Figure 11 for more objects, may reduce the attenuation effect Abar calculated.
+In addition to the propagation path over the top, up to two laterally bent propagation paths are taken into
+account. To calculate the path length difference z for one or both of these lateral diffracted rays, these
+are constructed analogous to the ray path over top as a rubber band type polygon line in a lateral plane
+containing the source and receiver perpendicular to the vertical plane. The lateral ray paths are the shortest
+possible convex polygon lines not blocked by objects or by elevated ground at both sides of the line from
+source to receiver with supporting points on the intersection of vertical edges with the lateral plane. A
+lateral diffraction path is neglected if the maximal distance of one or more of its supporting points from
+the direct line from source to receiver exceeds the maximal distance of the supporting points in the vertical
+plane from the direct line from source to receiver by a factor more than 8.
+Lateral diffraction is not considered if elevated ground contributes to the ray path over the top. Figure 11
+shows the lateral plane and the two laterally diffracted rays for the example with 3 buildings.
+
+ Figure 11 -- Three objects blocking the line of sight, the lateral plane with source and receiver and
+                               the ray paths to determine the path length difference z
+
+With this example the first and last diffracting edges right side are E1 and E3, as it is shown in Figure 12, e is
+consequently the sum of the lengths E1-E2 and E2-E3 (left side analogous). The attenuation effect Abar for the
+relevant lateral diffracted ray path is calculated with Formula (17).
+NOTE Path-length differences z are positive with laterally diffracted rays following from their construction.
+
+Key
+S source
+R receiver
+En diffracting edges
+
+  Figure 12 -- Plan view of the three buildings with the relevant edges E1 ­ E3 for lateral diffraction
+                                                               right side
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                    19
+                      Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                  Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+7.4.4 Combining vertical and lateral diffractions and limitations
+
+The final barrier attenuation Abar resulting from Abar,top calculated with the ray path in the vertical plane
+and Abar,side1 and Abar,side2 calculated with the ray paths in the lateral plane is calculated with Formula (25).
+
+( ) Abar = -10lg 10-0,1 Abar ,top + 10-0,1 Abar ,side1 + 10-0,1 Abar ,side2 dB                                  (25)
+
+If a ray path is not relevant, the corresponding summand in the bracket is 0.
+
+If the result of Formula (25) is negative, the effective Abar is 0.
+
+This strategy is based on the idea that laterally diffracted sound causes a reduction of the barrier effect if
+the extension of the arrangement of relevant objects perpendicular to the line of sight is small.
+
+For diffraction over the top in the vertical plane the barrier attenuation Dz, in any octave band, should not
+be taken to be greater than 20 dB in the case of single diffraction (i.e. thin barriers) and 25 dB in the case of
+multiple diffraction (with e > 0).
+
+7.5 Reflections
+
+7.5.1 General
+
+Reflections are considered here in terms of image sources. These reflections originate from more or less
+vertical surfaces, such as building facades, which can increase the sound pressure levels at the receiver.
+The effect of reflections from the ground is not considered because it is included in the calculation of Agr in
+case of the "General method" in 7.3.1 and in the calculation of Agr and D in case of the "Simplified method"
+in 7.3.2.
+
+7.5.2 Single reflection at a flat surface ­ conditions and calculation
+
+The reflections from an obstacle shall be calculated for all octave bands for which all of the following
+requirements are met:
+
+-- a specular reflection can be constructed, as shown in Figure 13;
+
+-- the surface is large enough for the nominal midband wavelength  (in metres) for the octave band under
+     consideration to obey the relationship according to Formulae (26) and (27).
+
+1      >  2/ le2ff    dS,OdO,R  / (dS,O  +  dO,R  )                                                             (26)
+
+
+leff = min (a cos a ,hcosh )                                                                                    (27)
+
+where
+
+a is the horizontal extension of the reflecting surface, expressed in metres;
+
+h is the vertical extension of the reflecting surface at the point of reflection, expressed in metres;
+
+ is the wavelength of sound at the nominal midband frequency f (in hertz) of the octave band (=
+        340 m/s/f ), expressed in metres;
+
+dS,O is the distance between the source and the point of reflection on the obstacle, expressed in metres;
+dO,R is the distance between the point of reflection on the obstacle and the receiver; expressed in metres;
+ßa is the angle of incidence projected to the horizontal plane; expressed in radians;
+
+                                                                    
+                                                  © ISO 2024 ­ All rights reserved
+
+                                                                 20
+       Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                     ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                   Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+ßh is the angle of incidence projected to a vertical plane rectangular to the reflecting surface; expressed
+        in radians.
+
+If this condition is not met for a given octave band, then its reflection shall be neglected.
+
+The real source and source image are handled separately. The sound power level of the source image LW,im
+shall be calculated in each relevant octave band from Formula (28).
+
+LW,im (dB) = LW + 10lg (1 - ) + DIr                                                              (28)
+
+where
+
+      is the sound absorption coefficient of the reflecting surface;
+
+     DIr is the directivity index of the source in the ray-path direction from the source to the reflector.
+
+For building facades and surfaces of industrial facilities an absorption coefficient of 0,1 shall be applied as
+default value in all octave bands if individual data are not available.
+
+For the sound source image, the attenuation terms of Formulae (3) and (5), as well as  and DIr in
+Formula (28), shall be determined according to the propagation path of the reflected sound for each relevant
+octave band.
+
+Key
+1 obstacle
+a relevant extension of the reflecting obstacle
+S source
+S' first order image source
+R receiver
+dS,O distance from source to obstacle
+dO,R distance from obstacle to receiver
+a angle of incidence projected to the horizontal plane
+
+                 Figure 13 -- Specular reflection from an obstacle (here shown as top view)
+
+7.5.3 Multi-reflection up to higher orders
+The nth order image source Sn is the image of the image source Sn-1. The construction of the real ray path of a
+second order reflection is shown in Figure 14.
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                    21
+       Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                     ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                   Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+Key
+
+B1, B2 barriers
+P1, P2 points of reflection
+S source
+Sn nth order image source
+R receiver
+
+Figure 14 -- Example to explain the construction of a 2nd order reflection with image sources S1 and
+                                                                    S2
+
+Calculation of reflected sound shall include higher order reflections if source and receiver are located
+between parallel or nearly parallel reflecting surfaces or are surrounded by reflecting surfaces.
+
+The condition according to Formulae (26) and (27) shall be validated for each reflector separately. The
+lengths dS,O and dO,R are the lengths of the ray-paths from source to reflector and from reflector to receiver,
+even if these are bent at other reflectors.
+
+With the absorption coefficient n at the nth point where the ray is reflected, the sound power level of the
+image source of order N, Lw,im,N, is given by Formula (29):
+
+                                          
+ LW,im,N                          (1      )
+       (dB) = LW  + 10lg       n      -n     +DIr                                                (29)
+                                           
+
+where
+
+LW is the sound power level, expressed in decibels
+n is absorption coefficient at the nth point where the ray is reflected.
+DIr is the directivity index of the source in the ray-path direction from the source to the first reflector
+
+        (relevant for the octave band), expressed in decibels.
+
+7.5.4 Reflections at cylindrical surfaces
+
+The general method to calculate reflections is to approximate all vertical or nearly vertical surfaces of
+objects by planes. This allows them to be included correctly in a path-finding algorithm and to calculate
+even higher order reflections.
+
+In some cases, cylindrical surfaces such as vessels, tanks and even curved building facades shall be
+considered as reflectors. Based on geometrical considerations, ­ true for  << R with  the wavelength and R
+the radius of the cylinder ­ the level at the receiver weakened by the curvature of the cylindrical shape can
+be calculated. For details see Reference [13].
+
+                                                        
+                                      © ISO 2024 ­ All rights reserved
+
+                                                     22
+               Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                             ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                           Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+Key
+M centre-point
+S point source
+R receiver
+r radius in metres
+P point of reflection
+T tangent in P
+dS distance S ­ P, expressed in metres
+dR distance P ­ R, expressed in metres
+d distance of the straight line defined by the incident ray from the centre-point M, in metres
+
+   Figure 15 -- Sound ray reflected at a cylinder ­ all dimensions in projection parallel to the axis
+
+The relevant parameters as shown in Figure 15 are determined in projection on a plane perpendicular to the
+cylinder-axis. The tangent T and the reflection point P are defined by the mirror-condition of equal angles
+of incident and reflected ray with the normal defined by M and P. From these parameters the additional
+attenuation Acurv caused by the curvature of the reflecting surface is calculated with Formula (30):
+
+         1        2dSdR                -1     
+                                              
+                  (dS + dR
+( ) Acurv
+=  10lg     +                  1 - k2      2    dB                                                       (30)
+
+               r            )                 
+
+where k = d
+              r
+
+The partial sound pressure level caused by the reflection at the cylinder surface is then obtained by:
+
+-- calculating Acurv from the parameters determined in projection view (see Formula (30));
+
+-- calculating the sound pressure level caused by the sound reflected by the tangential plane T with the
+     absorption coefficient of the cylinder surface at the reflection point (7.5.2);
+
+-- applying Acurv as part of Amisc in Formula (5).
+Reflections of order >1 are not considered with curved surfaces.
+
+8 Meteorological correction, Cmet
+
+Use of Formula (3) leads directly to an equivalent continuous A-weighted sound pressure level LAT at the
+receiver for meteorological conditions which are favourable for propagation from the sound source to that
+receiver, as described in Clause 5. This can be the appropriate condition for meeting a specific community
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                    23
+       Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                     ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                   Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+noise limit, i.e. a level which is seldom exceeded. Often, however, a long-term average A-weighted sound
+pressure level LAT(LT) is required in line with legal requirements, where the time interval T is several
+months or even a year. Such a period will normally include a variety of meteorological conditions, both
+favourable and unfavourable to propagation. A value for LAT(LT) may be obtained in this situation from that
+calculated for LAT(DW) via Formula (3), by using the meteorological correction Cmet in Formula (7).
+
+A value (expressed in decibels) for Cmet in Formula (7) may be calculated using Formulae (31) and (32) for
+the case of a point sound source with an output which is effectively constant with time:
+
+Cmet = 0 if dp  10(hS + hR )                                                                     (31)
+
+Cmet = C0 1 -10(hS + hR ) / dp  if dp > 10(hS + hR )                                             (32)
+
+where
+
+     hS is the source height, expressed in metres;
+
+     hR is the receiver height, expressed in metres;
+
+     dp is the distance between the source and receiver projected to the horizontal ground plane, expressed
+             in metres;
+
+     C0 is a factor, expressed in decibels, which depends on local meteorological statistics for wind speed
+             and direction, and temperature gradients which may depend on the angular orientation of the
+             direction between the source and receiver.
+
+The effects of meteorological conditions on sound propagation are small for short distances dp, and also
+for larger distances with increased source height and/or receiver height. Formulae (31) and (32) account
+approximately for these factors, as shown in Figure 16.
+
+                                       Figure 16 -- Meteorological correction, Cmet
+
+A value for C0 in Formulae (31) and (32) can be estimated from an elementary analysis of the local
+meteorological statistics. For example, if the meteorological conditions favourable to propagation described
+in Clause 5 are found to occur for 50 % of the time-period of interest, and the attenuation during the
+other 50 % is higher by 10 dB or more, then the sound energy which arrives for meteorological conditions
+unfavourable to propagation may be neglected, and C0 will be approximately +3 dB.
+
+Experience indicates that values of C0 in practice are limited to the range from zero to approximately +5 dB,
+and values in excess of 2 dB are exceptional. Thus only very elementary statistics of the local meteorology
+are needed for a ±1 dB accuracy in C0.
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                    24
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+For a source that is composed of several component point sources, hS in Formulae (31) and (32) represents
+the predominant source height, and dp the distance from the centre of that source to the receiver.
+A proposal for a method to determine C0 for a given source and receiver exclusively on the basis of the local
+wind­climatology is given in Annex C.
+
+9 Accuracy and limitations of the method
+
+The attenuation of sound propagating outdoors between a fixed source and receiver fluctuates due to
+variations in the meteorological conditions along the propagation path. Restricting attention to moderate
+downwind conditions of propagation, as specified in Clause 5, limits the effect of variable meteorological
+conditions on attenuation to reasonable values.
+There is information to support the method of calculation given in Clauses 4 to 8 for broadband noise sources.
+The agreement between calculated and measured values of the average Aweighted sound pressure level for
+downwind propagation, LAT(DW), supports the estimated accuracy of calculation shown in Table 4. These
+estimates of accuracy are restricted to the range of conditions specified for the validity of the Formulae
+in Clauses 3 to 8 and are independent of uncertainties in sound power determination. (See the empirically
+extended range of heights expressed in the footnote c in Table 4).
+The estimates of accuracy in Table 4 are for downwind conditions averaged over independent situations (as
+specified in Clause 5). They should not necessarily be expected to agree with the variation in measurements
+made at a given site on a given day. The latter can be expected to be considerably larger than the values in
+Table 4.
+The estimated errors in calculating the average downwind octave band sound pressure levels, as well as
+pure-tone sound pressure levels, under the same conditions, may be somewhat larger than the estimated
+errors given for A-weighted sound pressure levels of broadband sources in Table 4.
+In Table 4, an estimate of accuracy is not provided in this document for distances d greater than the 1 000 m
+upper limit.
+Throughout this document, the meteorological conditions under consideration are limited to only two cases:
+a) moderate downwind conditions of propagation, or their equivalent, as defined in Clause 5;
+b) a variety of meteorological conditions as they exist over months or years.
+The use of Formulae (1) to (6) and (8) to (30) (and therefore also Table 4) is limited to case
+a) meteorological conditions only;
+b) is relevant only to the use of Formulae (7), (31) and (32).
+There are also a substantial number of limitations (non-meteorological) in the use of individual Formulae.
+Formulae (7) and (10) to (13) are, for example, limited to approximately flat terrain. These specific
+limitations are described in the text accompanying the Formulas.
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                    25
+            Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                          ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                        Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+Table 4 -- Estimated accuracy for broadband noise of LAT(DW) calculated using
+                                         Formulae (1) to (15)
+
+Height, ha                                                        Distance, db
+
+                                                    0 < d <100 m                100 m < d < 1 000 m
+
+              0<h<5m                                  ±3 dB                     ±3 dB
+          5 m < h (< 30 m)c                           ±1 dB                     ±3 dB
+
+a h is the mean height of the source and receiver.
+
+b d is the distance between the source and receiver.
+
+c 30 m average height from source to receiver was included in the first edition due to existing experience with sources that
+time. Further experience gathered during more than two decades by applying the calculation of the attenuation of sound during
+propagation with sources in larger heights up to about 200 m (e. g. industrial sources like chimney openings of power plants,
+wind turbines) has shown that even these larger heights are characterised by the uncertainties given (see Annex D for wind
+turbines).
+
+NOTE These estimates have been made from situations where there are no effects due to reflection or attenuation due to
+screening.
+
+                              
+            © ISO 2024 ­ All rights reserved
+
+                           26
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+                                          Annex A
+                                       (informative)
+
+                      Additional types of attenuation, Amisc
+
+A.1 General
+
+The term Amisc in Formula (5) covers contributions to the attenuation from miscellaneous effects not
+accessible by the general methods of calculating the attenuation specified in Clause 7. These contributions
+include
+-- Afol the attenuation of sound during propagation through foliage,
+-- Asite the attenuation during propagation through an industrial site, and
+-- Ahous the attenuation during propagation through a built-up region of houses,
+which are all considered in this annex.
+For calculating these additional contributions to the attenuation, the curved downwind propagation path
+may be approximated by an arc of a circle of radius 5 km, as shown in Figure A.1.
+
+A.2 Foliage, Afol
+A.2.1 General
+
+Additional to the simplified method for the calculation of the attenuation by foliage Afol (see A.2.2) a more
+detailed method using forestal parameters for the description of the foliage has been added to take into
+account the local situation (see A.2.3). The method used should be clearly stated if the attenuation by foliage
+is a relevant part of expert-work.
+A.2.2 Simplified method
+The foliage of trees and shrubs provides a small amount of attenuation, but only if it is sufficiently dense
+to completely block the view along the propagation path, i.e. when it is impossible to see a short distance
+through the foliage. The attenuation may be by vegetation close to the source, or close to the receiver, or by
+both situations, as illustrated in Figure A.1. Alternatively, the path for the distances d1 and d2 may be taken
+as falling along lines at propagation angles of 15° to the ground.
+The first line in Table A.1 gives the attenuation to be expected from dense foliage if the total path length
+through the foliage is between 10 m and 20 m, and the second line if it is between 20 m and 200 m. For path
+lengths greater than 200 m through dense foliage, the attenuation for 200 m should be used.
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                    27
+                 Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                               ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                             Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+Key
+S source
+R receiver
+NOTE df =d1+d2
+For calculating d1 and d2, the curved path radius may be assumed to be 5 km.
+
+  Figure A.1 -- Attenuation due to propagation through foliage increases linearly with propagation
+                                                 distance df through the foliage
+
+Table A.1 -- Attenuation of an octave band of noise due to propagation a distance df through dense
+                                                               foliage
+
+Propagation distance df              Nominal mid-band frequency
+                                                       Hz
+
+             m           63    125   250         500             1 000 2 000 4 000 8 000
+
+                                                 Attenuation dB:
+
+10  df  20               0     0     1           1               1     1                                   2     3
+
+                                                 Attenuation, dB/m:
+
+20  df  200              0,02  0,03  0,04        0,05            0,06  0,08                                0,09  0,12
+
+A.2.3 Detailed method using forestal parameters
+
+This detailed method is described in References [14] and [15]. The foliage and the trunks of trees and shrubs
+can provide a relevant amount of attenuation. This effect depends on the frequency and the geometric
+parameters. The attenuation can be by vegetation close to the source, or close to the receiver, or by both
+situations, as illustrated in Figure A.2. The paths for the distances d1 and d2 are taken as falling along lines
+at propagation angles of 15° to the ground.
+
+Key
+S source
+R receiver
+
+NOTE  df =d1+d2
+
+Figure A.2 -- Attenuation due to propagation through foliage increases linearly with propagation
+                                              distance df through the foliage
+
+NOTE 1 Even if the two falling lines intercept in the vegetation, the length df is calculated as the sum of d1 and d2,
+not by the direct line to prevent a saltus in the result.
+
+                                                 
+                               © ISO 2024 ­ All rights reserved
+
+                                              28
+                Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                              ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                            Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+Key
+S source
+R receiver
+dn length of the ray path elements inside the foliage
+
+Figure A.3 -- Calculation of the propagation length df at shorter distances
+
+The attenuation of the vegetation is calculated by five forestal parameters given in Table A.2.
+
+                       Table A.2 -- Forestal parameters
+
+                              Parameter                    Unit   Name
+                            Stem diameter                   cm       D
+                                                       m2/104 m2     G
+                              Basal area               m3/104 m2     V
+                            Standing stock                   1       S
+                Horizontal structuring (classing)            1       Z
+                   Low height foliage (classing)
+
+If no values are given for the basal area and the standing stock, these values can be calculated approximately
+from the stem diameter D, the stem density SD (stems per 104m2) and the height H of the vegetation
+according to Formulae (A.1) and (A.2):
+
+G = D2 / 4× SD                                                                                            (A.1)
+
+V = G×H /2,5                                                                                              (A.2)
+
+The values for "horizontal structuring" and "low height foliage" can be 0 or 1 or 2 according to the meaning
+given in Table A.3.
+
+                       Table A.3 -- Classification
+
+                Value  Horizontal structuring          Low height foliage
+                   0            homogeny                    not present
+                   1
+                   2       minor structured               minor present
+                          intense structured              much present
+
+If no information is given for the parameters "horizontal structuring" and "low height foliage" these two
+parameters are set to 0.
+
+The frequency dependent attenuation factor Klin is calculated by the Formula (A.3):                       (A.3)
+     K lin = G0 + GD × D + GG ×G + GV ×V + GS × S + GZ × Z  0 dB
+
+NOTE 2 Values less than 0 resulting from the regression calculation with measured values are set to 0.
+The values for the weighting factors are given dependent on the nominal octave frequency in Table A.4:
+
+                                         
+                       © ISO 2024 ­ All rights reserved
+
+                                      29
+                  Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                              Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+                       Table A.4 -- Weighting factors for forest stands
+
+Weighting-factor                                      Octave band frequency
+
+                                                             Hz
+
+                        63       125        250        500   1 000        2 000                             4 000  8 000
+                       -9,32    -17,70     -17,16                                                           8,05   12,84
+            G0                              0,08      -8,34  -3,31           3,27                           0,07   0,08
+         dB/km                              0,85                                                            0,64   0,58
+                       0,03 0,05           -0,02       0,07  0,07            0,07                           -0,38  -0,44
+            GV                             -0,63                                                            4,65   4,68
+(dB/km)/(m3/104m2)     0,23 0,61           -5,38       0,80  0,74            0,70                            7,47  12,21
+(dB/km)/G(mG 2/104m2)
+                       0,08 0,15                      -0,12  -0,19        -0,32
+            GD
+    (dB/km)/(cm)       -0,87 -1,63                     1,35  2,99            4,62
+
+            GS         -2,97 -5,42                    -2,53  -0,52           2,74
+         dB/km
+
+            GZ
+         dB/km
+
+The stem diameter D, the stem density SD (stems per 104m2) and the height H of the vegetation have to be
+specified to calculate an appropriate value for the damping of the vegetation. If no values are given for the
+forestal parameters, no attenuation shall be used due to the vegetation. For shrubs the parameters D=7 cm,
+G=10 m2, V=50 m3, S=0 und Z=2 can be used.
+
+Table A.5 lists ranges of forestal parameters for different types of foliage/fouling.
+
+Table A.5 -- Ranges of forestal parameters for different types of foliage/fouling
+
+            Parameter               Unit           Name                               Typical range
+         Stem diameter               cm               D                              10 cm to 40 cm
+                                m2/104 m2             G                    15 m2/104 m2 to 50 m2/104 m2
+            Basal area          m3/104 m2             V                   100 m3/104 m2 to 400 m3/104 m2
+
+         Standing stock               1               S                                     0 to 2
+Horizontal structuring (class-
+                                      1               Z                                     0 to 2
+                ing)
+ Low hight fouling (classing)
+
+With the typical range of the forestal parameters, three classes of forest densities can be defined. Such
+classes are given in Table A.6.
+
+                                Table A.6 -- Classes of forest densities
+
+                       Name     Unit Light forest            Normal       Dense forest
+                                                              forest
+                          D         cm             10                            40
+                          G                                     25               50
+                          V     m2/104 m2          15           32              400
+                          S                                    250                2
+                          Z     m3/104 m2          100           1                2
+                                                                 1
+                                        -          0
+
+                                        -          0
+
+Corresponding attenuation values are given in Figure A.4.
+
+                                                          
+                                        © ISO 2024 ­ All rights reserved
+
+                                                       30
+            Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                          ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                        Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+Key
+Klin attenuation factor, expressed in decibels per kilometre
+f frequency, expressed in hertz
+1 light forest
+2 normal forest
+3 dense forest
+4 attenuation with simplified method A.2.2 for 20 m  df  200 m
+
+                                  Figure A.4 -- Attenuation values of forest densities
+
+A.3 lndustrial sites, Asite
+
+At industrial sites, attenuation can occur due to scattering from installations (and other objects), which may
+be described as Asite unless accounted for under Abar or the sound source radiation specification. The term
+`installations' includes miscellaneous pipes, valves, boxes, structural elements, etc.
+
+As the value of Asite depends strongly on the type of site, it is recommended that it is determined by
+measurements. However, for an estimate of this attenuation, the values in Table A.7 may be used. The
+attenuation increases linearly with the length of the curved path ds through the installations (see Figure A.5),
+with a maximum of 10 dB.
+
+Table A.7 -- Attenuation coefficient of an octave band of noise during propagation through
+                                        installations at industrial plants
+
+Nominal mid-band fre-  63  125  250  500                     1 000 2 000 4 000 8 000
+quency, Hz
+
+Asite dB/m             0   0,015 0,025 0,025                 0,02  0,02                               0,015 0,015
+
+                                             
+                           © ISO 2024 ­ All rights reserved
+
+                                          31
+       Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                     ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                   Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+Figure A.5 -- Attenuation Asite increases linearly with the propagation distance ds through the
+                   installations at industrial plants (5 km radius of the curved path)
+
+A.4 Housing, Ahous
+
+When either the source or receiver, or both are situated in a built-up region of houses, attenuation will occur
+due to screening by the houses. However, this effect may largely be compensated for by the propagation
+between houses and by reflections from other houses in the vicinity. This combined effect of screening
+and reflections that constitutes Ahous can be calculated for a specific situation, at least in principle, by
+applying the procedures for both Abar and reflections described in 7.4 and 7.5. Because the value of Ahous is
+very situation-dependent, such calculation may need to be justified in practice. A more useful alternative,
+particularly for the case of multiple reflections where the accuracy of calculation suffers, may be to measure
+the effect, either in the field or by modelling.
+
+An approximate value for the A-weighted attenuation Ahous which should not exceed 10 dB, can also be
+estimated as follows.
+
+There are two separate contributions:
+
+Ahous = Ahous,1 + Ahous,2                                                                        (A.4)
+
+An average value for Ahous,1 (in dB) can be calculated using:                                    (A.5)
+     Ahous,1 = 0,1Bdb dB
+
+where
+
+     B is the density of the buildings along that path, given by the total plan area of the houses divided by
+             the total ground area (including that covered by the houses);
+
+     db is the length of the sound path, in metres, through the built-up region of houses, determined by a
+             procedure analogous to that shown in Figure A.1.
+
+The path length db can include a portion d1 near the source and a portion d2 near the receiver, as indicated
+in Figure A.1.
+
+The value of Ahous shall be set equal to zero in the case of a small source with a direct, unobstructed line of
+sight to the receiver through a corridor between housing structures.
+
+NOTE The A-weighted sound pressure level at specific individual positions in a region of houses can differ by up
+to 10 dB from the average value predicted using Formulae (A.4) and (A.5).
+
+                                                         
+                                       © ISO 2024 ­ All rights reserved
+
+                                                      32
+       Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                     ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                   Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+If there are well-defined rows of buildings near a road, a railway, or a similar corridor, an additional term
+Ahouse,2 may be included (provided this term is less than the insertion loss of a barrier at the same position
+with the mean height of the buildings):
+
+Ahous,2 = -10lg[1 - (p /100)]dB                                                                  (A.6)
+
+where
+
+     p the percentage of the length of the facades relative to the total length of the road or railway in the
+             vincinity; and
+
+     p  90 %.
+
+In a built-up region of houses, the value of Ahous,1 (as calculated by Formula (A.5)) interacts with the value
+for Agr, the attenuation due to the ground (as calculated by Formulae (10) or (11)) as follows:
+
+Let Agr,b be the ground attenuation in the built-up region, and Agr,0 be the ground attenuation if the houses
+were removed (i.e. as calculated by Formulae (11) or (14)). For propagation through the built-up region in
+general, Agr,b is assumed to be zero in Formula (5). If, however, the value of Agr,0 is greater than that of Ahous,
+then the influence of Ahous is ignored and only the value of Agr,0 is included in Formula (5).
+
+The interaction above is essential to allow for a range of housing density B. For low-density housing, the
+value of Agr is dominant, while for high-density housing Ahous dominates.
+
+                                                   
+                                 © ISO 2024 ­ All rights reserved
+
+                                                33
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+                                          Annex B
+                                       (informative)
+
+                 Directivity correction, Dc, for chimney stacks
+
+B.1 Dependency of the directivity correction from parameters
+
+The sound emitted by chimneys and other vertical and upward-facing open pipes is modelled as a point
+sound source in the middle of the opening cross-section. Research projects on the radiation of chimney
+openings[16] have shown that the radiation of the entire sound power is not omnidirectional. With these
+investigations, the frequency-dependent directivity corrections required for modelling were determined
+and communicated in diagram form. In order to enable precise and quality-assured application, these
+results are communicated here in tabular form with predefined support points, whereby the directivity
+correction Dc applicable to any geometry of the chimney opening relative to the receiver position can be
+clearly determined by interpolation of the determining parameters. Since the value of Dc is intended to
+refer to a downwind condition, the angle  of a sound ray curved with a radius of 5 km from the opening
+to the receiver according to Figure B.1 is used in the application of this table. The directivity correction Dc
+for an octave band determined taking into account the geometry according to Figure B.1 is included in the
+calculation of the receiver level with the octave band sound power level LW according to Formula (3).
+
+Key
+S source
+R receiver
+zS source height
+zR receiver height
+ direction of radiation
+d distance source ­ receiver
+dp distance source ­ receiver projected to the horizontal plane
+
+                                  Figure B.1 -- Geometry chimney opening ­ receiver
+
+The reference direction of the source with  = 0 is in the vertical direction upwards. The geometry of the
+true ground profile is insignificant. The relevant direction  due to the curvature of the ray results from the
+quantities mentioned in the diagram to
+
+                           dp       -  arcsin    d                                   (B.1)
+      = 180° - arctg     zS - zR                 2r
+                                  
+                       
+
+with
+
+                                                                   
+                                                 © ISO 2024 ­ All rights reserved
+
+                                                                34
+                         Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                       ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+zS absolute height of the source (chimney opening)
+zR absolute height of the receiver
+r radius of curvature of the ray S ­ R (5 000 m)
+
+The correction , already part of Formula (B.1) with
+
+      =  arcsin    d                                                                                                    (B.2)
+                   2r
+
+takes into account the steeper radiation angle of the curved ray to the receiver compared to straight
+propagation. This correction shall be taken into account for all sources that have a directivity dependent
+angle in the vertical propagation plane if the calculated receiver-level is to refer to downwind conditions.
+
+The directivity correction is listed in Table B.1 for discrete values depending on the direction  and
+ka (product of wave number k and radius a of the chimney opening). Since the speed of sound and thus
+the wavelength for a given octave band centre frequency f depends on the current temperature T, ka is
+determined from Formula (B.3).
+
+ka =             2af                                                                                                    (B.3)
+
+      331,4 1 + T
+                       273°C
+
+with
+
+a radius of the chimney-opening, in metres;
+f octave band mid-frequency, in hertz;
+T temperature at the chimney mouth, in degrees celsius.
+
+Table B.1 -- Directivity correction Dc in dB in dependence of the product ka for different discrete
+                        direction angles  related to downwind-conditions (v ~ 3 m/s).
+
+          in deg                                               ka
+
+            30                4,0 5,0 6,3 8,0 101 12,7 16,0 20,2 25,4 32,0
+            45
+            60                2,4  2,1  1,9          2,0  2,1        2,6       3,1  3,4                            3,4  3,3
+            75
+            90                4,0  3,4  3,1          3,1  3,4        4,0       4,4  4,6                            4,6  4,5
+           105
+           120                4,0  3,4  3,1          3,1  3,4        4,0       4,4  4,6                            4,6  4,5
+
+                              2,4  2,1  1,9          2,0  2,1        2,6       3,1  3,4                            3,4  3,3
+
+                              -2,4 -2,2 -2,0 -1,9 -1,9 -1,9 -1,9 -2,1 -2,3 -2,7
+
+                              -4,3 -4,6 -5,0 -5,4 -5,9 -6,4 -6,9 -7,3 -7,6 -7,9
+
+                              -6,3 -7,0 -77 -8,2 -8,7 -9,1 -9,6 -10,2 -11,0 -12,1
+
+For quality-assured and thus precise application, the value range of the two parameters covered by
+measurements are extended in the following way:
+
+      -- for ka < 4           Dc = 0 for ka  1 and interpolation for 1  ka  4
+
+      -- for ka > 32 Dc constant as for ka = 32
+
+      -- for  < 30° Dc constant as for  = 30°
+
+      -- for  > 120° Dc constant as for  = 120°
+
+                                                     
+                                   © ISO 2024 ­ All rights reserved
+
+                                                  35
+          Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                        ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                      Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+NOTE The directivity corrections Dc on which Table B.1 is based were determined by measurement on large
+industrial chimneys[16], with measurement results available for the ranges 4  ka  32 and 30°    120°. They
+were usually gas pipes built of bricks that were not lined with absorption. For chimneys of very different design, the
+determined values are not fully representative and can only be applied as an approximation.
+
+B.2 Determination of Dc with specifically given parameters
+
+The first step is to determine the two parameters required to apply Table B.1,  by Formula (B.1) and ka by
+Formula (B.3). From these two parameters, the appropriate directivity correction Dc is then determined in
+the second step.
+
+For interpolation, the lower and upper interval limits are searched for adjacent to the current parameter
+on the scale of the given support values. With 1 as the lower support value and 2 as the upper support
+value for the current value of the angle  and ka1 as the lower support value and ka2 as the upper support
+value for the current value ka, the value of Dc(ka, ) results directly from Table B.1, with linear or bilinear
+interpolation.
+
+For interpolation, the following generally applies:
+
+x  =     ln(ka) - ln(ka1 )                                                                          (B.4)
+         ln(ka2 ) - ln(ka1 )                                                                        (B.5)
+
+y =  -1
+    2 -1
+
+Case 1    no interpolation
+
+Case 1a   ka  1 and   30°                            kar = 1, r = 30°
+
+Case 1b   ka  1 and   120°                           kar = 1, r = 120°
+
+Case 1c   ka  32 and   30°                           kar = 32, r = 30°
+
+Case 1d   ka  32 and   120°                          kar = 32, r = 120°
+
+Dc (ka, ) = Dc (kar ,r )                                                                            (B.6)
+
+Case 2    linear interpolation
+
+Case 2a   ka  1 and 30° <  < 120°                      kar = 1
+                                                       kar = 32
+Case 2b   ka  32 and 30° <  < 120°                   
+
+Dc (ka, ) = Dc (kar ,1 )(1 - y) + Dc (kar ,2 ) y                                                    (B.7)
+
+Case 2c   1 < ka < 32 and  < 30°                      r = 30°
+
+Case 2d   1 < ka < 32 and  > 120°                     r = 120°
+
+Dc (ka, ) = Dc (ka1 ,r )(1 - x ) + Dc (ka2 ,r ) x                                                   (B.8)
+                                                                                                    (B.9)
+Case 3    bilinear interpolation
+
+Dc (ka, ) = Dc (ka1 ,1 )(1 - x )(1 - y) + Dc (ka2 ,1 ) x (1 - y) + Dc (ka1 ,2 )(1 - x ) y
++Dc (ka2 ,2 ) xy
+
+                                                  
+                                © ISO 2024 ­ All rights reserved
+
+                                               36
+                   Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                 ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                               Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+B.3 Examples
+
+For three examples, the directivity corrections Dc for the octave bands 63 Hz to 8 000 Hz were calculated
+using the specified method. In Table B.2 the parameters according to Figure B.1 for the examples 1 to 3 are
+shown.
+
+                            Table B.2 -- Input parameters for examples 1 to 3
+
+                 Parameter           Symbol        Unit                     1        Example                           3
+                                                                           100            2                           100
+Source height                           ZS          m
+Radius of opening                        A          m                       2           100                            3
+Receiver height                         ZR          m                       5            2,5                           5
+Horizontal distance                     dp          m                      300            5                          1 000
+Temperature                              T          °C                     110          500                           110
+Radius of circular ray                   R          m                     5 000          110                         5 000
+Interim results                                                                        5 000
+Angle of straight ray                   0          grad                   107,6                                      97,1
+Deviation with curvature                           grad                     1,8        100,8                          5,8
+Relevant angle                                     grad                   105,8          2,9                         91,3
+                                                                                        97,8
+
+Table B.3 shows for each of the three examples and for each octave band the value of ka calculated with
+Formula (B.3), the case number applied according to the above classification and the calculated value of the
+directivity correction Dc.
+
+                            Table B.3 -- Calculation results for examples 1 to 3
+
+Example                                      Octave band centre-frequencies f
+
+                            63    125        250   500    1 000 2 000                                        4 000   8 000
+                                                                                                             128,06  256,11
+         ka                 2,02  4,00       8,00  16,01  32,01                  64,03
+                                                                                                               2b      2b
+1        Case               3     3          3     3                      2b     2b                           -8,1    -8,1
+                                                                                                             160,07  320,14
+         Dc in dB           -2,2  -4,4       -5,5  -7,0                   -8,1   -8,1                          2b      2b
+            ka                                                                                                -5,4    -5,4
+                            2,52  4,00  10,00      20,01  40,02                  80,03                       192,08  384,17
+                                                                                                               2b      2b
+2        Case               3     3          3     3                      2b     2b                           -3,2    -3,2
+
+         Dc in dB           -2,3  -3,5       -4,0  -4,8                   -5,4   -5,4
+            ka
+                            3,03  6,00  12,01      24,01  48,02                  96,04
+
+3        Case               3     3          3     3                      2b     2b
+
+         Dc in dB           -2,1  -2,3       -2,3  -2,7                   -3,2   -3,2
+
+                                                          
+                                        © ISO 2024 ­ All rights reserved
+
+                                                       37
+                            Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                           ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                               Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+                                      Annex C
+                                   (informative)
+
+Meteorological correction due to the dependency of C0 from the
+                         angular wind distribution
+
+C.1 Dependency of C0 from the angular wind distribution
+
+C0 depends in the most general case on the direction of the propagation path and the wind speed and the
+vertical gradient of the temperature. Exclusively related to wind climatology it can be calculated with
+Formula (C.1).
+
+       (  )             2          (         )  10Dwd  (2-  )/10     
+ C0                          pw d                                    
+             =  10  lg                  +                         d    dB                (C.1)
+
+                          0
+
+where
+
+                is the meteorological angle equal to 0 for north, and counted in a positive direction clockwise,
+
+                expressed in radians;
+
+'               is the meteorological angle describing the propagation-direction from the source to the receiver,
+
+                expressed in radians;
+
+p'wd() is the angle specific relative frequency of wind blowing with speed in a given interval vmin - vmax
+            in the regarded time interval from direction  (wind rose);
+
+Dwd() is the apparent large-distance directivity in direction  from source to receiver if the wind blows
+            from  = 0, expressed in decibels.
+
+Guidance on deriving a long-term directivity for large source to receiver distances from the distribution
+of wind directions are presented in References [17] and [18]. An example solution for the apparent wind-
+related long-distance directivity is set out in Formula (C.2).
+
+Dwd ( ) = -Q{1 - cos[ -  - sin( - )]} dB                                                 (C.2)
+
+where
+
+     Q is half of the attenuation for large distances upwind, expressed in decibels;
+
+      is an angle defining the width of the window where attenuation occurs in upwind direction, ex-
+             pressed in radians;
+
+and where the wind blows from the direction  = 0.
+The preferred values according to this document are Q = 5 dB and  = /4.
+The wind distribution pwd() defined for 0   < 2 is extended periodically with pwd() = pwd( ± k · 2) for
+all integer values of k.
+
+                                                                         
+                                                       © ISO 2024 ­ All rights reserved
+
+                                                                      38
+                           Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                         ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                       Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+The frequency of occurrence of wind with speed in the relevant interval is given for N angle intervals of
+width  with Formulae (C.3) and (C.4) as follows:
+
+      = 2                                                                                                            (C.3)
+            N
+
+and
+
+     n  =   n -  1                                                                                                   (C.4)
+                 2
+
+with
+
+     1n<N
+
+Wind data are typically available as hourly averages of wind speed and wind direction related to angle steps
+of 10° (N = 36)
+
+Then the integral of Formula (C.1) is a sum with
+
+      C0(m  )  =                pwd (m + n ) 100,1Dwd (n )  dB
+                  -10  lg                                                                                            (C.5)
+
+                             n
+
+where
+
+     m is the angle from source to receiver (where the angle 0 represents north and is positive clockwise),
+            expressed in radians;
+
+      n is the wind direction as taken from data-sample n, expressed in radians.
+
+Formula (C.5) needs pre-processing to evaluate the angular wind distribution pwd() from the databases
+supplied by the relevant national institutions. These databases can describe the value of the wind speed
+and the wind direction ­ e.g. for each hour ­ where these values were measured at a height of 10 m above
+ground. One year is therefore usually a set of 8 784 samples.
+
+The pre-processing to determine the wind-rose pwd can be avoided if all samples in the long-term time
+interval of the representative year are included in the summation:
+
+      C0                     1     100  ,1Dwd  (n  -m  )    
+        (m  )  =  -10  lg    N                                dB                                                     (C.6)
+                                                            
+                                n
+
+where N is the total number of relevant data-samples included in the summation.
+
+The sum in Formula (C.6) includes all samples of the reference time intervals i of the long-term time interval
+over which the sound of a series of reference time intervals is averaged or assessed (see ISO 1996-1). Typical
+examples are the days or nights of a significant fraction of a year (3 months, 6 months or 1 year).
+
+C.2 Example of an angle dependent C0 based on local wind statistics
+
+The starting point is the dataset of time, windspeed and wind direction representative of the targeted
+long-term time interval. Table C.1 is an excerpt from such a dataset of wind-speeds in steps of 1 hour and
+directions for one year at a height of 10 m above local ground. Such data or data related to other angle
+steps (for example 16 steps instead of 36 steps) and/or to other heights are publicly available in nearly all
+countries where noise impacts are controlled (for example www.dwd.de in Germany).
+
+                                                                     
+                                                   © ISO 2024 ­ All rights reserved
+
+                                                                  39
+Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+              ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+            Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+Table C.1 -- Wind-climatology as published by DWD (v: wind speed, angle: wind direction; here
+                                                      given in degrees)
+
+Time                 v    Angle
+
+                     m/s  deg
+
+2020-01-01T00:00:00  0,9  310
+
+2020-01-01T01:00:00  1,7  40
+
+2020-01-01T02:00:00  1,4  40
+
+2020-01-01T03:00:00  2    50
+
+2020-01-01T04:00:00  0,8  50
+
+2020-01-01T05:00:00  0,8  10
+
+2020-01-01T06:00:00  1,5  70
+
+2020-01-01T07:00:00  0,9  20
+
+2020-01-01T08:00:00  0,5  30
+
+...................
+
+...................
+
+...................
+
+2020-01-01T18:00:00  0,8  50
+
+2020-01-01T19:00:00  0,6  30
+
+2020-01-01T20:00:00  0,5  300
+
+2020-01-01T21:00:00  1,1  230
+
+2020-01-01T22:00:00  0,7  120
+
+2020-01-01T23:00:00  2,2  230
+
+These wind data (measured at the DWD station Munich Airport 10 m above ground) averaged 10 minutes
+per sample (10-minute average before the hour) are evaluated for one year (2020) and the resulting angular
+distribution for all 8 760 samples is shown in Figure C.1.
+
+            Figure C.1 -- Angular wind distribution pwd() - here in percent - based on one year
+                                                 (wind speeds 1 m/s ­ 10 m/s)
+
+With Formula (C.2) and using the parameters Q = 5 dB and  = /4 the apparent wind-related long-distance
+directivity is shown in Figure C.2.
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                    40
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+  Figure C.2 -- The apparent wind-related long-distance directivity Dwd() depending on the angle
+                                       between propagation and upwind direction
+
+With Formula (C.6) the final value of C0 based on the wind distribution pwd() is determined and shown in
+Figure C.3.
+
+                           Figure C.3 -- Resulting angular distribution C0() in decibels
+With the described strategy, the angular distribution of C0 does not depend on any source parameters and is
+therefore identical for all sources at a given location.
+The above is only to demonstrate the principles. It is assumed that the applied dataset (as shown in Table C.1)
+is representative for the propagation situation.
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                    41
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+                                          Annex D
+                                       (informative)
+
+      Calculation of sound pressure levels caused by wind turbines
+
+D.1 Applicability of the calculation method for wind turbines
+
+This annex focuses on land-based and near-shore wind turbines. Many years of experience in comparing the
+measured sound pressure levels with those calculated with this document (see References [20] to [26]) have
+shown that with the following recommended parameters, reasonable agreement between measured and
+calculated results are realized, with predictions being similar to or above measured levels depending on the
+parameters used (receiver height, source levels etc.).
+
+D.2 Emission values and source modelling
+
+The apparent sound power of a wind turbine is determined by measurements in accordance with
+IEC 61400-11[9].
+While the sound energy is radiated from different parts of the rotor-disc with complex spatial distribution,
+acoustically, a wind turbine is modelled as an omnidirectional point source at hub-height H (see Figure D.1).
+The point source defined in IEC 61400-11 is located at the hub centre for horizontal-axis turbines and at the
+position of the rotor-centre for vertical-axis turbines.
+
+Key
+1 rotor
+S point-source
+H hub height
+D rotor diameter
+
+                  Figure D.1 -- Wind-turbine in side-view (horizontal-axis)
+
+D.3 Barrier attenuation, Abar
+
+Care shall be taken when applying barrier attenuations, Abar, in wind turbine sound calculations if the
+rotor is completely or partially screened. It has been reported in some cases that the barrier attenuations
+specified in 7.4 did not correctly reflect the barrier effects obtained in practice. Experience with screening
+by elevated ground in hilly terrain indicates that the Abar may be evaluated by considering a source height
+higher than hub height (e.g., tip height) and/or restricting the applied barrier attenuation, Abar, to no more
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                    42
+                        Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                      ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                    Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+than 3 dB. This annex does not address localized screening by buildings as Abar here only considers screening
+by terrain.
+
+D.4 Calculation of the ground attenuation, Agr
+
+The ground effect, Agr, is calculated with the "General method" in 7.3.1. Comparisons between calculated and
+measured A-weighted sound pressure levels have shown the classification of ground with G = 1 as proposed
+in 7.3.1 for porous ground (second category b), or the simplified method of 7.3.2, led to an underprediction
+of sound pressure levels in most investigations with wind turbines and should therefore not be applied.
+When the source is a wind turbine, the attenuation due to ground effect appears lower than considered in
+the "General method" and the selection of the ground factor in a) ­ c) in 7.3.1 should be modified as follows:
+
+     Hard ground, which includes paving, water, solid ice, concrete, and all other ground surfaces having a
+     low porosity. Tamped ground, for example, as often occurs around industrial sites, can be considered
+     hard. For hard ground G = 0.
+
+     Porous or mixed ground, which includes ground covered by grass, trees or other vegetation, and
+     farming land should be modelled using a maximum of G = 0,5.
+
+NOTE 1 Instead of the term "porous ground," the term "absorbing ground" is used in some countries.
+
+When using G = 0,5, a minimum receiver height of 4 m is recommended for the purposes of the predictions,
+regardless of actual receiver height.
+
+D.5 Correction of Agr to account for concave ground profile
+
+The method of calculating the ground effect specified at 7.3.1 is based on a scenario with ground which is
+approximately flat, either horizontally or with a constant slope. Some investigations have found that concave
+ground profiles (propagation over a valley) can result in lower levels of ground attenuation.
+
+While additional investigations are necessary to confirm the relation between concave ground profile and
+ground attenuation, the correction of Formula (D.1) may be used as a temporary convention:
+
+dAgr = -3 dB.                                                                                                     (D.1)
+
+dAgr is added to Agr. It is applied in all frequency bands if the ground falls away significantly between the
+source and the receiver, such that the mean propagation height hm is at least 50 % more than that over flat
+ground. This condition is fulfilled if:
+
+hm      1,5×  hS  + hR                                                                                            (D.2)
+                  2
+
+where
+
+     hm is the mean height above ground of the direct line of sight from source to receiver, expressed in
+             metres;
+
+     hS is the height of source above local ground, expressed in metres;
+     hR is the height of receiver above local ground, expressed in metres.
+The above suggested criterion is however indicative only and should be considered on a case-by-case basis.
+
+D.6 The meteorological correction Cmet
+
+A long-term average A-weighted sound pressure level LAT(LT) can be calculated with Formula (7) in
+connection with Clause 8. If C0 is determined on the basis of wind directions, these should be representative
+
+                                          
+                        © ISO 2024 ­ All rights reserved
+
+                                       43
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+of the height of the rotor centre. With wind turbine sources it is also necessary to consider how the emitted
+sound power varies with wind speed when calculating long-term average sound pressure levels.
+D.7 About the estimated uncertainty of the method
+Investigations and comparisons of calculated and measured sound pressure levels from wind turbines have
+shown that with the additional recommendations described in this annex, neither the wind speed range
+of Clause 5 nor the height range of Table 4 represent a restriction nor limitation on the applicability of this
+document to wind turbines (see References [19] to [26]).
+The recommendations described in this annex are consistent with predicting the most probable value that
+would be measured with the modelled environmental conditions (e.g., wind speed dependent sound power
+level). Different studies have compared in detail measurements of operational turbines and predictions with
+different parameters and the current consensus is that for propagation over porous ground conditions:
+-- modelling with G=0 with positive adjustments on the source levels (e.g. uncertainty margin) can overstate
+
+     measured levels;
+-- modelling with G=0,5 without positive adjustments can understate the measured values.
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                    44
+           Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                         ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                       Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+
+                               Bibliography
+
+[1] ISO 1996-1:2016, Acoustics -- Description, measurement and assessment of environmental noise -- Part
+         1: Basic quantities and assessment procedures
+
+[2] ISO 1996-2:2017, Acoustics -- Description, measurement and assessment of environmental noise -- Part
+         2: Determination of sound pressure levels
+
+[3] ISO/PAS 1996-3:2022, Acoustics -- Description, measurement and assessment of environmental noise
+         -- Part 3: Objective method for the measurement of prominence of impulsive sounds and for adjustment
+         of L Aeq
+
+[4] ISO 3740:2019, Acoustics -- Determination of sound power levels of noise sources -- Guidelines for the
+         use of basic standards
+
+[5] ISO 8297:1994, Acoustics -- Determination of sound power levels of multisource industrial plants for
+         evaluation of sound pressure levels in the environment -- Engineering method
+
+[6] ISO 17534-1:2015, Acoustics -- Software for the calculation of sound outdoors -- Part 1: Quality
+         requirements and quality assurance
+
+[7] ISO/TR 17534-3:2015, Acoustics -- Software for the calculation of sound outdoors -- Part 3:
+         Recommendations for quality assured implementation of ISO 9613-2 in software according to ISO 17534-1
+
+[8] IEC 61260-1, Electroacoustics -- Octave-band and fractional-octave-band filters -- Part 1: Specifications
+
+[9] IEC 61400-11:2012+A1:2018, Wind turbines -- Part 11: Acoustic noise measurement techniques
+
+[10] IEC 61672-1, Electroacoustics -- Sound level meters -- Part 1: Specifications
+
+[11] Boué M., Long-range sound propagation over sea with application to wind turbine noise, Final report
+         for the Swedish Energy Agency project 21597-3, KTH, (TRITA-AVE 2007:22 ISSN 1651-7660)
+
+[12] Untersuchungsbericht Nr EMPA, 459'459, int. 591.2531 Abschnitt 5.7 ,,Besonderheiten bei der
+         Schallausbreitung über Wasser", 2012
+
+[13] Probst W., Huber B., The Calculation of Sound Levels Caused by Reflections at Cylindrical
+
+Surfaces,  download  https://w ww.datakustik.com/e -learning- center/papers-publications/
+
+(Published in german language: Schallreflexion an kreiszylindrischen Flächen, Lärmbekämpfung ­
+
+Ausgabe 2/2010)
+
+[14] Trimpop M., Mann P., "Measurements on the damping effect of forests ", AIA-DAGA 2013, Meran,
+         Italien
+
+[15] Trimpop M., Mann P., Determination of noise damping by forests", Internoise 2017, Hong Kong,
+         China
+
+[16] Reinicke W., Danner J., "Schallabstrahlung von Schornsteinen, Messung und technische Möglichkeiten
+         zu ihrer Minderung," Forschungsbericht Nr. 105.03.301., UBA-FB 81-33, Umweltbundesamt, Berlin,
+         1981
+
+[17] Kurze U.J., Schirrmacher R., Meteorologische Korrektur in DIN ISO 9613-2", Lärmbekämpfung 46
+         (1999), S.45 ­ 49
+
+[18] Hirsch K.-W., Vogelsang B. M., Cmet ­ Der Weg zu einem präzisen Ergebnis (Cmet ­ The way to
+         achieve a precise result)", Lärmbekämpfung 4 (2021), S. 114 ­ 120
+
+[19] Attenborough K., Renterghem T.V., Adequacy of engineering predictions of soft ground effect,
+         Proceedings of Forum Acusticum 2020, Lyon, France
+
+                                       
+                     © ISO 2024 ­ All rights reserved
+
+                                    45
+                                     Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                                    ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+
+                                     Single user licIeSncOe o9n6ly,1c3op-y2in:g2a0n2d 4ne(tewnor)king prohibited.
+[20] Bass J. H., Bullmore A.J., Sloth E., Development of a wind farm noise propagation prediction model,
+
+         Contract JOR3-CT95-0051, FINAL REPORT, January 1996 to May 1998, Research funded in part by
+         THE EUROPEAN COMMISSION in the framework of the Non-Nuclear Energy Programme JOULE III
+[21] Bullmore A., Adcock J., Jiggins , M. andCand , M.: Wind Farm Noise Predictions and Comparison
+         with Measurements, Third International Meeting on Wind Turbine Noise, Aalborg, Denmark; 2009
+[22] Cooper J., Evans T., Accuracy of noise predictions for wind farms; Wind Turbine Noise 2013, WTN,
+         International Conference on Wind Turbine Noise, 5, 2012
+[23] Massachusetts study on wind turbine acoustics, RSG (RESOURCE SYSTEMS GROUP, INC), Report
+         2.18.2016
+[24] Kaliski K., Bastasch M., O'Neal R., Regulating and predicting wind turbine sound in the U.S.,
+         INTER-NOISE 2018
+[25] RSG, Epsilon Associates, and Northeast Wind, 2016, "Massachusetts Study on Wind Turbine
+         Acoustics," Massachusetts Clean Energy Center and Massachusetts Department of Environmental
+         Protection
+[26] Cand M., Davis R., Jordan C., Hayes M., Perkins R., A good practice guide to the application
+         of ETSU-R-97 for the assessment and rating of wind turbine noise, Institute of Acoustics, UK IOA,
+         May 2013
+
+                                                                            
+                                                                © ISO 2024 ­ All rights reserved
+
+                                                                    46
+Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+              ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+                   Single user licence only, copying and networking prohibited.
+                         Licensed to Resonate Consultants / Tom Evans (tom.evans@resonate-consultants.com)
+                                       ISO Store Order: OP-746290 license #1/ Downloaded: 2024-02-01
+                                            Single user licence only, copying and networking prohibited.
+
+ICS17.140.01                                                                                                iso.org
+
+Price based on 46 pages
+
+
+© ISO 2024
+All rights reserved
+
