@@ -11,6 +11,7 @@
     "build:wasm": "cd ../solver && wasm-pack build --target web --out-dir ../web/src/wasm"
   },
   "dependencies": {
+    "@mapbox/shp-write": "^0.4.3",
     "@tmcw/togeojson": "^5.8.1",
     "d3-contour": "^4.0.2",
     "firebase": "^10.12.0",

@@ -199,6 +199,57 @@ export function ProjectScreen() {
     ], { animate: true, padding: [40, 40] });
   }
 
+  /// Map-fitter for after-import callback. Pads by 5% so the very-edge
+  /// markers don't sit right on the screen edge.
+  function fitToBounds(bounds: { sw: [number, number]; ne: [number, number] }) {
+    const map = mapHandleRef.current;
+    if (!map) return;
+    map.fitBounds([bounds.sw, bounds.ne], { animate: true, padding: [60, 60], maxZoom: 16 });
+  }
+
+  /// Resize calculation area to wrap every source + receiver with a 10%
+  /// buffer on each side. Picks a sensible default centre if the project
+  /// had nothing before. Triggered by the Area-tab "Fit to objects" button.
+  function fitCalcAreaToObjects() {
+    if (!project) return;
+    const points: Array<[number, number]> = [];
+    for (const s of project.sources) {
+      if (Number.isFinite(s.latLng[0]) && Number.isFinite(s.latLng[1])) points.push(s.latLng);
+    }
+    for (const r of project.receivers) {
+      if (Number.isFinite(r.latLng[0]) && Number.isFinite(r.latLng[1])) points.push(r.latLng);
+    }
+    if (points.length === 0) {
+      setError('Add at least one source or receiver before fitting the calculation area.');
+      return;
+    }
+    let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+    for (const [la, ln] of points) {
+      if (la < minLat) minLat = la; if (la > maxLat) maxLat = la;
+      if (ln < minLng) minLng = ln; if (ln > maxLng) maxLng = ln;
+    }
+    const centreLat = (minLat + maxLat) / 2;
+    const centreLng = (minLng + maxLng) / 2;
+    // Lat/lng → metres at this latitude.
+    const R = 6371008.8;
+    const lat0Rad = (centreLat * Math.PI) / 180;
+    const heightM = Math.max(500, (maxLat - minLat) * (Math.PI / 180) * R);
+    const widthM = Math.max(500, (maxLng - minLng) * (Math.PI / 180) * R * Math.cos(lat0Rad));
+    // 10% buffer = scale by 1.1, but enforce a 500 m minimum dimension so a
+    // single isolated point doesn't produce a 50 m × 50 m calc area.
+    const padded = (m: number) => Math.max(500, m * 1.1);
+    setProject({
+      ...project,
+      calculationArea: {
+        centerLatLng: [centreLat, centreLng],
+        widthM: padded(widthM),
+        heightM: padded(heightM),
+        rotationDeg: project.calculationArea?.rotationDeg ?? 0,
+      },
+    });
+    setDemStatus('idle');     // reload DEM for the new bounds
+  }
+
   // Cached point + grid snapshots (gradients) for fast Taylor extrapolation.
   const pointSnapRef = useRef<PointSnapshot | null>(null);
   const gridSnapRef = useRef<GridSnapshot | null>(null);
@@ -770,6 +821,9 @@ export function ProjectScreen() {
         demStatus={demStatus}
         demTilesLoaded={dem?.tilesLoaded ?? null}
         gridSpacingM={gridSpacingM} setGridSpacingM={setGridSpacingM}
+        onAfterImport={fitToBounds}
+        onFitCalcAreaToObjects={fitCalcAreaToObjects}
+        grid={grid}
       />
       </ErrorBoundary>
 

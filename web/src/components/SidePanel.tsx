@@ -10,6 +10,22 @@ import { EpsgPicker } from './EpsgPicker';
 import { NumericInput } from './NumericInput';
 import { inferGeoTiffCrs, parseDemGeoTiff } from '../lib/demUpload';
 import { presetForEpsg } from '../lib/projections';
+import {
+  defaultFilenameStem,
+  exportContoursKml,
+  exportContoursShp,
+  exportGridGeoTiff,
+  exportPerSourceContribCsv,
+  exportPerSourceContribXlsx,
+  exportReceiversCsv,
+  exportReceiversXlsx,
+  exportSpectraCsv,
+  exportSpectraXlsx,
+  triggerDownload,
+} from '../lib/exporters';
+import type { GridResult } from '../lib/solver';
+import { buildContourLines } from '../lib/contourLines';
+import { makeBandsForRange } from '../lib/colormap';
 import type { DemRaster } from '../lib/dem';
 import { paletteCss } from '../lib/colormap';
 
@@ -79,6 +95,16 @@ interface Props {
   demTilesLoaded: number | null;
   gridSpacingM: number;
   setGridSpacingM(v: number): void;
+  /// Called by the import modal after sources / receivers are added so
+  /// the parent can recentre the map on the new items.
+  onAfterImport?(bounds: { sw: [number, number]; ne: [number, number] }): void;
+  /// Called when the user hits "Fit to objects" in the Area tab — sets
+  /// the calculation area to encompass every source + receiver, padded
+  /// by 10% so contour bands aren't clipped at the edges.
+  onFitCalcAreaToObjects?(): void;
+  /// Latest contour grid — needed by the Results tab's GeoTIFF / KML / SHP
+  /// exporters. Null when no grid has been computed yet.
+  grid: GridResult | null;
 }
 
 const TABS: Array<{ id: Tab; label: string; numbered?: number }> = [
@@ -607,6 +633,13 @@ function AreaTab(props: Props) {
         </div>
         <div className="add-row">
           <button className="btn small" onClick={recenterOnSources}>Recentre on sources</button>
+          {props.onFitCalcAreaToObjects && (
+            <button
+              className="btn small"
+              onClick={props.onFitCalcAreaToObjects}
+              title="Resize the calculation area to wrap every source + receiver, with a 10% buffer."
+            >Fit to objects</button>
+          )}
         </div>
         <div className="hint">Drag the yellow dashed rectangle on the map (TBD); for now use the inputs above.</div>
       </Card>
@@ -850,6 +883,7 @@ function ImportTab(props: Props) {
         <ImportObjectsModal
           project={project} setProject={setProject}
           onClose={() => setImportOpen(false)}
+          onAfterImport={props.onAfterImport}
         />
       )}
     </>
@@ -860,11 +894,34 @@ function ImportTab(props: Props) {
 // -------------------- Results --------------------
 
 function ResultsTab(props: Props) {
-  const { project, results, computing, lastSolveMs, onRunGrid, onOpenSettings } = props;
+  const { project, results, grid, computing, lastSolveMs, onRunGrid, onOpenSettings, contourBounds } = props;
   const exceedances = (results ?? []).filter((r) => {
     const rx = project.receivers.find((x) => x.id === r.receiverId);
     return rx && r.totalDbA > limitForPeriod(rx, project.scenario.period);
   });
+
+  const hasResults = (results?.length ?? 0) > 0;
+  const hasGrid = grid != null;
+
+  function download(blob: Blob, suffix: string, ext: string) {
+    triggerDownload(`${defaultFilenameStem(project, suffix)}.${ext}`, blob);
+  }
+
+  function exportContours(format: 'kml' | 'shp') {
+    if (!grid) return;
+    // Build the line set with the same dB bands the user is currently
+    // viewing so the export matches the on-screen contours exactly.
+    const bands = makeBandsForRange(contourBounds.min, contourBounds.max, contourBounds.step);
+    const thresholds = bands.map((b) => b.lo);
+    const sets = buildContourLines(grid, thresholds);
+    if (format === 'kml') {
+      download(exportContoursKml(project, sets), 'contours', 'kml');
+    } else {
+      // SHP returns a Promise<Blob>.
+      exportContoursShp(project, sets).then((blob) => download(blob, 'contours', 'zip'));
+    }
+  }
+
   return (
     <>
       <Card title="Run">
@@ -880,6 +937,62 @@ function ResultsTab(props: Props) {
         <div className="meta-line">
           {project.receivers.length - exceedances.length} of {project.receivers.length} compliant
           {exceedances.length > 0 && <span style={{ color: 'var(--red)' }}> · {exceedances.length} over</span>}
+        </div>
+      </Card>
+
+      <Card title="Export">
+        <div className="hint">
+          Receiver totals + per-source contributions + per-band spectra each export
+          as <b>CSV</b> or <b>XLSX</b>. Contour lines export as <b>KML</b> or <b>shapefile</b>
+          (.zip bundle). The grid raster exports as <b>GeoTIFF</b> in WGS84.
+        </div>
+
+        <div className="meta-line"><b>Receiver totals + compliance</b></div>
+        <div className="add-row">
+          <button className="btn small" disabled={!hasResults} onClick={() => download(exportReceiversCsv(project, results), 'receivers', 'csv')}>
+            ↓ CSV
+          </button>
+          <button className="btn small" disabled={!hasResults} onClick={() => download(exportReceiversXlsx(project, results), 'receivers', 'xlsx')}>
+            ↓ XLSX
+          </button>
+        </div>
+
+        <div className="meta-line" style={{ marginTop: 8 }}><b>Per-source contributions</b></div>
+        <div className="add-row">
+          <button className="btn small" disabled={!hasResults} onClick={() => download(exportPerSourceContribCsv(project, results), 'contributions', 'csv')}>
+            ↓ CSV
+          </button>
+          <button className="btn small" disabled={!hasResults} onClick={() => download(exportPerSourceContribXlsx(project, results), 'contributions', 'xlsx')}>
+            ↓ XLSX
+          </button>
+        </div>
+
+        <div className="meta-line" style={{ marginTop: 8 }}>
+          <b>Per-band spectra</b>{' '}
+          <span className="muted">
+            ({project.scenario.bandSystem === 'oneThirdOctave' ? '31 × ⅓-octave' : '10 × octave'})
+          </span>
+        </div>
+        <div className="add-row">
+          <button className="btn small" disabled={!hasResults} onClick={() => download(exportSpectraCsv(project, results), 'spectra', 'csv')}>
+            ↓ CSV
+          </button>
+          <button className="btn small" disabled={!hasResults} onClick={() => download(exportSpectraXlsx(project, results), 'spectra', 'xlsx')}>
+            ↓ XLSX
+          </button>
+        </div>
+
+        <div className="meta-line" style={{ marginTop: 8 }}><b>Contour lines</b></div>
+        <div className="add-row">
+          <button className="btn small" disabled={!hasGrid} onClick={() => exportContours('kml')}>↓ KML</button>
+          <button className="btn small" disabled={!hasGrid} onClick={() => exportContours('shp')}>↓ Shapefile</button>
+        </div>
+
+        <div className="meta-line" style={{ marginTop: 8 }}><b>Grid raster</b></div>
+        <div className="add-row">
+          <button className="btn small" disabled={!hasGrid} onClick={() => grid && download(exportGridGeoTiff(grid), 'grid', 'tif')}>
+            ↓ GeoTIFF
+          </button>
         </div>
       </Card>
 

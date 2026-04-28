@@ -27,6 +27,9 @@ interface Props {
   /// Initial selection in the kind dropdown. Defaults to 'receiver'.
   initialKind?: Kind;
   onClose(): void;
+  /// Called after a successful import with the WGS84 bounding box of the
+  /// just-added items. Lets the parent recentre / fit the map.
+  onAfterImport?(bounds: { sw: [number, number]; ne: [number, number] }): void;
 }
 
 let nextId = 7000;
@@ -54,9 +57,12 @@ const KIND_LABEL: Record<Kind, string> = {
   auxiliary: 'Auxiliary equipment',
 };
 
-export function ImportObjectsModal({ project, setProject, initialKind = 'receiver', onClose }: Props) {
+export function ImportObjectsModal({ project, setProject, initialKind = 'receiver', onClose, onAfterImport }: Props) {
   const [parsed, setParsed] = useState<ImportResult | null>(null);
   const [kind, setKind] = useState<Kind>(initialKind);
+  // initialKind defaults the model/mode pickers below — populated lazily
+  // via the dropdown's first option. No useEffect needed because we treat
+  // an empty defaultModelKey as "use the first candidate".
   const [mapping, setMapping] = useState<Record<string, string | null>>({});
   /// CRS the user has selected for the imported coords. Defaults to WGS84.
   /// For CSV → applied to (X, Y) columns. For shapefile-without-prj →
@@ -68,8 +74,31 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
   const [defaultLimitNight, setDefaultLimitNight] = useState(40);
   const [defaultHeight, setDefaultHeight] = useState(1.5);
   const [defaultHubHeight, setDefaultHubHeight] = useState(100);
+  /// Default catalog entry to use when the row has no model column (or
+  /// the value doesn't match any entry). Held as `${scope}:${id}` so the
+  /// dropdown can disambiguate global vs local entries with the same id.
+  const [defaultModelKey, setDefaultModelKey] = useState<string>('');
+  /// Default mode for the chosen default model. Empty = use the entry's
+  /// own defaultMode.
+  const [defaultMode, setDefaultMode] = useState<string>('');
   const [parsing, setParsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // For source kinds, surface the list of catalog entries up-front so the
+  // user can pick a sensible default model before the import runs.
+  const sourceCandidates = kind !== 'receiver'
+    ? listEntriesByKind(project, kind as SourceKind)
+    : [];
+  const defaultEntry = (() => {
+    if (kind === 'receiver') return null;
+    if (defaultModelKey) {
+      const [scope, ...rest] = defaultModelKey.split(':');
+      const id = rest.join(':');
+      const found = sourceCandidates.find((c) => c._scope === scope && c.id === id);
+      if (found) return found;
+    }
+    return sourceCandidates[0] ?? null;
+  })();
 
   function objectKindToImportKind(k: Kind): 'source' | 'receiver' {
     return k === 'receiver' ? 'receiver' : 'source';
@@ -100,6 +129,20 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
       setMapping(guessLocationMapping(parsed.attributeNames, objectKindToImportKind(k), parsed.format));
     }
     setDefaultHeight(k === 'receiver' ? 1.5 : 100);
+    // Pick the first available model of the new kind as the default.
+    if (k !== 'receiver') {
+      const list = listEntriesByKind(project, k as SourceKind);
+      if (list.length > 0) {
+        setDefaultModelKey(`${list[0]._scope}:${list[0].id}`);
+        setDefaultMode(list[0].defaultMode);
+      } else {
+        setDefaultModelKey('');
+        setDefaultMode('');
+      }
+    } else {
+      setDefaultModelKey('');
+      setDefaultMode('');
+    }
   }
 
   function applyImport() {
@@ -158,6 +201,7 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
         }];
       });
       setProject({ ...project, receivers: [...project.receivers, ...newReceivers] });
+      emitImportBounds(newReceivers.map((r) => r.latLng));
     } else {
       const sk = kind as SourceKind;
       const candidates = listEntriesByKind(project, sk);
@@ -165,7 +209,11 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
         alert(`No ${sk} catalog entries available — add one before importing sources of this kind.`);
         return;
       }
-      const fallback = candidates[0];
+      // Order of precedence for the per-feature model:
+      //   1. The row's `modelId` column, if it matches a catalog entry.
+      //   2. The user-picked default model in the modal.
+      //   3. The first available catalog entry of this kind.
+      const fallback = defaultEntry ?? candidates[0];
       const modelCol = mapping.modelId;
       const modeCol = mapping.mode;
       const hubCol = mapping.hubHeight;
@@ -184,9 +232,12 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
           );
           if (match) chosen = match;
         }
+        // Mode resolution mirrors the model: row first, modal default
+        // second, entry's own defaultMode last.
+        const fallbackMode = (chosen === defaultEntry && defaultMode) ? defaultMode : chosen.defaultMode;
         const modeName = modeCol && f.properties[modeCol] != null
-          ? (chosen.modes.find((m) => m.name.toLowerCase() === String(f.properties[modeCol]).toLowerCase())?.name ?? chosen.defaultMode)
-          : chosen.defaultMode;
+          ? (chosen.modes.find((m) => m.name.toLowerCase() === String(f.properties[modeCol]).toLowerCase())?.name ?? fallbackMode)
+          : fallbackMode;
         const base: Source = {
           id, kind: sk,
           catalogScope: chosen._scope,
@@ -203,8 +254,27 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
         return [base];
       });
       setProject({ ...project, sources: [...project.sources, ...newSources] });
+      emitImportBounds(newSources.map((s) => s.latLng));
     }
     onClose();
+  }
+
+  /// Compute the bbox of just-added items and notify the parent so it can
+  /// recentre / fit the map. Skipped when nothing was actually added (e.g.
+  /// every row had bad coords).
+  function emitImportBounds(coords: Array<[number, number]>) {
+    if (!onAfterImport || coords.length === 0) return;
+    let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+    for (const [lat, lng] of coords) {
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+      if (lng < minLng) minLng = lng;
+      if (lng > maxLng) maxLng = lng;
+    }
+    if (Number.isFinite(minLat) && Number.isFinite(minLng)) {
+      onAfterImport({ sw: [minLat, minLng], ne: [maxLat, maxLng] });
+    }
   }
 
   // Field set per kind. CSV has X/Y; KML and shapefile already carry geometry,
@@ -369,15 +439,49 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
                 </section>
               )}
 
-              {kind === 'wtg' && (
+              {kind !== 'receiver' && sourceCandidates.length > 0 && (
                 <section className="settings-section">
-                  <h3>Defaults</h3>
+                  <h3>Defaults (used when the row's column is unmapped or unmatched)</h3>
                   <label className="fld">
-                    <span>Hub height (m, when not in file)</span>
-                    <NumericInput min={50} max={250}
-                      value={defaultHubHeight} fallback={100}
-                      onChange={setDefaultHubHeight} />
+                    <span>Default model</span>
+                    <select
+                      value={defaultModelKey}
+                      onChange={(e) => {
+                        setDefaultModelKey(e.target.value);
+                        const [scope, ...rest] = e.target.value.split(':');
+                        const id = rest.join(':');
+                        const picked = sourceCandidates.find((c) => c._scope === scope && c.id === id);
+                        setDefaultMode(picked?.defaultMode ?? '');
+                      }}
+                    >
+                      {sourceCandidates.map((c) => (
+                        <option key={`${c._scope}:${c.id}`} value={`${c._scope}:${c.id}`}>
+                          {c.displayName}{c._scope === 'local' ? ' · local' : ''}
+                        </option>
+                      ))}
+                    </select>
                   </label>
+                  {defaultEntry && defaultEntry.modes.length > 0 && (
+                    <label className="fld">
+                      <span>Default mode</span>
+                      <select
+                        value={defaultMode || defaultEntry.defaultMode}
+                        onChange={(e) => setDefaultMode(e.target.value)}
+                      >
+                        {defaultEntry.modes.map((m) => (
+                          <option key={m.name} value={m.name}>{m.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {kind === 'wtg' && (
+                    <label className="fld">
+                      <span>Hub height (m, when not in file)</span>
+                      <NumericInput min={50} max={250}
+                        value={defaultHubHeight} fallback={100}
+                        onChange={setDefaultHubHeight} />
+                    </label>
+                  )}
                 </section>
               )}
 

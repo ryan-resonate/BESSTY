@@ -4,12 +4,16 @@
 //      `settings.propagation.maxContributionDistanceM` from the receiver
 //      contribute negligibly (Adiv >> Lw), so we skip them entirely.
 //
-//   2. **Clustering** — sources further than
-//      `settings.propagation.clusterBeyondM` get gridded into spatial
-//      cells of that size and folded into a single "virtual" point source
-//      per cell. The virtual source sits at the cell centroid with an
-//      energy-summed Lw spectrum. Near-field sources stay individual so
-//      their directivity / barrier interactions are preserved.
+//   2. **Barnes-Hut tree clustering** — adaptive spatial aggregation via
+//      `lib/sourceTree.ts`. A quadtree of all real sources is built once
+//      per snapshot; each receiver walks it depth-first and collapses any
+//      subtree where the bounding-box diagonal `s` and centroid-distance
+//      `d` satisfy `s/d < θ`. Far clusters fold into a single virtual
+//      source at their energy-weighted centroid; near sources remain
+//      individual (full ISO 9613 evaluation + AD gradients for drag).
+//      One Barnes-Hut tree replaces the previous coupled
+//      `clusterBeyondM` + cell-grid heuristic with a single physically-
+//      meaningful tolerance knob (`treeAcceptanceTheta`).
 //
 //   3. **Topography virtual barriers** — for each source→receiver pair,
 //      sample the DEM at N evenly-spaced points and check whether any
@@ -22,10 +26,10 @@
 //
 // All three are project-wide settings, opt-out via the SettingsModal.
 
-import type { Project, Source, Receiver, CatalogEntry } from './types';
+import type { Project, Source, Receiver } from './types';
 import type { DemRaster } from './dem';
 import { latLngToLocalMetres } from './solver';
-import { lookupEntry, spectrumFor } from './catalog';
+import { buildSourceTree, walkSourceTree } from './sourceTree';
 
 /// Lightweight "source-shaped" thing handed to the snapshot loop. Includes
 /// real Sources (kept verbatim) and synthetic cluster aggregates.
@@ -53,14 +57,19 @@ export interface EffectiveSource {
 
 export interface PropagationSettings {
   maxContributionDistanceM: number;
-  clusterBeyondM: number;
-  maxClustersPerReceiver: number;
+  /// Barnes-Hut tree acceptance parameter (s/d ratio threshold). Lower =
+  /// more accurate (recurses deeper), higher = faster but coarser. 0.5 is
+  /// the common default — keeps geometric error well under 1 dB.
+  treeAcceptanceTheta: number;
+  /// Legacy fields, retained on disk for back-compat with v0.x projects.
+  /// Not consulted by the current code path.
+  clusterBeyondM?: number;
+  maxClustersPerReceiver?: number;
 }
 
 const DEFAULT_PROP: PropagationSettings = {
   maxContributionDistanceM: 20000,
-  clusterBeyondM: 1500,
-  maxClustersPerReceiver: 32,
+  treeAcceptanceTheta: 0.5,
 };
 
 export function propagationSettings(project: Project): PropagationSettings {
@@ -80,154 +89,47 @@ export function approxDistanceM(a: [number, number], b: [number, number]): numbe
   return Math.sqrt(e * e + n * n);
 }
 
-/// Build the per-receiver effective source list:
-///   - drop sources further than `maxContributionDistanceM`
-///   - keep nearby sources individual
-///   - cluster distant sources into spatial cells of `clusterBeyondM`
+/// Per-receiver effective-source list, computed by walking a Barnes-Hut
+/// tree once per receiver. For batched callers (snapshot loops) prefer
+/// `buildEffectiveSourcesContext` + `effectiveSourcesForReceiver` so the
+/// tree gets built once instead of per-receiver.
 export function effectiveSourcesFor(
   project: Project,
   receiver: Receiver,
   bandSystem: 'octave' | 'oneThirdOctave',
   windSpeed: number,
 ): EffectiveSource[] {
-  const cfg = propagationSettings(project);
-  const cutoff = cfg.maxContributionDistanceM;
-  const clusterBeyond = cfg.clusterBeyondM;
-
-  const near: EffectiveSource[] = [];
-  // Bucket key → list of sources falling in that cell.
-  const farBuckets = new Map<string, Source[]>();
-
-  for (const s of project.sources) {
-    if (!Number.isFinite(s.latLng[0]) || !Number.isFinite(s.latLng[1])) continue;
-    const d = approxDistanceM(receiver.latLng, s.latLng);
-    if (cutoff > 0 && d > cutoff) continue;     // out of range entirely
-    if (clusterBeyond <= 0 || d <= clusterBeyond) {
-      near.push({ id: s.id, kind: 'real', source: s, latLng: s.latLng, memberCount: 1 });
-      continue;
-    }
-    // Far source — bucket by spatial cell. Cell size = clusterBeyondM in
-    // metres, converted into a quantised lat/lng key. Using a coarse-grid
-    // hash means two sources in the same cell always cluster together,
-    // regardless of which receiver we're looking at — that lets us reuse
-    // the bucket result if we wanted to (we don't currently, but it keeps
-    // the math local-frame-independent).
-    const cellLatDeg = (clusterBeyond / 6371008.8) * (180 / Math.PI);
-    const cellLngDeg = cellLatDeg / Math.max(0.05, Math.cos((s.latLng[0] * Math.PI) / 180));
-    const key = `${Math.floor(s.latLng[0] / cellLatDeg)}:${Math.floor(s.latLng[1] / cellLngDeg)}`;
-    const list = farBuckets.get(key) ?? [];
-    list.push(s);
-    farBuckets.set(key, list);
-  }
-
-  // Materialise clusters. Centroid is the energy-weighted mean lat/lng so
-  // the cluster sits "where the noise is", not the geometric centre.
-  const clusters: EffectiveSource[] = [];
-  for (const [, members] of farBuckets) {
-    const c = buildCluster(project, members, bandSystem, windSpeed, clusters.length);
-    if (c) clusters.push(c);
-  }
-  // If there are more clusters than the cap, keep the loudest N. Skipped
-  // clusters add a single combined "rest" cluster to avoid losing energy.
-  let kept = clusters;
-  if (cfg.maxClustersPerReceiver > 0 && clusters.length > cfg.maxClustersPerReceiver) {
-    clusters.sort((a, b) => totalLw(b.lwOverride!) - totalLw(a.lwOverride!));
-    const top = clusters.slice(0, cfg.maxClustersPerReceiver - 1);
-    const rest = clusters.slice(cfg.maxClustersPerReceiver - 1);
-    const restMerged = mergeClusters(rest, kept.length);
-    kept = restMerged ? [...top, restMerged] : top;
-  }
-  return [...near, ...kept];
+  const ctx = buildEffectiveSourcesContext(project, bandSystem, windSpeed);
+  return effectiveSourcesForReceiver(ctx, receiver.latLng);
 }
 
-function totalLw(lw: Float64Array): number {
-  let s = 0;
-  for (let i = 0; i < lw.length; i++) s += Math.pow(10, lw[i] / 10);
-  return s > 0 ? 10 * Math.log10(s) : -Infinity;
+/// Cached per-snapshot tree. `tree` is null when the project has no usable
+/// sources — callers should treat that as an empty effective list.
+export interface PropagationContext {
+  tree: ReturnType<typeof buildSourceTree>;
+  cutoffM: number;
+  theta: number;
 }
 
-function buildCluster(
+export function buildEffectiveSourcesContext(
   project: Project,
-  members: Source[],
   bandSystem: 'octave' | 'oneThirdOctave',
   windSpeed: number,
-  index: number,
-): EffectiveSource | null {
-  if (members.length === 0) return null;
-  const NB = bandSystem === 'octave' ? 10 : 31;
-  const sumLw = new Float64Array(NB);
-  let totalEnergy = 0;
-  let centLat = 0, centLng = 0;
-  let zSum = 0, zCount = 0;
-  for (const s of members) {
-    const entry: CatalogEntry | null = lookupEntry(project, s);
-    if (!entry) continue;
-    const modeName = s.modeOverride ?? entry.defaultMode;
-    const lw = spectrumFor(entry, modeName, windSpeed, bandSystem);
-    let memberEnergy = 0;
-    for (let i = 0; i < NB; i++) {
-      const e = Math.pow(10, lw[i] / 10);
-      sumLw[i] += e;
-      memberEnergy += e;
-    }
-    totalEnergy += memberEnergy;
-    centLat += s.latLng[0] * memberEnergy;
-    centLng += s.latLng[1] * memberEnergy;
-    if (s.kind === 'wtg') {
-      zSum += s.hubHeight ?? entry.hubHeights?.[0] ?? 100;
-    } else {
-      zSum += (s.elevationOffset ?? 0) + 1.5;
-    }
-    zCount += 1;
-  }
-  if (totalEnergy <= 0 || zCount === 0) return null;
-  // Convert summed energy back to Lp dB.
-  for (let i = 0; i < NB; i++) {
-    sumLw[i] = sumLw[i] > 0 ? 10 * Math.log10(sumLw[i]) : -Infinity;
-  }
+): PropagationContext {
+  const cfg = propagationSettings(project);
   return {
-    id: `cluster-${index}`,
-    kind: 'cluster',
-    latLng: [centLat / totalEnergy, centLng / totalEnergy],
-    lwOverride: sumLw,
-    zAboveGround: zSum / zCount,
-    memberCount: members.length,
+    tree: buildSourceTree(project, bandSystem, windSpeed),
+    cutoffM: cfg.maxContributionDistanceM,
+    theta: cfg.treeAcceptanceTheta,
   };
 }
 
-function mergeClusters(rest: EffectiveSource[], indexBase: number): EffectiveSource | null {
-  if (rest.length === 0) return null;
-  const NB = rest[0].lwOverride!.length;
-  const sum = new Float64Array(NB);
-  let totalEnergy = 0;
-  let centLat = 0, centLng = 0;
-  let zSum = 0;
-  let memberCount = 0;
-  for (const c of rest) {
-    let energy = 0;
-    for (let i = 0; i < NB; i++) {
-      const e = Math.pow(10, c.lwOverride![i] / 10);
-      sum[i] += e;
-      energy += e;
-    }
-    totalEnergy += energy;
-    centLat += c.latLng[0] * energy;
-    centLng += c.latLng[1] * energy;
-    zSum += (c.zAboveGround ?? 1.5) * energy;
-    memberCount += c.memberCount;
-  }
-  if (totalEnergy <= 0) return null;
-  for (let i = 0; i < NB; i++) {
-    sum[i] = sum[i] > 0 ? 10 * Math.log10(sum[i]) : -Infinity;
-  }
-  return {
-    id: `cluster-${indexBase}-rest`,
-    kind: 'cluster',
-    latLng: [centLat / totalEnergy, centLng / totalEnergy],
-    lwOverride: sum,
-    zAboveGround: zSum / totalEnergy,
-    memberCount,
-  };
+export function effectiveSourcesForReceiver(
+  ctx: PropagationContext,
+  receiverLatLng: [number, number],
+): EffectiveSource[] {
+  if (!ctx.tree) return [];
+  return walkSourceTree(ctx.tree, receiverLatLng, ctx.theta, ctx.cutoffM);
 }
 
 // =================== Topography virtual barriers ===================

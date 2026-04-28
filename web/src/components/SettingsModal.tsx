@@ -152,21 +152,21 @@ export function SettingsModal({ project, setProject, onClose, gridSpacingM, setG
                   value={draft.propagation?.maxContributionDistanceM ?? 20000}
                   onChange={(e) => update({
                     propagation: {
-                      ...(draft.propagation ?? { maxContributionDistanceM: 20000, clusterBeyondM: 1500, maxClustersPerReceiver: 32 }),
+                      ...(draft.propagation ?? { maxContributionDistanceM: 20000, treeAcceptanceTheta: 0.5 }),
                       maxContributionDistanceM: +e.target.value,
                     },
                   })}
                 />
               </label>
               <label className="fld">
-                <span>Cluster sources beyond (m)</span>
+                <span>Tree acceptance θ (0.1–1.5)</span>
                 <input
-                  type="number" min={0} step={50}
-                  value={draft.propagation?.clusterBeyondM ?? 1500}
+                  type="number" min={0.1} max={1.5} step={0.05}
+                  value={draft.propagation?.treeAcceptanceTheta ?? 0.5}
                   onChange={(e) => update({
                     propagation: {
-                      ...(draft.propagation ?? { maxContributionDistanceM: 20000, clusterBeyondM: 1500, maxClustersPerReceiver: 32 }),
-                      clusterBeyondM: +e.target.value,
+                      ...(draft.propagation ?? { maxContributionDistanceM: 20000, treeAcceptanceTheta: 0.5 }),
+                      treeAcceptanceTheta: +e.target.value,
                     },
                   })}
                 />
@@ -174,11 +174,13 @@ export function SettingsModal({ project, setProject, onClose, gridSpacingM, setG
             </div>
             <div className="hint">
               <b>Max distance:</b> sources further than this from a receiver are skipped
-              (no contribution). Set to <b>0</b> to disable. Default 20 km.
+              entirely (no contribution). Set to <b>0</b> to disable. Default 20 km.
               <br />
-              <b>Clustering:</b> beyond this distance, sources within a cell of this size
-              are folded into one equivalent point source (Lw energy-summed at the centroid).
-              Set to <b>0</b> to always propagate every source individually. Default 1 500 m.
+              <b>Tree acceptance θ (Barnes-Hut):</b> when a cluster's bounding-box diagonal
+              divided by its distance to the receiver is below θ, the cluster is treated as
+              one virtual point source (energy-summed Lw at the centroid). Lower = more
+              accurate but slower. <b>0.5</b> keeps geometric error well under 1 dB; use
+              <b> 0.3</b> for very high accuracy or <b>1.0</b> for faster preview runs.
             </div>
           </section>
 

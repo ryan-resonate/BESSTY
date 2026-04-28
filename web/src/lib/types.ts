@@ -101,22 +101,22 @@ export interface ProjectSettings {
     capPerBandDb: number;     // default 6 dB per octave band
     capTotalDbA: number;      // default 3 dB(A) on the per-receiver total
   };
-  /// Distance-aware solver settings. Both apply project-wide.
+  /// Distance-aware solver settings. Apply project-wide.
   propagation?: {
     /// Sources further than this from a receiver are skipped (treated as
     /// negligible contribution). Default 20 000 m. Set to 0 / negative to
     /// disable the cutoff entirely. No upper bound — the user can pin it
     /// to 0.1 m if they want to inspect a specific source-receiver pair.
     maxContributionDistanceM: number;
-    /// Sources further than this from a receiver get folded into a single
-    /// equivalent point source (energy-summed Lw at the cluster centroid).
-    /// Below this distance every source is propagated individually so the
-    /// near-field directivity / barrier interaction is preserved.
-    /// Set to 0 / negative to disable clustering. Default 1 500 m.
-    clusterBeyondM: number;
-    /// Maximum number of clusters formed per receiver. Caps memory at very
-    /// large projects (e.g. a 200-WTG portfolio behind a 20-receiver line).
-    maxClustersPerReceiver: number;
+    /// Barnes-Hut tree acceptance parameter (s/d ratio threshold) for
+    /// adaptive source clustering. Lower = more accurate but slower
+    /// (recurses deeper into the tree). 0.5 keeps geometric error well
+    /// under 1 dB; 0.3 is conservative; 1.0 is aggressive. Default 0.5.
+    treeAcceptanceTheta: number;
+    /// Legacy fields kept on disk for back-compat with v0.x projects.
+    /// No longer consulted by the current Barnes-Hut path.
+    clusterBeyondM?: number;
+    maxClustersPerReceiver?: number;
   };
   /// DEM-driven topography settings. Applies to point + grid solves.
   topography?: {

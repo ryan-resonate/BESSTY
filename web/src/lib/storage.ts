@@ -68,9 +68,12 @@ export function loadProject(id: string): Project | null {
     if (p.settings && !p.settings.propagation) {
       p.settings.propagation = {
         maxContributionDistanceM: 20000,
-        clusterBeyondM: 1500,
-        maxClustersPerReceiver: 32,
+        treeAcceptanceTheta: 0.5,
       };
+    } else if (p.settings && p.settings.propagation && p.settings.propagation.treeAcceptanceTheta == null) {
+      // v0.x projects had `clusterBeyondM`/`maxClustersPerReceiver` only.
+      // Backfill the new theta knob with a sensible default.
+      p.settings.propagation.treeAcceptanceTheta = 0.5;
     }
     if (p.settings && !p.settings.topography) {
       p.settings.topography = {
@@ -157,8 +160,7 @@ function makeEmptyProject(name: string): Project {
       extrapolation: { capPerBandDb: 6, capTotalDbA: 3 },
       propagation: {
         maxContributionDistanceM: 20000,
-        clusterBeyondM: 1500,
-        maxClustersPerReceiver: 32,
+        treeAcceptanceTheta: 0.5,
       },
       topography: {
         pathSamples: 12,

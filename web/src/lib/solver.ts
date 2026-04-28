@@ -29,8 +29,10 @@ import type {
 import { lookupEntry, spectrumFor } from './catalog';
 import type { DemRaster } from './dem';
 import {
+  buildEffectiveSourcesContext,
   concatBarriers,
   effectiveSourcesFor,
+  effectiveSourcesForReceiver,
   propagationSettings,
   topographyBarriers,
   type EffectiveSource,
@@ -297,6 +299,12 @@ export async function snapshotProject(
   const rxAbsAtSnapshot = new Map<string, [number, number, number]>();
 
   const n = bandCount(project.scenario.bandSystem);
+  // Build the Barnes-Hut tree once for the whole snapshot. Each receiver
+  // walks it independently — much cheaper than recomputing for every
+  // receiver in the inner loop.
+  const ctx = buildEffectiveSourcesContext(
+    project, project.scenario.bandSystem, project.scenario.windSpeed,
+  );
   const results: ReceiverResult[] = project.receivers.map((rx) => {
     // Skip receivers whose coords are non-finite (busted import / glitched
     // group drag). They still appear in the receiver list with a "—"
@@ -314,9 +322,7 @@ export async function snapshotProject(
     // iteration. Near sources stay individual (gradient tracked); far
     // sources fold into virtual clusters (no gradients, refreshed each
     // snapshot).
-    const effective = effectiveSourcesFor(
-      project, rx, project.scenario.bandSystem, project.scenario.windSpeed,
-    );
+    const effective = effectiveSourcesForReceiver(ctx, rx.latLng);
     for (const es of effective) {
       try {
         const { snapshot, srcAbsXyz } = es.kind === 'real'
