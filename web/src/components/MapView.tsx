@@ -4,7 +4,7 @@ import 'leaflet/dist/leaflet.css';
 import type { Project, Receiver, Source } from '../lib/types';
 import { limitForPeriod } from '../lib/types';
 import type { ReceiverResult, GridResult } from '../lib/solver';
-import { paletteRgb, paletteCss, type Palette, tForDb, makeBandsForRange } from '../lib/colormap';
+import { paletteRgb, paletteCss, type Palette, tForDb, makeBandsForRange, bicubicUpscale } from '../lib/colormap';
 import { buildContourLines } from '../lib/contourLines';
 
 export type ContourMode = 'filled' | 'lines' | 'both';
@@ -39,6 +39,8 @@ interface Props {
   showContours: boolean;
   contourMode: ContourMode;
   contourOpacity: number;
+  /// Step (dB) between iso-line thresholds, e.g. 5 dB.
+  contourStepDb: number;
   palette: Palette;
   /// dB range used as the colormap domain.
   dbDomain: { min: number; max: number };
@@ -46,6 +48,9 @@ interface Props {
   /// when the cursor leaves the map). Throttled to one update per animation
   /// frame to avoid render storms.
   onCursorMove?(latLng: [number, number] | null): void;
+  /// Receives an imperative handle to drive the map programmatically — used
+  /// by the floating MapControls panel for zoom / pan / home actions.
+  onReady?(map: L.Map): void;
 }
 
 const SOURCE_KIND_COLOR: Record<string, string> = {
@@ -178,8 +183,8 @@ export function MapView({
   project, results, grid, selectedIds, onSelect, onBoxSelect,
   onAddSource, onAddReceiver, onMoveSource, onMoveReceiver,
   onResizeCalcArea, onMoveCalcArea,
-  addMode, baseMap, showContours, contourMode, contourOpacity, palette, dbDomain,
-  onCursorMove,
+  addMode, baseMap, showContours, contourMode, contourOpacity, contourStepDb,
+  palette, dbDomain, onCursorMove, onReady,
 }: Props) {
   // Map: object id → group color (for the small ring around the marker).
   const groupColorById = new Map<string, string>();
@@ -229,7 +234,9 @@ export function MapView({
     if (!containerRef.current || mapRef.current) return;
     const initial = project.calculationArea?.centerLatLng ?? project.sources[0]?.latLng ?? [-33.6, 138.7];
     const map = L.map(containerRef.current, {
-      center: initial, zoom: 12, zoomControl: true,
+      center: initial, zoom: 12,
+      // Custom MapControls panel replaces Leaflet's default zoom widget.
+      zoomControl: false,
       // Disable Leaflet's default left-mouse drag — we use LMB for box-select
       // and bind middle-mouse to manual pan below.
       dragging: false,
@@ -395,6 +402,7 @@ export function MapView({
     });
 
     mapRef.current = map;
+    onReady?.(map);
     return () => {
       if (pendingCursorUpdate != null) cancelAnimationFrame(pendingCursorUpdate);
       containerEl.removeEventListener('mousedown', onMmbDown);
@@ -625,10 +633,20 @@ export function MapView({
     }
 
     if (contourMode === 'lines' || contourMode === 'both') {
-      const bands = makeBandsForRange(dbDomain.min, dbDomain.max);
+      const bands = makeBandsForRange(dbDomain.min, dbDomain.max, contourStepDb);
       // Iso-line at every band boundary.
       const thresholds = bands.map((b) => b.lo).concat([bands[bands.length - 1]?.hi ?? dbDomain.max]);
-      const sets = buildContourLines(grid, thresholds);
+      // Bicubic-upscale the grid 4× before contour generation: d3-contour's
+      // marching-squares produces visibly blocky lines on coarse rasters,
+      // and second-order interpolation between cells smooths them out at
+      // negligible cost (10k cells → 160k cells, ~30 ms total in practice).
+      const upsFactor = 4;
+      const ups = bicubicUpscale(grid.dbA, grid.cols, grid.rows, upsFactor);
+      const upsGrid: GridResult = {
+        cols: ups.cols, rows: ups.rows, bounds: grid.bounds,
+        dbA: ups.data, computedMs: 0,
+      };
+      const sets = buildContourLines(upsGrid, thresholds);
       for (const s of sets) {
         const t = Math.max(0, Math.min(1, (s.threshold - dbDomain.min) / (dbDomain.max - dbDomain.min || 1)));
         const colour = paletteCss(palette, t);

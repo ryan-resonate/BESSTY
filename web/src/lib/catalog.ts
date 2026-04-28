@@ -102,27 +102,46 @@ export function listEntriesByKind(
 
 // ---------- Helpers used by Source pickers ----------
 
-/// Derive an octave-band Lw spectrum from a catalog entry + mode + project
-/// wind speed, projecting the catalog's native bands onto the solver's
-/// 8-band octave system (63 Hz – 8 kHz). Bands outside that range are
-/// preserved energetically: third-octaves get summed into their parent
-/// octave; out-of-range data is dropped.
+/// Derive a per-band Lw spectrum from a catalog entry + mode + project wind
+/// speed, projecting onto the solver's chosen band system.
 ///
-/// Per the user's spec ("If only one-third octave is provided, then
-/// calculate octave from that"): a third-octave catalog entry feeds the
-/// octave solver via energy summation across each octave's three child
-/// third-octaves.
+///   - octave + octave source             → energy-snap to standard octave centres
+///   - octave + third-octave source       → sum each octave's 3 child thirds
+///   - third-octave + third-octave source → energy-snap to standard 1/3-oct centres
+///   - third-octave + octave source       → distribute each octave's energy
+///                                          equally across its 3 children
+///                                          (lp_third = lp_oct − 10 log10(3))
+export function spectrumFor(
+  entry: CatalogEntry,
+  modeName: string,
+  windSpeed: number,
+  bandSystem: 'octave' | 'oneThirdOctave',
+): Float64Array {
+  const mode = entry.modes.find((m) => m.name === modeName) ?? entry.modes[0];
+  if (!mode) return new Float64Array(bandSystem === 'octave' ? OCTAVE_CENTRES.length : THIRD_OCT_CENTRES.length);
+
+  const sourceLevels = pickWindSpeed(mode, windSpeed);
+
+  if (bandSystem === 'octave') {
+    if (mode.bandSystem === 'octave') {
+      return snapToCentres(mode.frequencies, sourceLevels, OCTAVE_CENTRES, octaveBand);
+    }
+    return foldThirdsToOctave(mode.frequencies, sourceLevels);
+  }
+
+  if (mode.bandSystem === 'oneThirdOctave') {
+    return snapToCentres(mode.frequencies, sourceLevels, THIRD_OCT_CENTRES, thirdOctaveBand);
+  }
+  return distributeOctavesToThirds(mode.frequencies, sourceLevels);
+}
+
+/// Backwards-compatible alias for the original octave-only API.
 export function octaveSpectrumFor(
   entry: CatalogEntry,
   modeName: string,
   windSpeed: number,
 ): Float64Array {
-  const mode = entry.modes.find((m) => m.name === modeName) ?? entry.modes[0];
-  if (!mode) return new Float64Array(8);
-
-  const sourceLevels = pickWindSpeed(mode, windSpeed);
-  // Sum third-octaves into octaves; pass through if already octave.
-  return foldToOctave(mode.frequencies, sourceLevels);
+  return spectrumFor(entry, modeName, windSpeed, 'octave');
 }
 
 /// Linear-interpolate (in dB) the spectrum at the requested wind speed.
@@ -152,26 +171,66 @@ function pickWindSpeed(mode: { spectra: Record<string, number[]>; windSpeeds?: n
 
 /// 10 octave-band centres matching the solver (16 Hz – 8 kHz).
 const OCTAVE_CENTRES = [16, 31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000];
+/// 31 one-third octave centres (10 Hz – 10 kHz).
+const THIRD_OCT_CENTRES = [
+  10, 12.5, 16, 20, 25, 31.5, 40,
+  50, 63, 80, 100, 125, 160, 200, 250, 315, 400,
+  500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150,
+  4000, 5000, 6300, 8000, 10000,
+];
 
-function inOctaveBand(f: number, centre: number): boolean {
+function octaveBand(f: number, centre: number): boolean {
   const lo = centre / Math.SQRT2;
   const hi = centre * Math.SQRT2;
   return f >= lo && f < hi;
 }
+function thirdOctaveBand(f: number, centre: number): boolean {
+  // ratio is 10^(1/20) ≈ 1.122 each side of centre.
+  const lo = centre / Math.pow(10, 1 / 20);
+  const hi = centre * Math.pow(10, 1 / 20);
+  return f >= lo && f < hi;
+}
 
-function foldToOctave(frequencies: number[], levels: number[]): Float64Array {
-  const out = new Float64Array(OCTAVE_CENTRES.length);
-  for (let oct = 0; oct < OCTAVE_CENTRES.length; oct++) {
+function snapToCentres(
+  frequencies: number[],
+  levels: number[],
+  centres: number[],
+  inBand: (f: number, c: number) => boolean,
+): Float64Array {
+  const out = new Float64Array(centres.length);
+  for (let i = 0; i < centres.length; i++) {
     let energy = 0;
-    let any = false;
-    for (let i = 0; i < frequencies.length; i++) {
-      if (!inOctaveBand(frequencies[i], OCTAVE_CENTRES[oct])) continue;
-      const lp = levels[i];
+    for (let j = 0; j < frequencies.length; j++) {
+      if (!inBand(frequencies[j], centres[i])) continue;
+      const lp = levels[j];
       if (lp == null || !isFinite(lp) || lp <= 0) continue;
       energy += Math.pow(10, lp / 10);
-      any = true;
     }
-    out[oct] = any && energy > 0 ? 10 * Math.log10(energy) : 0;
+    out[i] = energy > 0 ? 10 * Math.log10(energy) : 0;
+  }
+  return out;
+}
+
+function foldThirdsToOctave(frequencies: number[], levels: number[]): Float64Array {
+  return snapToCentres(frequencies, levels, OCTAVE_CENTRES, octaveBand);
+}
+
+/// Octave-band Lw distributed equally (in linear energy) across each octave's
+/// three child third-octaves: each child receives `lw - 10·log10(3)` ≈ lw − 4.77 dB.
+function distributeOctavesToThirds(frequencies: number[], levels: number[]): Float64Array {
+  const out = new Float64Array(THIRD_OCT_CENTRES.length);
+  const split = -10 * Math.log10(3);
+  for (let i = 0; i < THIRD_OCT_CENTRES.length; i++) {
+    const t = THIRD_OCT_CENTRES[i];
+    // Find the source octave that contains this third-octave.
+    let energy = 0;
+    for (let j = 0; j < frequencies.length; j++) {
+      if (!octaveBand(t, frequencies[j])) continue;
+      const lp = levels[j];
+      if (lp == null || !isFinite(lp) || lp <= 0) continue;
+      energy += Math.pow(10, (lp + split) / 10);
+    }
+    out[i] = energy > 0 ? 10 * Math.log10(energy) : 0;
   }
   return out;
 }

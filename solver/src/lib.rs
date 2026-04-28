@@ -31,8 +31,19 @@ mod wasm {
             .collect()
     }
 
-    /// General point source (BESS, inverter, transformer, generic) at octave
-    /// resolution. Returns 8 per-band Lp values at the receiver.
+    /// Pick a band system from the input array length: 10 → octave (16 Hz – 8 kHz),
+    /// 31 → one-third octave (10 Hz – 10 kHz). Lets one set of WASM functions
+    /// serve both systems — caller passes the right-sized array.
+    fn band_system_for(n: usize) -> BandSystem {
+        match n {
+            10 => BandSystem::Octave,
+            31 => BandSystem::OneThirdOctave,
+            _ => panic!("unsupported band count: {} (expected 10 or 31)", n),
+        }
+    }
+
+    /// General point source (BESS, auxiliary, generic). Output length matches
+    /// input length: 10 for octave, 31 for one-third octave.
     ///
     /// `barriers_flat` is `[a_e, a_n, b_e, b_n, top_z, ...]` — five values
     /// per straight wall.
@@ -44,7 +55,8 @@ mod wasm {
         g: f64,
         barriers_flat: &[f64],
     ) -> Vec<f64> {
-        let lw_spec = BandSpectrum::from_iter(BandSystem::Octave, lw.iter().copied());
+        let bs = band_system_for(lw.len());
+        let lw_spec = BandSpectrum::from_iter(bs, lw.iter().copied());
         let s = Vec3::new(src_e, src_n, src_z);
         let r = Vec3::new(rx_e, rx_n, rx_z);
         let walls = unpack_walls(barriers_flat);
@@ -52,7 +64,7 @@ mod wasm {
         out.bands.into_iter().collect()
     }
 
-    /// Wind turbine source (Annex D rules) at octave resolution.
+    /// Wind turbine source (Annex D rules). Octave or third-octave by lw length.
     #[wasm_bindgen]
     pub fn evaluate_wtg_octave(
         lw: &[f64],
@@ -63,7 +75,8 @@ mod wasm {
         rotor_diameter_m: f64,
         apply_concave: bool,
     ) -> Vec<f64> {
-        let lw_spec = BandSpectrum::from_iter(BandSystem::Octave, lw.iter().copied());
+        let bs = band_system_for(lw.len());
+        let lw_spec = BandSpectrum::from_iter(bs, lw.iter().copied());
         let hub = Vec3::new(hub_e, hub_n, hub_z);
         let r = Vec3::new(rx_e, rx_n, rx_z);
         let walls = unpack_walls(barriers_flat);
@@ -75,11 +88,11 @@ mod wasm {
     }
 
     /// Energy-sum a vector of per-band Lp arrays into one A-weighted total
-    /// dB(A) value. Caller passes the 10 octave-band Lp values.
+    /// dB(A) value. 10 bands → octave; 31 → one-third octave.
     #[wasm_bindgen]
     pub fn a_weighted_total(lp_summed: &[f64]) -> f64 {
-        assert_eq!(lp_summed.len(), 10);
-        let s = BandSpectrum::from_iter(BandSystem::Octave, lp_summed.iter().copied());
+        let bs = band_system_for(lp_summed.len());
+        let s = BandSpectrum::from_iter(bs, lp_summed.iter().copied());
         s.a_weighted_total()
     }
 
@@ -137,7 +150,8 @@ mod wasm {
         result
     }
 
-    /// General point source: Lp + ∂Lp/∂(src_e, src_n, src_z) per band.
+    /// General point source with source-position gradient. Output length:
+    /// (lw.len()) primal + (lw.len() × 3) gradient = 4 × lw.len() floats.
     #[wasm_bindgen]
     pub fn evaluate_general_with_grad_src_octave(
         lw: &[f64],
@@ -147,10 +161,8 @@ mod wasm {
         barriers_flat: &[f64],
     ) -> Vec<f64> {
         type D = crate::dual::Dual<3>;
-        let lw_spec = BandSpectrum::from_iter(
-            BandSystem::Octave,
-            lw.iter().map(|&v| D::constant(v)),
-        );
+        let bs = band_system_for(lw.len());
+        let lw_spec = BandSpectrum::from_iter(bs, lw.iter().map(|&v| D::constant(v)));
         let s = Vec3::new(D::variable(src_e, 0), D::variable(src_n, 1), D::variable(src_z, 2));
         let r = Vec3::new(D::constant(rx_e), D::constant(rx_n), D::constant(rx_z));
         let walls = unpack_walls_dual::<3>(barriers_flat);
@@ -158,7 +170,7 @@ mod wasm {
         pack_dual_grad(&out)
     }
 
-    /// Wind turbine source (Annex D rules): Lp + ∂Lp/∂(hub_e, hub_n, hub_z) per band.
+    /// Wind turbine source with source-position gradient.
     #[wasm_bindgen]
     pub fn evaluate_wtg_with_grad_src_octave(
         lw: &[f64],
@@ -170,10 +182,8 @@ mod wasm {
         apply_concave: bool,
     ) -> Vec<f64> {
         type D = crate::dual::Dual<3>;
-        let lw_spec = BandSpectrum::from_iter(
-            BandSystem::Octave,
-            lw.iter().map(|&v| D::constant(v)),
-        );
+        let bs = band_system_for(lw.len());
+        let lw_spec = BandSpectrum::from_iter(bs, lw.iter().map(|&v| D::constant(v)));
         let hub = Vec3::new(D::variable(hub_e, 0), D::variable(hub_n, 1), D::variable(hub_z, 2));
         let r = Vec3::new(D::constant(rx_e), D::constant(rx_n), D::constant(rx_z));
         let walls = unpack_walls_dual::<3>(barriers_flat);

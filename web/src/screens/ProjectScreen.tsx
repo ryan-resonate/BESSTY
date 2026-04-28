@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import L from 'leaflet';
 import { MapView, type BaseMap, type ContourMode } from '../components/MapView';
+import { MapControls } from '../components/MapControls';
 import { Legend, ResultsDock, StatusBar } from '../components/MapChrome';
 import { SettingsModal } from '../components/SettingsModal';
 import { SidePanel, type AddMode, type Tab } from '../components/SidePanel';
@@ -103,8 +105,10 @@ export function ProjectScreen() {
 
   const [baseMap, setBaseMap] = useState<BaseMap>('satellite');
   const [showContours, setShowContours] = useState(true);
-  const [contourMode, setContourMode] = useState<ContourMode>('filled');
+  const [contourMode, setContourMode] = useState<ContourMode>('both');
   const [contourOpacity, setContourOpacity] = useState(0.7);
+  const [contourStepDb, setContourStepDb] = useState(5);
+  const [contourBounds, setContourBounds] = useState({ min: 25, max: 60, step: 5 });
   const [palette, setPalette] = useState<Palette>('viridis');
   const [domainMode, setDomainMode] = useState<'auto' | 'fixed'>('auto');
   const [fixedDomain, setFixedDomain] = useState<{ min: number; max: number }>({ min: 25, max: 60 });
@@ -112,6 +116,35 @@ export function ProjectScreen() {
 
   const [dem, setDem] = useState<DemRaster | null>(null);
   const [demStatus, setDemStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  /// 'auto' = AWS Terrain Tiles fetched on load; 'upload' = user GeoTIFF.
+  const [demSource, setDemSource] = useState<'auto' | 'upload'>('auto');
+
+  function setDemAndSource(d: DemRaster | null, source: 'auto' | 'upload') {
+    setDem(d);
+    setDemSource(source);
+    if (source === 'auto' && d == null) {
+      // Reset request — kick the auto-loader effect by clearing status.
+      setDemStatus('idle');
+    } else if (source === 'upload') {
+      setDemStatus('ready');
+    }
+  }
+
+  // Imperative handle to the Leaflet map for the floating MapControls.
+  const mapHandleRef = useRef<L.Map | null>(null);
+  function fitCalcArea() {
+    const map = mapHandleRef.current;
+    if (!map || !project?.calculationArea) return;
+    const ca = project.calculationArea;
+    const R = 6371008.8;
+    const lat0 = (ca.centerLatLng[0] * Math.PI) / 180;
+    const dLat = (ca.heightM / 2 / R) * (180 / Math.PI);
+    const dLng = (ca.widthM / 2 / (R * Math.cos(lat0))) * (180 / Math.PI);
+    map.fitBounds([
+      [ca.centerLatLng[0] - dLat, ca.centerLatLng[1] - dLng],
+      [ca.centerLatLng[0] + dLat, ca.centerLatLng[1] + dLng],
+    ], { animate: true, padding: [40, 40] });
+  }
 
   // Cached point + grid snapshots (gradients) for fast Taylor extrapolation.
   const pointSnapRef = useRef<PointSnapshot | null>(null);
@@ -134,17 +167,81 @@ export function ProjectScreen() {
       return;
     }
     setProjectState(loaded);
+    undoStackRef.current = [];
+    redoStackRef.current = [];
   }, [projectId, navigate]);
 
+  // ---------- Undo / redo ----------
+  // Push every project mutation onto a 50-deep history stack. Ctrl+Z pops
+  // the previous state; Ctrl+Shift+Z (or Ctrl+Y) re-pushes it onto the
+  // redo stack. The first setProject call after an undo clears the redo
+  // stack — standard editor behaviour.
+  const undoStackRef = useRef<Project[]>([]);
+  const redoStackRef = useRef<Project[]>([]);
+  const UNDO_LIMIT = 50;
+
   function setProject(p: Project) {
+    if (project) {
+      undoStackRef.current.push(project);
+      if (undoStackRef.current.length > UNDO_LIMIT) undoStackRef.current.shift();
+      redoStackRef.current = [];
+    }
     setProjectState(p);
     if (projectId) saveProject(projectId, p);
   }
 
+  /// Replace project state without recording it on the undo stack — used by
+  /// undo/redo themselves, and by the project-load effect.
+  function setProjectQuiet(p: Project) {
+    setProjectState(p);
+    if (projectId) saveProject(projectId, p);
+  }
+
+  useEffect(() => {
+    function onKey(ev: KeyboardEvent) {
+      // Skip if focus is in an editable element — let the field handle Z/Y itself.
+      const t = ev.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) {
+        return;
+      }
+      const cmd = ev.ctrlKey || ev.metaKey;
+      if (cmd && (ev.key === 'z' || ev.key === 'Z')) {
+        ev.preventDefault();
+        if (ev.shiftKey) {
+          // Redo
+          const next = redoStackRef.current.pop();
+          if (!next || !project) return;
+          undoStackRef.current.push(project);
+          setProjectQuiet(next);
+        } else {
+          // Undo
+          const prev = undoStackRef.current.pop();
+          if (!prev || !project) return;
+          redoStackRef.current.push(project);
+          setProjectQuiet(prev);
+        }
+      } else if (cmd && (ev.key === 'y' || ev.key === 'Y')) {
+        ev.preventDefault();
+        const next = redoStackRef.current.pop();
+        if (!next || !project) return;
+        undoStackRef.current.push(project);
+        setProjectQuiet(next);
+      } else if (ev.key === 'Delete' || ev.key === 'Backspace') {
+        if (selectedIds.size === 0) return;
+        ev.preventDefault();
+        bulkDeleteSelected();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project, projectId, selectedIds]);
+
   // Auto-load DEM for the project area on first load. Re-load when the calc
   // area changes significantly (handled via demStatus reset on area edit).
+  // Skipped entirely when the user has supplied their own GeoTIFF.
   useEffect(() => {
-    if (!project || demStatus !== 'idle') return;
+    if (!project || demStatus !== 'idle' || demSource === 'upload') return;
     const ca = project.calculationArea;
     if (!ca) return;
     setDemStatus('loading');
@@ -157,7 +254,7 @@ export function ProjectScreen() {
     loadDemForBounds(sw, ne)
       .then((r) => { setDem(r); setDemStatus('ready'); })
       .catch((e) => { console.warn('DEM load failed (continuing flat-ground):', e); setDemStatus('error'); });
-  }, [project, demStatus]);
+  }, [project, demStatus, demSource]);
 
   // Project state changes are split into two reactive surfaces:
   //
@@ -498,13 +595,15 @@ export function ProjectScreen() {
       receivers: p.receivers.map((r) => (selectedIds.has(r.id) ? { ...r, ...patch } : r)),
     });
   }
+  /// Bulk-delete the current selection. No confirmation — the action is
+  /// undo-able via Ctrl+Z, and confirmations get in the way of fast
+  /// iteration. Cleans up dangling group memberships and drops emptied groups.
   function bulkDeleteSelected() {
     if (!project || selectedIds.size === 0) return;
     setProject({
       ...project,
       sources: project.sources.filter((s) => !selectedIds.has(s.id)),
       receivers: project.receivers.filter((r) => !selectedIds.has(r.id)),
-      // Clean up any group memberships pointing at deleted ids.
       groups: (project.groups ?? []).map((g) => ({
         ...g, memberIds: g.memberIds.filter((mid) => !selectedIds.has(mid)),
       })).filter((g) => g.memberIds.length > 0),
@@ -533,9 +632,10 @@ export function ProjectScreen() {
   }
 
   // dB colormap domain — auto-fit to grid (or to receivers if no grid yet)
-  // unless the user has chosen a fixed range.
+  // unless the user has chosen a fixed range, in which case the explicit
+  // min / max from `contourBounds` is authoritative.
   const dbDomain = useMemo(() => {
-    if (domainMode === 'fixed') return fixedDomain;
+    if (domainMode === 'fixed') return { min: contourBounds.min, max: contourBounds.max };
     if (grid) return gridDomain(grid.dbA);
     if (results && results.length > 0) {
       let min = Infinity, max = -Infinity;
@@ -547,7 +647,7 @@ export function ProjectScreen() {
       if (isFinite(min) && isFinite(max) && max > min) return { min, max };
     }
     return { min: 25, max: 60 };
-  }, [domainMode, fixedDomain, grid, results]);
+  }, [domainMode, contourBounds, grid, results]);
 
   if (!project) {
     return <div style={{ padding: 32 }}>Loading…</div>;
@@ -582,10 +682,14 @@ export function ProjectScreen() {
         computing={computing || gridStatus === 'computing'}
         lastSolveMs={lastSolveMs}
         onOpenSettings={() => setShowSettings(true)}
+        setDem={setDemAndSource}
+        demSource={demSource}
         baseMap={baseMap} setBaseMap={setBaseMap}
         showContours={showContours} setShowContours={setShowContours}
         contourMode={contourMode} setContourMode={setContourMode}
         contourOpacity={contourOpacity} setContourOpacity={setContourOpacity}
+        contourStepDb={contourStepDb} setContourStepDb={setContourStepDb}
+        contourBounds={contourBounds} setContourBounds={setContourBounds}
         palette={palette} setPalette={setPalette}
         domainMode={domainMode} setDomainMode={setDomainMode}
         fixedDomain={fixedDomain} setFixedDomain={setFixedDomain}
@@ -607,6 +711,7 @@ export function ProjectScreen() {
           showContours={showContours}
           contourMode={contourMode}
           contourOpacity={contourOpacity}
+          contourStepDb={contourStepDb}
           palette={palette}
           dbDomain={dbDomain}
           onAddSource={handleAddSource}
@@ -616,6 +721,16 @@ export function ProjectScreen() {
           onResizeCalcArea={handleResizeCalcArea}
           onMoveCalcArea={handleMoveCalcArea}
           onCursorMove={setCursorLatLng}
+          onReady={(m) => { mapHandleRef.current = m; }}
+        />
+
+        <MapControls
+          project={project}
+          baseMap={baseMap} setBaseMap={setBaseMap}
+          onZoomIn={() => mapHandleRef.current?.zoomIn()}
+          onZoomOut={() => mapHandleRef.current?.zoomOut()}
+          onPan={(dx, dy) => mapHandleRef.current?.panBy([dx, dy], { animate: true })}
+          onHome={fitCalcArea}
         />
 
         <div className="back-link">
@@ -633,7 +748,7 @@ export function ProjectScreen() {
           />
         </div>
 
-        <Legend palette={palette} domain={dbDomain} receiverDb={receiverDbList} />
+        <Legend palette={palette} domain={dbDomain} stepDb={contourStepDb} receiverDb={receiverDbList} />
 
         {error && <div className="map-toast error">solver error: {error}</div>}
       </div>

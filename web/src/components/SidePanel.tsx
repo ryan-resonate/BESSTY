@@ -5,6 +5,9 @@ import type { ReceiverResult } from '../lib/solver';
 import type { BaseMap, ContourMode } from './MapView';
 import type { Palette } from '../lib/colormap';
 import { listEntriesByKind, lookupEntry } from '../lib/catalog';
+import { ImportObjectsModal } from './ImportObjectsModal';
+import { parseDemGeoTiff } from '../lib/demUpload';
+import type { DemRaster } from '../lib/dem';
 import { paletteCss } from '../lib/colormap';
 
 const GROUP_PALETTE = [
@@ -39,6 +42,11 @@ interface Props {
   computing: boolean;
   lastSolveMs: number | null;
   onOpenSettings(): void;
+  /// Replace the project's DEM (used by the Import tab's DEM uploader).
+  setDem(d: DemRaster | null, source: 'auto' | 'upload'): void;
+  /// Source of the currently-active DEM — "auto" means AWS Terrain Tiles,
+  /// "upload" means a user-supplied GeoTIFF.
+  demSource: 'auto' | 'upload';
   /// Active tab — lifted into ProjectScreen so placement can switch tabs.
   activeTab: Tab;
   setActiveTab(t: Tab): void;
@@ -52,12 +60,18 @@ interface Props {
   setContourMode(m: ContourMode): void;
   contourOpacity: number;
   setContourOpacity(v: number): void;
+  contourStepDb: number;
+  setContourStepDb(v: number): void;
   palette: Palette;
   setPalette(p: Palette): void;
   domainMode: 'auto' | 'fixed';
   setDomainMode(m: 'auto' | 'fixed'): void;
   fixedDomain: { min: number; max: number };
   setFixedDomain(d: { min: number; max: number }): void;
+  /// Setting the user can edit in the Layers tab to override the
+  /// auto-computed contour bounds. `min`/`max`/`step` are in dB.
+  contourBounds: { min: number; max: number; step: number };
+  setContourBounds(b: { min: number; max: number; step: number }): void;
   demStatus: 'idle' | 'loading' | 'ready' | 'error';
   demTilesLoaded: number | null;
   gridSpacingM: number;
@@ -121,7 +135,7 @@ export function SidePanel(props: Props) {
         {tab === 'sources' && <SourcesTab {...props} />}
         {tab === 'area' && <AreaTab {...props} />}
         {tab === 'receivers' && <ReceiversTab {...props} />}
-        {tab === 'import' && <ImportTab />}
+        {tab === 'import' && <ImportTab {...props} />}
         {tab === 'results' && <ResultsTab {...props} />}
         {tab === 'layers' && <LayersTab {...props} />}
       </div>
@@ -203,11 +217,10 @@ function SelectionCard(props: Props) {
             }}
           >+ Save as group</button>
         )}
-        <button className="btn small" style={{ color: 'var(--red)' }} onClick={() => {
-          if (confirm(`Delete ${selectedIds.size} object${selectedIds.size === 1 ? '' : 's'}?`)) {
-            onBulkDeleteSelected();
-          }
-        }}>Delete</button>
+        <button className="btn small" style={{ color: 'var(--red)' }}
+          onClick={onBulkDeleteSelected}
+          title="Delete selection (Del). Undo with Ctrl+Z."
+        >Delete</button>
       </div>
     </section>
   );
@@ -300,12 +313,28 @@ function BulkEditPanel(props: {
     : null;
   const allSameModel = sharedKey != null
     && selectedSources.every((s) => `${s.catalogScope}:${s.modelId}` === sharedKey);
-  const sharedEntry = allSameModel ? lookupEntry(project, selectedSources[0]) : null;
+  const baselineEntry = allSameModel ? lookupEntry(project, selectedSources[0]) : null;
 
   // Model picker is offered when all selected sources share a kind (not
   // necessarily the same model). All choices are catalog entries of that
   // kind, scoped local-then-global.
   const modelChoices = sharedKind ? listEntriesByKind(project, sharedKind) : [];
+
+  // While the user has a pending model swap in the draft, the mode dropdown
+  // should reflect the *target* model's modes — not the current selection's.
+  // Fall back to the shared entry of the existing selection when no swap
+  // is pending.
+  const draftEntry = (() => {
+    if (!srcDraft.modelId || !srcDraft.catalogScope) return null;
+    const sample = selectedSources[0] ?? null;
+    if (!sample) return null;
+    return lookupEntry(project, {
+      ...sample,
+      modelId: srcDraft.modelId,
+      catalogScope: srcDraft.catalogScope,
+    });
+  })();
+  const sharedEntry = draftEntry ?? baselineEntry;
 
   return (
     <div className="bulk-edit">
@@ -692,14 +721,81 @@ function ReceiversTab(props: Props) {
 
 // -------------------- Import --------------------
 
-function ImportTab() {
+function ImportTab(props: Props) {
+  const { project, setProject, setDem, demSource } = props;
+  const [importOpen, setImportOpen] = useState(false);
+  const [demBusy, setDemBusy] = useState(false);
+  const [demError, setDemError] = useState<string | null>(null);
+  const [demName, setDemName] = useState<string | null>(null);
+
+  async function handleDemUpload(file: File) {
+    setDemError(null);
+    setDemBusy(true);
+    try {
+      const dem = await parseDemGeoTiff(file);
+      setDem(dem, 'upload');
+      setDemName(file.name);
+    } catch (e) {
+      setDemError(String(e));
+    }
+    setDemBusy(false);
+  }
+
   return (
-    <Card title="Import data">
-      <div className="hint">Source spectra CSV, receiver shapefile, DEM GeoTIFF, barriers KML — coming soon.</div>
-      <button className="btn block" disabled>📁 Choose file…</button>
-    </Card>
+    <>
+      <Card title="Import objects">
+        <div className="hint">
+          Receiver and source locations from <b>CSV</b>, <b>KML</b>, or <b>shapefile</b>
+          (.zip bundle). The dialog asks which kind to import as — receivers, WTGs,
+          BESS, or auxiliary equipment — and lets you map attributes to project fields.
+        </div>
+        <button className="btn primary block" onClick={() => setImportOpen(true)}>
+          📁 Import locations…
+        </button>
+      </Card>
+
+      <Card title="Digital elevation model">
+        <div className="hint">
+          DEM is auto-loaded from <b>AWS Terrain Tiles</b> by default. Upload a custom
+          GeoTIFF (WGS84) to override it for this project — useful for site-specific
+          LiDAR data.
+        </div>
+        <div className="meta-line">
+          Active source: <b>{demSource === 'upload' ? `upload · ${demName ?? 'GeoTIFF'}` : 'auto (AWS Terrain Tiles)'}</b>
+        </div>
+        <div className="add-row">
+          <label className="btn small" style={{ cursor: 'pointer' }}>
+            {demBusy ? 'Parsing…' : '↑ Upload .tif'}
+            <input
+              type="file" accept=".tif,.tiff"
+              style={{ display: 'none' }}
+              disabled={demBusy}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleDemUpload(f);
+                e.target.value = '';
+              }}
+            />
+          </label>
+          {demSource === 'upload' && (
+            <button className="btn small" onClick={() => { setDem(null, 'auto'); setDemName(null); }}>
+              Reset to auto
+            </button>
+          )}
+        </div>
+        {demError && <div className="hint" style={{ color: 'var(--red)' }}>Error: {demError}</div>}
+      </Card>
+
+      {importOpen && (
+        <ImportObjectsModal
+          project={project} setProject={setProject}
+          onClose={() => setImportOpen(false)}
+        />
+      )}
+    </>
   );
 }
+
 
 // -------------------- Results --------------------
 
@@ -743,6 +839,8 @@ function LayersTab(props: Props) {
     baseMap, setBaseMap, showContours, setShowContours,
     contourMode, setContourMode,
     contourOpacity, setContourOpacity, palette, setPalette,
+    contourStepDb, setContourStepDb,
+    contourBounds, setContourBounds,
     domainMode, setDomainMode, fixedDomain, setFixedDomain,
     demStatus, demTilesLoaded,
   } = props;
@@ -772,6 +870,29 @@ function LayersTab(props: Props) {
         <Field label={`Opacity ${(contourOpacity * 100).toFixed(0)}%`}>
           <input type="range" min={0.2} max={0.95} step={0.05} value={contourOpacity}
             onChange={(e) => setContourOpacity(+e.target.value)} />
+        </Field>
+        <div className="grid-2">
+          <Field label="Min (dB)">
+            <input type="number" step={1} value={contourBounds.min}
+              onChange={(e) => setContourBounds({ ...contourBounds, min: +e.target.value })} />
+          </Field>
+          <Field label="Max (dB)">
+            <input type="number" step={1} value={contourBounds.max}
+              onChange={(e) => setContourBounds({ ...contourBounds, max: +e.target.value })} />
+          </Field>
+        </div>
+        <Field label="Step (dB)">
+          <select value={contourStepDb} onChange={(e) => {
+            const v = +e.target.value;
+            setContourStepDb(v);
+            setContourBounds({ ...contourBounds, step: v });
+          }}>
+            <option value={1}>1</option>
+            <option value={2}>2</option>
+            <option value={2.5}>2.5</option>
+            <option value={5}>5 (default)</option>
+            <option value={10}>10</option>
+          </select>
         </Field>
         <Field label="Palette">
           <div className="palette-row">

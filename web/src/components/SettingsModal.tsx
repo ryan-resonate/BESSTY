@@ -15,6 +15,7 @@ interface Props {
 export function SettingsModal({ project, setProject, onClose, gridSpacingM, setGridSpacingM }: Props) {
   // Local working copies — updated freely without touching project state.
   const [draft, setDraft] = useState<ProjectSettings | null>(project.settings ?? null);
+  const [draftBandSystem, setDraftBandSystem] = useState(project.scenario.bandSystem);
   const [draftSpacing, setDraftSpacing] = useState(gridSpacingM);
 
   if (!draft) return null;
@@ -24,7 +25,11 @@ export function SettingsModal({ project, setProject, onClose, gridSpacingM, setG
   }
 
   function commit() {
-    setProject({ ...project, settings: draft! });
+    setProject({
+      ...project,
+      settings: draft!,
+      scenario: { ...project.scenario, bandSystem: draftBandSystem },
+    });
     if (draftSpacing !== gridSpacingM) setGridSpacingM(draftSpacing);
     onClose();
   }
@@ -42,6 +47,25 @@ export function SettingsModal({ project, setProject, onClose, gridSpacingM, setG
         </div>
 
         <div className="modal-body">
+          <section className="settings-section">
+            <h3>Band system</h3>
+            <label className="fld">
+              <span>Solve in</span>
+              <select
+                value={draftBandSystem}
+                onChange={(e) => setDraftBandSystem(e.target.value as 'octave' | 'oneThirdOctave')}
+              >
+                <option value="octave">Octave (10 bands · 16 Hz – 8 kHz)</option>
+                <option value="oneThirdOctave">One-third octave (31 bands · 10 Hz – 10 kHz)</option>
+              </select>
+            </label>
+            <div className="hint">
+              Octave is faster; one-third octave catches narrowband content. Source data
+              in the other band system is folded automatically (third → octave by energy
+              sum; octave → third by equal distribution across the three children).
+            </div>
+          </section>
+
           <section className="settings-section">
             <h3>Ground</h3>
             <label className="fld">

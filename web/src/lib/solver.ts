@@ -26,14 +26,32 @@ import type {
   Source,
   Project,
 } from './types';
-import { lookupEntry, octaveSpectrumFor } from './catalog';
+import { lookupEntry, spectrumFor } from './catalog';
 import type { DemRaster } from './dem';
 
-/// Number of octave bands the solver returns. Must match
-/// `OCTAVE_CENTRES_HZ.len()` in the Rust crate (currently 16 Hz – 8 kHz).
-const N_BANDS = 10;
-/// Per-pair snapshot pack length: N_BANDS values + N_BANDS × 3-axis gradient.
-const PACK_LEN = N_BANDS + N_BANDS * 3;
+/// Band count for the solver, given a scenario's band system.
+/// Matches the Rust crate's `OCTAVE_CENTRES_HZ.len()` (10) and
+/// `ONE_THIRD_OCTAVE_CENTRES_HZ.len()` (31).
+export function bandCount(bs: 'octave' | 'oneThirdOctave'): number {
+  return bs === 'oneThirdOctave' ? 31 : 10;
+}
+function packLen(bs: 'octave' | 'oneThirdOctave'): number {
+  const n = bandCount(bs);
+  return n + n * 3;
+}
+
+/// A-weighting offsets per IEC 61672-1 — separate tables for the two band
+/// systems so we don't hand the wrong-length weights to a downstream sum.
+const OCTAVE_AW = new Float64Array([-56.4, -39.4, -26.2, -16.1, -8.6, -3.2, 0.0, 1.2, 1.0, -1.1]);
+const THIRD_OCT_AW = new Float64Array([
+  -70.4, -63.4, -56.7, -50.5, -44.7, -39.4, -34.6,
+  -30.2, -26.2, -22.5, -19.1, -16.1, -13.4, -10.9, -8.6, -6.6, -4.8,
+  -3.2,  -1.9,  -0.8,   0.0,   0.6,   1.0,   1.2,   1.3,   1.2,
+   1.0,   0.5,  -0.1,  -1.1,  -2.5,
+]);
+function aWeights(bs: 'octave' | 'oneThirdOctave'): Float64Array {
+  return bs === 'oneThirdOctave' ? THIRD_OCT_AW : OCTAVE_AW;
+}
 
 let initialized: Promise<void> | null = null;
 
@@ -119,7 +137,7 @@ function snapshotPair(
     throw new Error(`Catalog entry not found: ${source.catalogScope}/${source.modelId}`);
   }
   const modeName = source.modeOverride ?? entry.defaultMode;
-  const lw = octaveSpectrumFor(entry, modeName, project.scenario.windSpeed);
+  const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
 
   if (source.kind === 'wtg') {
     const hubHeight = source.hubHeight ?? entry.hubHeights?.[0] ?? 100;
@@ -150,10 +168,12 @@ function extrapolateLpClamped(
   const dx = srcAbsNow[0] - srcAbsAtSnapshot[0];
   const dy = srcAbsNow[1] - srcAbsAtSnapshot[1];
   const dz = srcAbsNow[2] - srcAbsAtSnapshot[2];
-  const out = new Float64Array(N_BANDS);
+  // Pack layout is `n primal + n × 3 gradient`, so `snapshot.length = n + 3n = 4n`.
+  const n = snapshot.length / 4;
+  const out = new Float64Array(n);
   let stale = false;
-  for (let band = 0; band < N_BANDS; band++) {
-    const gIdx = N_BANDS + band * 3;
+  for (let band = 0; band < n; band++) {
+    const gIdx = n + band * 3;
     const baseline = snapshot[band];
     const predicted = baseline
       + snapshot[gIdx] * dx
@@ -180,8 +200,9 @@ function aWeightedTotal(perBandLp: Float64Array, aw: Float64Array): number {
 }
 
 function energySumPerBand(perSource: Array<{ perBandLp: Float64Array }>): Float64Array {
-  const out = new Float64Array(N_BANDS);
-  for (let i = 0; i < N_BANDS; i++) {
+  const n = perSource[0]?.perBandLp.length ?? 10;
+  const out = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
     let acc = 0;
     for (const { perBandLp } of perSource) acc += Math.pow(10, perBandLp[i] / 10);
     out[i] = acc > 0 ? 10 * Math.log10(acc) : -Infinity;
@@ -216,7 +237,7 @@ export async function snapshotProject(
     ?? project.sources[0]?.latLng
     ?? [0, 0];
   const barriersFlat = packBarriers(project.barriers, origin);
-  const aw = octave_a_weighting();
+  const aw = aWeights(project.scenario.bandSystem);
 
   const pairs = new Map<string, { snapshot: Float64Array; srcAbsXyz: [number, number, number] }>();
   const srcAbsAtSnapshot = new Map<string, [number, number, number]>();
@@ -234,8 +255,9 @@ export async function snapshotProject(
       );
       pairs.set(`${src.id}|${rx.id}`, { snapshot, srcAbsXyz });
       srcAbsAtSnapshot.set(src.id, srcAbsXyz);
-      const perBandLp = new Float64Array(N_BANDS);
-      for (let i = 0; i < N_BANDS; i++) perBandLp[i] = snapshot[i];
+      const n = bandCount(project.scenario.bandSystem);
+      const perBandLp = new Float64Array(n);
+      for (let i = 0; i < n; i++) perBandLp[i] = snapshot[i];
       perSource.push({ sourceId: src.id, perBandLp });
     }
 
@@ -257,7 +279,7 @@ export function extrapolateProject(
   project: Project,
   snapshot: PointSnapshot,
 ): { results: ReceiverResult[]; stale: boolean } {
-  const aw = octave_a_weighting();
+  const aw = aWeights(project.scenario.bandSystem);
   const origin = snapshot.origin;
   const capPerBand = project.settings?.extrapolation?.capPerBandDb ?? 6;
   const capTotal = project.settings?.extrapolation?.capTotalDbA ?? 3;
@@ -284,12 +306,13 @@ export function extrapolateProject(
       );
       if (pairStale) stale = true;
       perSource.push({ sourceId: src.id, perBandLp: lp });
-      for (let i = 0; i < N_BANDS; i++) {
+      const nb = bandCount(project.scenario.bandSystem);
+      for (let i = 0; i < nb; i++) {
         totalSnapshotEnergy += Math.pow(10, (cached.snapshot[i] + aw[i]) / 10);
       }
     }
     if (perSource.length === 0) {
-      return { receiverId: rx.id, perBandLp: new Float64Array(N_BANDS), totalDbA: -Infinity, perSource };
+      return { receiverId: rx.id, perBandLp: new Float64Array(bandCount(project.scenario.bandSystem)), totalDbA: -Infinity, perSource };
     }
     const summed = energySumPerBand(perSource);
     const total = aWeightedTotal(summed, aw);
@@ -378,7 +401,8 @@ export async function snapshotGrid(
   }
 
   const cellCount = cols * rows;
-  const cells = new Float32Array(cellCount * sources.length * PACK_LEN);
+  const PACK = packLen(project.scenario.bandSystem);
+  const cells = new Float32Array(cellCount * sources.length * PACK);
   const cellEnZ = new Float32Array(cellCount * 3);
 
   for (let row = 0; row < rows; row++) {
@@ -400,7 +424,7 @@ export async function snapshotGrid(
         const entry = lookupEntry(project, src);
         if (!entry) continue;
         const modeName = src.modeOverride ?? entry.defaultMode;
-        const lw = octaveSpectrumFor(entry, modeName, project.scenario.windSpeed);
+        const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
         const snap = src.kind === 'wtg'
           ? evaluate_wtg_with_grad_src_octave(
               lw, se, sn, srcZ[si], e, n, rxZ, g, barriersFlat,
@@ -409,8 +433,8 @@ export async function snapshotGrid(
           : evaluate_general_with_grad_src_octave(
               lw, se, sn, srcZ[si], e, n, rxZ, g, barriersFlat,
             );
-        const base = (cellIdx * sources.length + si) * PACK_LEN;
-        for (let k = 0; k < PACK_LEN; k++) cells[base + k] = snap[k];
+        const base = (cellIdx * sources.length + si) * PACK;
+        for (let k = 0; k < PACK; k++) cells[base + k] = snap[k];
       }
     }
   }
@@ -432,7 +456,7 @@ export function extrapolateGrid(
   dem: DemRaster | null,
 ): { grid: GridResult; stale: boolean } {
   const t0 = performance.now();
-  const aw = octave_a_weighting();
+  const aw = aWeights(project.scenario.bandSystem);
   const cols = snapshot.cols;
   const rows = snapshot.rows;
   const cellCount = cols * rows;
@@ -463,18 +487,20 @@ export function extrapolateGrid(
   }
 
   const sourcesInSnap = snapshot.sourceIds.length;
+  const PACK = packLen(project.scenario.bandSystem);
+  const NB = bandCount(project.scenario.bandSystem);
   for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
     let aSum = 0;
     let aSumBaseline = 0;
     for (let i = 0; i < sources.length; i++) {
       const slot = srcSlot[i];
       if (slot < 0) continue;
-      const base = (cellIdx * sourcesInSnap + slot) * PACK_LEN;
+      const base = (cellIdx * sourcesInSnap + slot) * PACK;
       const dx = srcDelta[i * 3];
       const dy = srcDelta[i * 3 + 1];
       const dz = srcDelta[i * 3 + 2];
-      for (let band = 0; band < N_BANDS; band++) {
-        const gIdx = base + N_BANDS + band * 3;
+      for (let band = 0; band < NB; band++) {
+        const gIdx = base + NB + band * 3;
         const baseline = snapshot.cells[base + band];
         const predicted = baseline
           + snapshot.cells[gIdx] * dx
@@ -537,7 +563,7 @@ export async function evaluateGrid(
   const ne: [number, number] = [origin[0] + dLat, origin[1] + dLng];
 
   const barriersFlat = packBarriers(project.barriers, origin);
-  const aw = octave_a_weighting();
+  const aw = aWeights(project.scenario.bandSystem);
   const srcLocal = project.sources.map((s) => latLngToLocalMetres(s.latLng, origin));
 
   const dbA = new Float32Array(cols * rows);
@@ -559,12 +585,12 @@ export async function evaluateGrid(
         const entry = lookupEntry(project, src);
         if (!entry) continue;
         const modeName = src.modeOverride ?? entry.defaultMode;
-        const lw = octaveSpectrumFor(entry, modeName, project.scenario.windSpeed);
+        const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
         const srcZ = sourceAbsZ(src, project, dem) ?? 0;
         const lp = src.kind === 'wtg'
           ? evaluate_wtg_octave(lw, se, sn, srcZ, e, n, rxZ, g, barriersFlat, entry.rotorDiameterM ?? 120, false)
           : evaluate_general_octave(lw, se, sn, srcZ, e, n, rxZ, g, barriersFlat);
-        for (let i = 0; i < N_BANDS; i++) aSum += Math.pow(10, (lp[i] + aw[i]) / 10);
+        for (let i = 0; i < lp.length; i++) aSum += Math.pow(10, (lp[i] + aw[i]) / 10);
       }
       dbA[row * cols + col] = aSum > 0 ? 10 * Math.log10(aSum) : -120;
     }

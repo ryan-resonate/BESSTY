@@ -11,11 +11,12 @@ import { paletteCss, makeBandsForRange } from '../lib/colormap';
 interface LegendProps {
   palette: Palette;
   domain: { min: number; max: number };
+  stepDb?: number;
   receiverDb: number[];
 }
 
-export function Legend({ palette, domain, receiverDb }: LegendProps) {
-  const bands = makeBandsForRange(domain.min, domain.max);
+export function Legend({ palette, domain, stepDb, receiverDb }: LegendProps) {
+  const bands = makeBandsForRange(domain.min, domain.max, stepDb);
   const count = (lo: number, hi: number) =>
     receiverDb.filter((v) => isFinite(v) && v >= lo && v < hi).length;
   return (

@@ -44,12 +44,13 @@ export function tForDb(db: number, domainLo = 25, domainHi = 60): number {
   return Math.max(0, Math.min(1, (db - domainLo) / (domainHi - domainLo)));
 }
 
-/// Build a set of human-readable contour bands spanning a dB range, snapped
-/// to "nice" 5 dB boundaries so the legend reads cleanly regardless of
-/// whether the data covers 25-50 or 60-110 dB.
+/// Build a set of human-readable contour bands spanning a dB range. Without
+/// an explicit `step`, defaults to 5 dB. Snaps the lower bound to a 5 dB
+/// boundary regardless of step so the legend reads cleanly.
 export function makeBandsForRange(
   min: number,
   max: number,
+  step?: number,
 ): Array<{ lo: number; hi: number; label: string }> {
   if (!isFinite(min) || !isFinite(max) || max - min < 1) {
     return [
@@ -60,17 +61,59 @@ export function makeBandsForRange(
       { lo: 45, hi: 50, label: '45 – 50' },
     ];
   }
-  // Snap to multiples of 5 dB.
+  const s = step && step > 0 ? step : 5;
   const lo = Math.floor(min / 5) * 5;
   const hi = Math.ceil(max / 5) * 5;
-  // Aim for 5–8 bands; widen step if range is large.
-  const span = hi - lo;
-  const step = span <= 30 ? 5 : span <= 60 ? 10 : 15;
-  const bands = [];
-  for (let v = lo; v < hi; v += step) {
-    bands.push({ lo: v, hi: v + step, label: `${v} – ${v + step}` });
+  const bands: Array<{ lo: number; hi: number; label: string }> = [];
+  for (let v = lo; v < hi; v += s) {
+    bands.push({ lo: v, hi: v + s, label: `${v} – ${v + s}` });
   }
   return bands;
+}
+
+// ---------- Bicubic upscaler for smoother contour rendering ----------
+
+/// Catmull-Rom-style bicubic interpolation kernel.
+function cubic(t: number, a: number, b: number, c: number, d: number): number {
+  return b + 0.5 * t * (c - a + t * (2 * a - 5 * b + 4 * c - d + t * (3 * (b - c) + d - a)));
+}
+
+/// Upscale a row-major 2D grid by an integer factor using bicubic
+/// interpolation. Edges fall back to bilinear (out-of-range neighbours
+/// clamped). Output array length = (cols·factor − factor + 1) × (rows·factor − factor + 1).
+/// We use the simpler `cols·factor × rows·factor` size with edge clamping.
+export function bicubicUpscale(
+  src: Float32Array,
+  cols: number,
+  rows: number,
+  factor: number,
+): { data: Float32Array; cols: number; rows: number } {
+  if (factor <= 1) return { data: src, cols, rows };
+  const newCols = (cols - 1) * factor + 1;
+  const newRows = (rows - 1) * factor + 1;
+  const out = new Float32Array(newCols * newRows);
+  const at = (c: number, r: number) => {
+    const cc = Math.max(0, Math.min(cols - 1, c));
+    const rr = Math.max(0, Math.min(rows - 1, r));
+    return src[rr * cols + cc];
+  };
+  for (let r = 0; r < newRows; r++) {
+    const sr = r / factor;
+    const r0 = Math.floor(sr);
+    const tr = sr - r0;
+    for (let c = 0; c < newCols; c++) {
+      const sc = c / factor;
+      const c0 = Math.floor(sc);
+      const tc = sc - c0;
+      // Sample a 4×4 neighbourhood.
+      const row0 = cubic(tc, at(c0 - 1, r0 - 1), at(c0, r0 - 1), at(c0 + 1, r0 - 1), at(c0 + 2, r0 - 1));
+      const row1 = cubic(tc, at(c0 - 1, r0 + 0), at(c0, r0 + 0), at(c0 + 1, r0 + 0), at(c0 + 2, r0 + 0));
+      const row2 = cubic(tc, at(c0 - 1, r0 + 1), at(c0, r0 + 1), at(c0 + 1, r0 + 1), at(c0 + 2, r0 + 1));
+      const row3 = cubic(tc, at(c0 - 1, r0 + 2), at(c0, r0 + 2), at(c0 + 1, r0 + 2), at(c0 + 2, r0 + 2));
+      out[r * newCols + c] = cubic(tr, row0, row1, row2, row3);
+    }
+  }
+  return { data: out, cols: newCols, rows: newRows };
 }
 
 /// Compute a sensible min/max for the colormap given a Float32 grid of dB
