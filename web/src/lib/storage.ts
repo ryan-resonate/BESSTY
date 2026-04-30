@@ -3,7 +3,7 @@
 // (see docs/firestore-schema.md), so swap-in is mechanical.
 
 import type { Project, ProjectSummary } from './types';
-import { makeDemoProject } from './demoProject';
+import { makeGpBessProject, makeTarongWfProject } from './demoProject';
 
 const INDEX_KEY = 'bessty.projects.index';
 const PROJECT_KEY = (id: string) => `bessty.projects.${id}`;
@@ -221,12 +221,24 @@ export function createProject(name: string): { id: string; project: Project } {
   return { id, project };
 }
 
-/// One-shot seed: if no projects exist, drop in a demo so first launch isn't
-/// an empty list.
+/// One-shot seed: drop in the GP BESS and Tarong WF examples on first
+/// launch so the project list isn't empty. Also runs a tiny migration
+/// step that clears the previous synthetic Mt Brown demo IF and only IF
+/// the user hasn't touched it (heuristic: still bears its seeded name).
+/// Real user projects are never touched by either branch.
 export function ensureDemoSeeded() {
-  if (readIndex().length === 0) {
-    const id = 'demo-mtbrown';
-    const base = makeDemoProject();
-    saveProject(id, base);
+  // 1. Migration: drop the unmodified Mt Brown demo from earlier builds.
+  const mtBrown = loadProject('demo-mtbrown');
+  if (mtBrown && mtBrown.name === 'Demo project — Mt Brown') {
+    deleteProject('demo-mtbrown');
   }
+
+  // 2. Seed each new demo only when its slot is empty — avoids stomping
+  // on user edits if they renamed/customised the demo project.
+  const seeded = (id: string, factory: () => Project) => {
+    if (loadProject(id)) return;
+    saveProject(id, factory());
+  };
+  seeded('demo-gp-bess', makeGpBessProject);
+  seeded('demo-tarong-wf', makeTarongWfProject);
 }
