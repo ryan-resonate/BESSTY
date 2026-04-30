@@ -131,9 +131,16 @@ interface ContribRow {
   contribDbA: number;
 }
 
-function aWeightedTotal(perBandLp: Float64Array, bandSystem: 'octave' | 'oneThirdOctave'): number {
+function aWeightedTotal(
+  perBandLp: Float64Array,
+  bandSystem: 'octave' | 'oneThirdOctave',
+  dOmegaDb: number = 0,
+): number {
   // Local A-weight tables (kept in sync with solver.ts). Duplication is
   // intentional — this module is pure JS, doesn't depend on WASM init.
+  // Per-band Lp out of the WASM solver is Z-weighted; A-weighting offsets
+  // are applied here at sum time. `dOmegaDb` is the project-wide
+  // solid-angle correction (see ProjectSettings.dOmegaDb).
   const octAw = [-56.4, -39.4, -26.2, -16.1, -8.6, -3.2, 0.0, 1.2, 1.0, -1.1];
   const tocAw = [
     -70.4, -63.4, -56.7, -50.5, -44.7, -39.4, -34.6,
@@ -144,7 +151,7 @@ function aWeightedTotal(perBandLp: Float64Array, bandSystem: 'octave' | 'oneThir
   const aw = bandSystem === 'oneThirdOctave' ? tocAw : octAw;
   let s = 0;
   for (let i = 0; i < Math.min(perBandLp.length, aw.length); i++) {
-    if (Number.isFinite(perBandLp[i])) s += Math.pow(10, (perBandLp[i] + aw[i]) / 10);
+    if (Number.isFinite(perBandLp[i])) s += Math.pow(10, (perBandLp[i] + aw[i] + dOmegaDb) / 10);
   }
   return s > 0 ? 10 * Math.log10(s) : -Infinity;
 }
@@ -163,7 +170,7 @@ function perSourceContribRows(
     const rx = project.receivers.find((r) => r.id === rxResult.receiverId);
     if (!rx) continue;
     for (const ps of rxResult.perSource) {
-      const dbA = aWeightedTotal(ps.perBandLp, project.scenario.bandSystem);
+      const dbA = aWeightedTotal(ps.perBandLp, project.scenario.bandSystem, project.settings?.dOmegaDb ?? 0);
       rows.push({
         receiverId: rxResult.receiverId,
         receiverName: rx.name,

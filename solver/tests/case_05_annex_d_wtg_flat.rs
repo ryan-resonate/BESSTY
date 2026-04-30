@@ -7,6 +7,8 @@
 
 use approx::assert_relative_eq;
 use beesty_solver::iso9613::annex_d::{evaluate_wtg, WtgRules};
+use beesty_solver::iso9613::atmosphere::Atmosphere;
+use beesty_solver::iso9613::barrier::BarrierConvention;
 use beesty_solver::{BandSpectrum, BandSystem, Vec3};
 
 fn case_05_setup() -> (Vec3<f64>, Vec3<f64>, BandSpectrum<f64>) {
@@ -33,6 +35,8 @@ fn case_05_a_weighted_total() {
         WtgRules::default(),
         false,                // apply_concave = false (flat ground)
         120.0,                // rotor diameter
+        Atmosphere::iso_reference(),
+        BarrierConvention::IsoEq16,
     );
     assert_relative_eq!(lp.a_weighted_total(), 41.33, epsilon = 0.5);
 }
@@ -42,8 +46,14 @@ fn case_05_g_above_0_5_silently_capped() {
     // User passes G = 1.0 (porous), Annex D caps at 0.5 → result identical
     // to the G = 0.5 case.
     let (hub, r, lw) = case_05_setup();
-    let lp_a = evaluate_wtg(&lw, hub, r, 0.5, &[], WtgRules::default(), false, 120.0);
-    let lp_b = evaluate_wtg(&lw, hub, r, 1.0, &[], WtgRules::default(), false, 120.0);
+    let lp_a = evaluate_wtg(
+        &lw, hub, r, 0.5, &[], WtgRules::default(), false, 120.0,
+        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+    );
+    let lp_b = evaluate_wtg(
+        &lw, hub, r, 1.0, &[], WtgRules::default(), false, 120.0,
+        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+    );
     assert_relative_eq!(lp_a.a_weighted_total(), lp_b.a_weighted_total(), epsilon = 1e-9);
 }
 
@@ -54,8 +64,14 @@ fn case_05_receiver_below_4m_is_clamped() {
     let (hub, _, lw) = case_05_setup();
     let r_low = Vec3::new(500.0, 0.0, 1.5);
     let r_at4 = Vec3::new(500.0, 0.0, 4.0);
-    let lp_low = evaluate_wtg(&lw, hub, r_low, 0.5, &[], WtgRules::default(), false, 120.0);
-    let lp_at4 = evaluate_wtg(&lw, hub, r_at4, 0.5, &[], WtgRules::default(), false, 120.0);
+    let lp_low = evaluate_wtg(
+        &lw, hub, r_low, 0.5, &[], WtgRules::default(), false, 120.0,
+        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+    );
+    let lp_at4 = evaluate_wtg(
+        &lw, hub, r_at4, 0.5, &[], WtgRules::default(), false, 120.0,
+        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+    );
     // Adiv differs slightly because actual receiver height enters d, but Agr
     // and Aatm are dominated. Allow up to ~0.3 dB(A) difference.
     let diff = (lp_low.a_weighted_total() - lp_at4.a_weighted_total()).abs();

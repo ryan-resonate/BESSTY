@@ -4,8 +4,9 @@
 //! both with top z=7. Expected LAT(DW) = 36.58 dB(A).
 
 use approx::assert_relative_eq;
+use beesty_solver::iso9613::atmosphere::Atmosphere;
+use beesty_solver::iso9613::barrier::{BarrierConvention, WallBarrier};
 use beesty_solver::iso9613::evaluate_with_barriers;
-use beesty_solver::iso9613::barrier::WallBarrier;
 use beesty_solver::{BandSpectrum, BandSystem, Vec3};
 
 fn case_04_setup() -> (Vec3<f64>, Vec3<f64>, Vec<WallBarrier<f64>>) {
@@ -26,7 +27,10 @@ fn flat_100_db_octave() -> BandSpectrum<f64> {
 fn case_04_a_weighted_total() {
     let (s, r, walls) = case_04_setup();
     let lw = flat_100_db_octave();
-    let lp = evaluate_with_barriers(&lw, s, r, 0.5, &walls, None);
+    let lp = evaluate_with_barriers(
+        &lw, s, r, 0.5, &walls, None,
+        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+    );
     assert_relative_eq!(lp.a_weighted_total(), 36.58, epsilon = 0.5);
 }
 
@@ -54,8 +58,14 @@ fn case_04_more_attenuation_than_case_03() {
         a_e: 50.0, a_n: -1000.0, b_e: 50.0, b_n: 1000.0, top_z: 8.0,
     }];
     let lw = flat_100_db_octave();
-    let lp_4 = evaluate_with_barriers(&lw, s, r, 0.5, &walls_4, None);
-    let lp_3 = evaluate_with_barriers(&lw, s, r, 0.5, &walls_3, None);
+    let lp_4 = evaluate_with_barriers(
+        &lw, s, r, 0.5, &walls_4, None,
+        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+    );
+    let lp_3 = evaluate_with_barriers(
+        &lw, s, r, 0.5, &walls_3, None,
+        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+    );
     assert!(lp_4.a_weighted_total() < lp_3.a_weighted_total(),
         "two edges should give more attenuation than one — got 4: {}, 3: {}",
         lp_4.a_weighted_total(), lp_3.a_weighted_total());

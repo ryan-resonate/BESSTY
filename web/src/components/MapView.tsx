@@ -4,7 +4,7 @@ import 'leaflet/dist/leaflet.css';
 import type { Project, Receiver, Source } from '../lib/types';
 import { limitForPeriod } from '../lib/types';
 import type { ReceiverResult, GridResult } from '../lib/solver';
-import { paletteRgb, paletteCss, type Palette, tForDb, makeBandsForRange, bicubicUpscale } from '../lib/colormap';
+import { paletteRgb, paletteCss, type Palette, tForDb, makeBandsForRange } from '../lib/colormap';
 import { buildContourLines } from '../lib/contourLines';
 
 export type ContourMode = 'filled' | 'lines' | 'both';
@@ -37,6 +37,10 @@ interface Props {
   addMode: 'none' | 'wtg' | 'bess' | 'auxiliary' | 'receiver' | 'measure';
   baseMap: BaseMap;
   showContours: boolean;
+  /// Debug overlay — paints a small dot at every grid cell centre so the
+  /// user can eyeball alignment between the raster, contour lines, and
+  /// the actual sampled cells. Off by default.
+  showGridDebug?: boolean;
   contourMode: ContourMode;
   contourOpacity: number;
   /// Step (dB) between iso-line thresholds, e.g. 5 dB.
@@ -183,7 +187,7 @@ export function MapView({
   project, results, grid, selectedIds, onSelect, onBoxSelect,
   onAddSource, onAddReceiver, onMoveSource, onMoveReceiver,
   onResizeCalcArea, onMoveCalcArea,
-  addMode, baseMap, showContours, contourMode, contourOpacity, contourStepDb,
+  addMode, baseMap, showContours, showGridDebug, contourMode, contourOpacity, contourStepDb,
   palette, dbDomain, onCursorMove, onReady,
 }: Props) {
   // Map: object id → group color (for the small ring around the marker).
@@ -645,17 +649,15 @@ export function MapView({
       const bands = makeBandsForRange(dbDomain.min, dbDomain.max, contourStepDb);
       // Iso-line at every band boundary.
       const thresholds = bands.map((b) => b.lo).concat([bands[bands.length - 1]?.hi ?? dbDomain.max]);
-      // Bicubic-upscale the grid 4× before contour generation: d3-contour's
-      // marching-squares produces visibly blocky lines on coarse rasters,
-      // and second-order interpolation between cells smooths them out at
-      // negligible cost (10k cells → 160k cells, ~30 ms total in practice).
-      const upsFactor = 4;
-      const ups = bicubicUpscale(grid.dbA, grid.cols, grid.rows, upsFactor);
-      const upsGrid: GridResult = {
-        cols: ups.cols, rows: ups.rows, bounds: grid.bounds,
-        dbA: ups.data, computedMs: 0,
-      };
-      const sets = buildContourLines(upsGrid, thresholds);
+      // Pass the raw grid straight through. We previously bicubic-upscaled
+      // by 4× before contour generation to smooth visibly blocky lines on
+      // coarse rasters — but the upscaled grid doesn't tile the bounds
+      // cleanly under the cell-centred convention (cell centres of the
+      // upscaled grid don't sit on cell centres of the original) which
+      // pushed contours half-a-cell SW. d3-contour's built-in `.smooth(true)`
+      // is sufficient for visual quality on grids of ~5k+ cells (typical),
+      // and keeps the contour geometry spatially exact.
+      const sets = buildContourLines(grid, thresholds);
       for (const s of sets) {
         const t = Math.max(0, Math.min(1, (s.threshold - dbDomain.min) / (dbDomain.max - dbDomain.min || 1)));
         const colour = paletteCss(palette, t);
@@ -692,8 +694,35 @@ export function MapView({
       }
     }
 
+    if (showGridDebug && grid) {
+      // Paint a small dot at every cell centre — useful when diagnosing
+      // alignment issues between the raster, contour lines, and source /
+      // receiver markers. Cell-centred convention: cell (col, row)
+      // sits at (sw + (col+0.5)/cols × lngRange, sw + (row+0.5)/rows × latRange).
+      const sw = grid.bounds.sw;
+      const ne = grid.bounds.ne;
+      const lngRange = ne[1] - sw[1];
+      const latRange = ne[0] - sw[0];
+      // Cap at 4000 dots to keep Leaflet snappy on dense grids.
+      const stride = Math.max(1, Math.ceil(Math.sqrt((grid.cols * grid.rows) / 4000)));
+      for (let row = 0; row < grid.rows; row += stride) {
+        for (let col = 0; col < grid.cols; col += stride) {
+          const lat = sw[0] + (row + 0.5) / grid.rows * latRange;
+          const lng = sw[1] + (col + 0.5) / grid.cols * lngRange;
+          L.circleMarker([lat, lng], {
+            radius: 1.5,
+            color: '#ff3399',
+            weight: 1,
+            fill: true,
+            fillOpacity: 1,
+            interactive: false,
+          }).addTo(group);
+        }
+      }
+    }
+
     if (markersGroupRef.current) { markersGroupRef.current.remove(); markersGroupRef.current.addTo(map); }
-  }, [grid, showContours, contourMode, contourOpacity, palette, dbDomain.min, dbDomain.max]);
+  }, [grid, showContours, showGridDebug, contourMode, contourOpacity, palette, dbDomain.min, dbDomain.max]);
 
   useEffect(() => {
     if (!containerRef.current) return;

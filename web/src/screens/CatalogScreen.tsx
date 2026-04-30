@@ -223,6 +223,9 @@ function blankEntry(kind: SourceKind): CatalogEntry {
     modes: [{
       name: 'default',
       bandSystem: 'octave',
+      // Default to Z (un-weighted) — matches the ISO 9613-2 convention.
+      // Switch to 'A' if pasting LwA-per-band datasheet values.
+      weighting: 'Z',
       frequencies: OCT_DEFAULT.slice(),
       spectra: kind === 'wtg'
         ? { '8': new Array(8).fill(80) }
@@ -248,12 +251,30 @@ function UploadButton(props: { onLoaded(entries: CatalogEntry[]): void }) {
         onChange={async (e) => {
           const file = e.target.files?.[0];
           if (!file) return;
+          // Ask up front whether the file's per-band Lw values are A-weighted
+          // (LwA per band — common for IEC 61400-11 and ISO 3744 datasheets)
+          // or Z-weighted (un-weighted — the ISO 9613-2 convention). Wrong
+          // answer here drives a 3–5 dB systematic error in propagated levels.
+          const isAWeighted = window.confirm(
+            'Are the per-band Lw values in this file A-weighted (LwA per band)?\n\n' +
+            'OK   → A-weighted   (typical for IEC 61400-11 turbine reports and many BESS datasheets)\n' +
+            'Cancel → Z-weighted / un-weighted   (raw Lw per band, ISO 9613-2 convention)\n\n' +
+            'BESSTY converts to Z internally. Pick wrong and propagated levels are off by ~3-5 dB.',
+          );
           setBusy(true);
           try {
             const entries = await parseCatalogXlsx(file);
             if (entries.length === 0) {
               alert('No catalog entries found in that file.');
             } else {
+              // Tag every imported mode with the chosen weighting so the
+              // converter in `spectrumFor` knows whether to un-weight.
+              const weighting: 'A' | 'Z' = isAWeighted ? 'A' : 'Z';
+              for (const entry of entries) {
+                for (const mode of entry.modes) {
+                  mode.weighting = weighting;
+                }
+              }
               props.onLoaded(entries);
             }
           } catch (err) {
@@ -450,6 +471,24 @@ export function CatalogEntryEditor(props: {
                     </select>
                   </label>
                 </div>
+                <label className="fld">
+                  <span>Frequency weighting of the per-band Lw values</span>
+                  <select
+                    value={m.weighting ?? 'Z'}
+                    onChange={(e) => updateMode(activeModeIdx, { weighting: e.target.value as 'A' | 'Z' })}
+                  >
+                    <option value="Z">Z (un-weighted) — ISO 9613-2 convention</option>
+                    <option value="A">A-weighted (LwA per band) — IEC 61400-11 / ISO 3744 datasheets</option>
+                  </select>
+                  <div className="hint">
+                    Wind-turbine sound-power data per IEC 61400-11 is usually
+                    A-weighted per band. Many BESS / inverter / transformer
+                    datasheets are also A-weighted. Pick this so BESSTY can
+                    convert to un-weighted before propagation; otherwise
+                    levels come out ~3–5 dB low (the size of the A-weighting
+                    offset across the dominant bands).
+                  </div>
+                </label>
 
                 <FrequencyRangePicker
                   bandSystem={m.bandSystem}

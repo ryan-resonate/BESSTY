@@ -4,6 +4,7 @@
 //! free-field. Expected per-band Lp and overall LAT(DW) = 47.07 dB(A).
 
 use approx::assert_relative_eq;
+use beesty_solver::iso9613::atmosphere::Atmosphere;
 use beesty_solver::iso9613::{atmosphere, divergence, evaluate_free_field};
 use beesty_solver::{BandSpectrum, BandSystem, Dual, Vec3};
 
@@ -32,7 +33,7 @@ fn case_01_adiv_value() {
 fn case_01_per_band_lp() {
     let (s, r) = case_01_geometry();
     let lw = flat_100_db_octave();
-    let lp = evaluate_free_field(&lw, s, r);
+    let lp = evaluate_free_field(&lw, s, r, Atmosphere::iso_reference());
 
     // Reference values for 10-band octave (16 Hz – 8 kHz). The original 8
     // values from validation/case-01 are at indices 2..10. The two new low
@@ -54,7 +55,7 @@ fn case_01_per_band_lp() {
 fn case_01_a_weighted_total() {
     let (s, r) = case_01_geometry();
     let lw = flat_100_db_octave();
-    let lp = evaluate_free_field(&lw, s, r);
+    let lp = evaluate_free_field(&lw, s, r, Atmosphere::iso_reference());
     let total = lp.a_weighted_total();
     // The 16 + 31.5 Hz bands contribute negligibly under A-weighting
     // (offsets −56.4 and −39.4 dB respectively) so the total is unchanged
@@ -71,7 +72,7 @@ fn case_01_third_octave_close_to_octave() {
     // agree within the documented ±0.2 dB(A) tolerance.
     let (s, r) = case_01_geometry();
     let lw_oct = flat_100_db_octave();
-    let lp_oct = evaluate_free_field(&lw_oct, s, r);
+    let lp_oct = evaluate_free_field(&lw_oct, s, r, Atmosphere::iso_reference());
 
     // Distribute 100 dB → three children at 100 - 10·log10(3) = 95.23 dB each.
     // 31-band third-octave system after the band extension.
@@ -80,7 +81,7 @@ fn case_01_third_octave_close_to_octave() {
         BandSystem::OneThirdOctave,
         std::iter::repeat(per_child).take(31),
     );
-    let lp_third = evaluate_free_field(&lw_third, s, r);
+    let lp_third = evaluate_free_field(&lw_third, s, r, Atmosphere::iso_reference());
 
     assert_relative_eq!(
         lp_oct.a_weighted_total(),
@@ -118,7 +119,7 @@ fn case_01_gradient_w_r_t_source_position() {
 #[test]
 fn case_01_aatm_at_200m() {
     let (s, r) = case_01_geometry();
-    let aatm = atmosphere::aatm_spectrum(s, r, BandSystem::Octave);
+    let aatm = atmosphere::aatm_spectrum(s, r, BandSystem::Octave, Atmosphere::iso_reference());
     // Per validation/case-01: factor 0.2 km · table values; new low bands
     // (16, 31.5 Hz) prepended with very small αatm.
     let expected = [

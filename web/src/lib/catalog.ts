@@ -120,7 +120,14 @@ export function spectrumFor(
   const mode = entry.modes.find((m) => m.name === modeName) ?? entry.modes[0];
   if (!mode) return new Float64Array(bandSystem === 'octave' ? OCTAVE_CENTRES.length : THIRD_OCT_CENTRES.length);
 
-  const sourceLevels = pickWindSpeed(mode, windSpeed);
+  // Pull the raw per-band Lw values for the requested wind speed, then
+  // un-weight if the catalog mode is stored in A-weighted form. The WASM
+  // solver always works in Z (un-weighted) per-band space — see the
+  // A-weighting note in `lib/solver.ts`.
+  const rawLevels = pickWindSpeed(mode, windSpeed);
+  const sourceLevels = (mode.weighting === 'A')
+    ? unweightFromA(mode.frequencies, rawLevels)
+    : rawLevels;
 
   if (bandSystem === 'octave') {
     if (mode.bandSystem === 'octave') {
@@ -133,6 +140,38 @@ export function spectrumFor(
     return snapToCentres(mode.frequencies, sourceLevels, THIRD_OCT_CENTRES, thirdOctaveBand);
   }
   return distributeOctavesToThirds(mode.frequencies, sourceLevels);
+}
+
+/// Convert per-band LwA values to Lw (un-weighted) by subtracting the
+/// IEC 61672-1 A-weighting offset for each band's centre frequency. The
+/// inverse of "apply A-weighting" — at 1 kHz nothing changes (offset 0);
+/// at 16 Hz a value of 49.2 dBA becomes 49.2 - (-56.4) = 105.6 dB
+/// un-weighted (much higher because A-weighting heavily suppresses LF).
+function unweightFromA(frequencies: number[], lwA: number[]): number[] {
+  const out: number[] = new Array(lwA.length);
+  for (let i = 0; i < lwA.length; i++) {
+    const f = frequencies[i];
+    const aw = aWeightingAt(f);
+    out[i] = lwA[i] - aw;
+  }
+  return out;
+}
+
+/// IEC 61672-1 A-weighting curve evaluated at any frequency. Used to
+/// convert A-weighted catalog spectra back to Z-weighted before the
+/// solver call. Closed-form per IEC 61672-1 §A.4 — exact, not a table
+/// lookup, so it works for arbitrary band centres (not just the standard
+/// octave / third-octave grids).
+function aWeightingAt(f: number): number {
+  // RA(f) per IEC 61672-1 + +2.0 normalisation so RA(1000 Hz) = 0.
+  const f2 = f * f;
+  const num = 12194.217 * 12194.217 * f2 * f2;
+  const denom =
+    (f2 + 20.598997 * 20.598997)
+    * Math.sqrt((f2 + 107.65265 * 107.65265) * (f2 + 737.86223 * 737.86223))
+    * (f2 + 12194.217 * 12194.217);
+  const ra = num / denom;
+  return 20 * Math.log10(ra) + 2.0;
 }
 
 /// Backwards-compatible alias for the original octave-only API.

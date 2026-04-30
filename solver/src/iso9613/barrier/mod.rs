@@ -13,15 +13,41 @@ use crate::units::Vec3;
 
 pub use path::WallBarrier;
 
-/// `Abar` per band combining `Dz` with `Agr` per Eqs 16/17.
+/// Convention for combining barrier diffraction Dz with ground attenuation
+/// Agr in `abar_spectrum`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BarrierConvention {
+    /// Strict ISO 9613-2 §7.4 Eqs 16/17:
+    ///   - When Agr > 0 AND Dz > 0: Abar = max(0, Dz − Agr); Agr is then
+    ///     not added separately (it's "absorbed" into Abar).
+    ///   - Else: Abar = Dz; Agr is added separately.
+    /// Net result is identical to Eq 17 when Agr ≤ 0 (boost case): the
+    /// boost stays AND the diffraction attenuation stacks.
+    IsoEq16,
+    /// Common-practice variant used by some commercial tools:
+    ///   - Abar = Dz − max(Agr, 0).
+    /// When Agr is negative (boost case) max(Agr, 0) = 0 so Abar = Dz
+    /// (same as ISO Eq 17). When Agr > 0 the sign matches ISO Eq 16.
+    /// The numerical difference vs ISO is zero in both Agr≤0 and Agr>0
+    /// cases, but the bookkeeping is simpler — Agr is always added
+    /// separately and never absorbed into Abar.
+    DzMinusMaxAgr0,
+}
+
+impl Default for BarrierConvention {
+    fn default() -> Self { Self::IsoEq16 }
+}
+
+/// `Abar` per band combining `Dz` with `Agr` per the chosen convention.
 ///
 /// `agr` is the ground attenuation computed *as if no barrier were present*.
 ///
 /// Returns:
 ///   - `abar` per band (dB attenuation; clamped at ≥ 0)
 ///   - `ground_already_in_bar`: per band, true if the band's `Abar` absorbs
-///     `Agr` (Eq 16: Agr > 0 case). Caller must skip adding Agr separately
-///     in the total attenuation when this flag is set.
+///     `Agr` (ISO Eq 16: Agr > 0 case under IsoEq16 convention). Caller
+///     must skip adding Agr separately in the total attenuation when this
+///     flag is set. Always false under DzMinusMaxAgr0.
 ///
 /// `dz_cap_db` overrides the standard 20 / 25 dB cap (used by Annex D for
 /// the WT terrain-screening case — typically 3 dB).
@@ -32,6 +58,7 @@ pub fn abar_spectrum<T: ADScalar>(
     agr: &BandSpectrum<T>,
     system: BandSystem,
     dz_cap_db: Option<f64>,
+    convention: BarrierConvention,
 ) -> (BandSpectrum<T>, Vec<bool>) {
     let mut abar = BandSpectrum::zeros(system);
     let mut ground_in_bar = vec![false; system.n_bands()];
@@ -60,18 +87,29 @@ pub fn abar_spectrum<T: ADScalar>(
         let agr_v = agr_band.to_f64();
         let dz_v = dz_capped.to_f64();
 
-        // Eq 16 (Agr > 0): Abar = Dz - Agr; Agr is then NOT added separately.
-        // Eq 17 (Agr ≤ 0): Abar = Dz;       Agr IS added separately in Eq 5.
-        let (abar_band, in_bar) = if agr_v > 0.0 && dz_v > 0.0 {
-            let val = dz_capped - agr_band;
-            // Clamp to 0 — Eq 16 specifies Abar ≥ 0.
-            if val.to_f64() < 0.0 {
-                (T::zero(), true)
-            } else {
-                (val, true)
+        let (abar_band, in_bar) = match convention {
+            BarrierConvention::IsoEq16 => {
+                // Eq 16 (Agr > 0): Abar = Dz - Agr; Agr is then NOT added separately.
+                // Eq 17 (Agr ≤ 0): Abar = Dz;       Agr IS added separately in Eq 5.
+                if agr_v > 0.0 && dz_v > 0.0 {
+                    let val = dz_capped - agr_band;
+                    // Clamp to 0 — Eq 16 specifies Abar ≥ 0.
+                    if val.to_f64() < 0.0 { (T::zero(), true) } else { (val, true) }
+                } else {
+                    (dz_capped, false)
+                }
             }
-        } else {
-            (dz_capped, false)
+            BarrierConvention::DzMinusMaxAgr0 => {
+                // Abar = Dz − max(Agr, 0). Agr is always added separately
+                // (`in_bar = false`). When Agr ≤ 0 the max clamps to 0
+                // and we return Dz unchanged; when Agr > 0 we subtract.
+                if agr_v > 0.0 && dz_v > 0.0 {
+                    let val = dz_capped - agr_band;
+                    if val.to_f64() < 0.0 { (T::zero(), false) } else { (val, false) }
+                } else {
+                    (dz_capped, false)
+                }
+            }
         };
 
         abar.bands[band_idx] = abar_band;

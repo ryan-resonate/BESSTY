@@ -13,6 +13,9 @@ pub mod barrier;
 pub mod divergence;
 pub mod ground;
 
+pub use atmosphere::Atmosphere;
+pub use barrier::BarrierConvention;
+
 use crate::dual::ADScalar;
 use crate::spectrum::BandSpectrum;
 use crate::units::Vec3;
@@ -25,10 +28,11 @@ pub fn evaluate_free_field<T: ADScalar>(
     lw: &BandSpectrum<T>,
     source_pos: Vec3<T>,
     receiver_pos: Vec3<T>,
+    atm: Atmosphere,
 ) -> BandSpectrum<T> {
     let system = lw.system;
     let adiv = divergence::adiv(source_pos, receiver_pos);
-    let aatm = atmosphere::aatm_spectrum(source_pos, receiver_pos, system);
+    let aatm = atmosphere::aatm_spectrum(source_pos, receiver_pos, system, atm);
 
     let mut out = BandSpectrum::zeros(system);
     for i in 0..system.n_bands() {
@@ -48,10 +52,11 @@ pub fn evaluate_with_ground<T: ADScalar>(
     source_pos: Vec3<T>,
     receiver_pos: Vec3<T>,
     g: T,
+    atm: Atmosphere,
 ) -> BandSpectrum<T> {
     let system = lw.system;
     let adiv = divergence::adiv(source_pos, receiver_pos);
-    let aatm = atmosphere::aatm_spectrum(source_pos, receiver_pos, system);
+    let aatm = atmosphere::aatm_spectrum(source_pos, receiver_pos, system, atm);
     let agr = ground::agr_spectrum(source_pos, receiver_pos, g, g, g, system);
 
     let mut out = BandSpectrum::zeros(system);
@@ -73,13 +78,16 @@ pub fn evaluate_with_barriers<T: ADScalar>(
     g: T,
     barriers: &[barrier::WallBarrier<T>],
     dz_cap_db: Option<f64>,
+    atm: Atmosphere,
+    barrier_conv: BarrierConvention,
 ) -> BandSpectrum<T> {
     let system = lw.system;
     let adiv = divergence::adiv(source_pos, receiver_pos);
-    let aatm = atmosphere::aatm_spectrum(source_pos, receiver_pos, system);
+    let aatm = atmosphere::aatm_spectrum(source_pos, receiver_pos, system, atm);
     let agr = ground::agr_spectrum(source_pos, receiver_pos, g, g, g, system);
-    let (abar, ground_in_bar) =
-        barrier::abar_spectrum(source_pos, receiver_pos, barriers, &agr, system, dz_cap_db);
+    let (abar, ground_in_bar) = barrier::abar_spectrum(
+        source_pos, receiver_pos, barriers, &agr, system, dz_cap_db, barrier_conv,
+    );
 
     let mut out = BandSpectrum::zeros(system);
     for i in 0..system.n_bands() {

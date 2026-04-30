@@ -4,8 +4,9 @@
 //! at z=8, infinite y-extent, G=0.5. Expected LAT(DW) = 41.17 dB(A).
 
 use approx::assert_relative_eq;
+use beesty_solver::iso9613::atmosphere::Atmosphere;
+use beesty_solver::iso9613::barrier::{BarrierConvention, WallBarrier};
 use beesty_solver::iso9613::{barrier, evaluate_with_barriers};
-use beesty_solver::iso9613::barrier::WallBarrier;
 use beesty_solver::{BandSpectrum, BandSystem, Vec3};
 
 const TOL_PER_BAND_DB: f64 = 1.0;
@@ -66,7 +67,7 @@ fn case_03_dz_per_band_matches_validation() {
 fn case_03_a_weighted_total() {
     let (s, r, walls) = case_03_setup();
     let lw = flat_100_db_octave();
-    let lp = evaluate_with_barriers(&lw, s, r, 0.5, &walls, None);
+    let lp = evaluate_with_barriers(&lw, s, r, 0.5, &walls, None, Atmosphere::iso_reference(), BarrierConvention::IsoEq16);
     let total = lp.a_weighted_total();
     assert_relative_eq!(total, 41.17, epsilon = TOL_OVERALL_DBA);
 }
@@ -75,7 +76,7 @@ fn case_03_a_weighted_total() {
 fn case_03_per_band_lp() {
     let (s, r, walls) = case_03_setup();
     let lw = flat_100_db_octave();
-    let lp = evaluate_with_barriers(&lw, s, r, 0.5, &walls, None);
+    let lp = evaluate_with_barriers(&lw, s, r, 0.5, &walls, None, Atmosphere::iso_reference(), BarrierConvention::IsoEq16);
     // Loose check on the new low bands; tighter on the existing reference
     // bands (which we don't expect to change).
     let expected = [
@@ -93,8 +94,8 @@ fn case_03_no_barrier_baseline_is_louder() {
     use beesty_solver::iso9613::evaluate_with_ground;
     let (s, r, walls) = case_03_setup();
     let lw = flat_100_db_octave();
-    let lp_with = evaluate_with_barriers(&lw, s, r, 0.5, &walls, None);
-    let lp_without = evaluate_with_ground(&lw, s, r, 0.5);
+    let lp_with = evaluate_with_barriers(&lw, s, r, 0.5, &walls, None, Atmosphere::iso_reference(), BarrierConvention::IsoEq16);
+    let lp_without = evaluate_with_ground(&lw, s, r, 0.5, Atmosphere::iso_reference());
     // Barrier should reduce the level substantially (≈ 14 dB(A) per validation).
     let drop = lp_without.a_weighted_total() - lp_with.a_weighted_total();
     assert!(drop > 10.0 && drop < 18.0, "drop = {} dB(A)", drop);

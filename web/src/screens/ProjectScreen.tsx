@@ -12,6 +12,9 @@ import { listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { gridDomain, type Palette } from '../lib/colormap';
 import { loadDemForBounds, type DemRaster } from '../lib/dem';
 import {
+  GRID_SNAPSHOT_BUDGET_BYTES,
+  estimateGridMemoryBytes,
+  evaluateGrid,
   extrapolateGrid,
   extrapolateProject,
   snapshotGrid,
@@ -97,6 +100,7 @@ function sanitizeProject(p: Project): Project {
   const fixedSources = p.sources.map((s) => {
     const out = { ...s };
     if (s.hubHeight != null) out.hubHeight = safe(s.hubHeight, 100);
+    if (s.rotorDiameterM != null) out.rotorDiameterM = safe(s.rotorDiameterM, 120);
     if (s.elevationOffset != null) out.elevationOffset = safe(s.elevationOffset, 0);
     if (s.yawDeg != null) out.yawDeg = safe(s.yawDeg, 0);
     return out;
@@ -199,6 +203,7 @@ export function ProjectScreen() {
 
   const [baseMap, setBaseMap] = useState<BaseMap>('satellite');
   const [showContours, setShowContours] = useState(true);
+  const [showGridDebug, setShowGridDebug] = useState(false);
   const [contourMode, setContourMode] = useState<ContourMode>('both');
   const [contourOpacity, setContourOpacity] = useState(0.7);
   const [contourStepDb, setContourStepDb] = useState(5);
@@ -522,6 +527,12 @@ export function ProjectScreen() {
       const { grid: g, stale } = extrapolateGrid(project, gridSnap, dem);
       setGrid(g);
       if (stale) staleHere = true;
+    } else if (grid) {
+      // Eval-only mode (no gradient pack — gridSnapRef was never built).
+      // Mark stale so the debounced re-snapshot effect below kicks in and
+      // re-runs `evaluateGrid`. Without this, dragging a source after a
+      // memory-budget fallback would leave the visible grid out of date.
+      staleHere = true;
     }
     if (staleHere) setSnapshotStale(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -542,19 +553,30 @@ export function ProjectScreen() {
           setResults(results);
           setLastSolveMs(performance.now() - start);
           setSnapshotVersion((v) => v + 1);
-          if (gridSnapRef.current) {
+          // Refresh the grid too, picking the same path Run-grid would take
+          // for the current memory budget. If we've previously been in
+          // snapshot mode (`gridSnapRef.current` is set) we re-snapshot;
+          // otherwise — and only if a grid is already on screen — we
+          // re-evaluate without gradients.
+          const heightAbove = project.settings?.general.defaultReceiverHeight ?? 1.5;
+          const refreshSnapshot = gridSnapRef.current != null;
+          const refreshEval = !refreshSnapshot && grid != null;
+          if (refreshSnapshot || refreshEval) {
             const gGen = ++gridGenRef.current;
             const gridStart = performance.now();
-            snapshotGrid(project, dem, gridSpacingM,
-              project.settings?.general.defaultReceiverHeight ?? 1.5)
-              .then((s) => {
-                if (gGen !== gridGenRef.current) return;
-                gridSnapRef.current = s;
-                const { grid: g } = extrapolateGrid(project, s, dem);
-                g.computedMs = performance.now() - gridStart;
-                setGrid(g);
-              })
-              .catch((e) => console.warn('grid re-snapshot failed:', e));
+            const promise = refreshSnapshot
+              ? snapshotGrid(project, dem, gridSpacingM, heightAbove).then((s) => {
+                  if (gGen !== gridGenRef.current) return;
+                  gridSnapRef.current = s;
+                  const { grid: g } = extrapolateGrid(project, s, dem);
+                  g.computedMs = performance.now() - gridStart;
+                  setGrid(g);
+                })
+              : evaluateGrid(project, dem, gridSpacingM, heightAbove).then((g) => {
+                  if (gGen !== gridGenRef.current) return;
+                  setGrid(g);
+                });
+            promise.catch((e) => console.warn('grid re-snapshot failed:', e));
           }
         })
         .catch((e) => { if (pGen === pointGenRef.current) setError(String(e)); })
@@ -567,9 +589,40 @@ export function ProjectScreen() {
   function runGrid() {
     if (!project) return;
     setGridStatus('computing');
+    // Memory pre-flight. The gradient pack scales as
+    //   cellCount × effective_sources × packLen × 4 bytes
+    // and is by far the largest allocation in the app. If it would exceed
+    // our soft budget (600 MB), drop straight to `evaluateGrid` — same
+    // visual result, no per-source gradients (so drag-extrapolation falls
+    // back to a fresh re-run instead of an instantaneous pure-JS update).
+    const est = estimateGridMemoryBytes(project, gridSpacingM);
+    const heightAbove = project.settings?.general.defaultReceiverHeight ?? 1.5;
     setTimeout(() => {
       const gen = ++gridGenRef.current;
-      snapshotGrid(project, dem, gridSpacingM, project.settings?.general.defaultReceiverHeight ?? 1.5)
+      // Free the previous gradient pack before allocating the new one —
+      // reduces peak memory during the transition (the GC otherwise can
+      // hold onto the old buffer while the new one is being built).
+      gridSnapRef.current = null;
+
+      if (est.snapshotBytes > GRID_SNAPSHOT_BUDGET_BYTES) {
+        const sizeMb = (est.snapshotBytes / 1024 / 1024).toFixed(0);
+        console.info(
+          `[BESSTY] grid would need ${sizeMb} MB for the gradient pack ` +
+          `(${est.cells.toLocaleString()} cells × ${est.effectiveSources} sources). ` +
+          `Falling back to evaluate-only mode — drag still works but re-evaluates ` +
+          `instead of fast-extrapolating.`,
+        );
+        evaluateGrid(project, dem, gridSpacingM, heightAbove)
+          .then((g) => {
+            if (gen !== gridGenRef.current) return;
+            setGrid(g);
+            setGridStatus('ready');
+          })
+          .catch((e) => { if (gen === gridGenRef.current) { setError(String(e)); setGridStatus('idle'); } });
+        return;
+      }
+
+      snapshotGrid(project, dem, gridSpacingM, heightAbove)
         .then((s) => {
           if (gen !== gridGenRef.current) return;
           gridSnapRef.current = s;
@@ -871,6 +924,7 @@ export function ProjectScreen() {
         demSource={demSource}
         baseMap={baseMap} setBaseMap={setBaseMap}
         showContours={showContours} setShowContours={setShowContours}
+        showGridDebug={showGridDebug} setShowGridDebug={setShowGridDebug}
         contourMode={contourMode} setContourMode={setContourMode}
         contourOpacity={contourOpacity} setContourOpacity={setContourOpacity}
         contourStepDb={contourStepDb} setContourStepDb={setContourStepDb}
@@ -902,6 +956,7 @@ export function ProjectScreen() {
           addMode={addMode}
           baseMap={baseMap}
           showContours={showContours}
+          showGridDebug={showGridDebug}
           contourMode={contourMode}
           contourOpacity={contourOpacity}
           contourStepDb={contourStepDb}

@@ -44,7 +44,10 @@
       "Bash(rm -rf node_modules/@mapbox/shp-write)",
       "Bash(rm src/types/shp-write.d.ts)",
       "mcp__Claude_Preview__preview_start",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(cargo build *)"
     ]
   }
 }

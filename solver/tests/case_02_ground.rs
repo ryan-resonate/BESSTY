@@ -4,6 +4,7 @@
 //! ground, 100 dB flat octave spectrum. Expected LAT(DW) = 48.00 dB(A).
 
 use approx::assert_relative_eq;
+use beesty_solver::iso9613::atmosphere::Atmosphere;
 use beesty_solver::iso9613::{evaluate_with_ground, ground};
 use beesty_solver::{BandSpectrum, BandSystem, Dual, Vec3};
 
@@ -37,7 +38,7 @@ fn case_02_per_band_agr() {
 fn case_02_per_band_lp() {
     let (s, r) = case_02_geometry();
     let lw = flat_100_db_octave();
-    let lp = evaluate_with_ground(&lw, s, r, 0.5);
+    let lp = evaluate_with_ground(&lw, s, r, 0.5, Atmosphere::iso_reference());
     let expected = [
         46.053, 46.044,                                                        // 16, 31.5 Hz
         46.030, 42.347, 40.423, 41.696, 43.453, 42.578, 37.958, 21.118,        // unchanged
@@ -51,7 +52,7 @@ fn case_02_per_band_lp() {
 fn case_02_a_weighted_total() {
     let (s, r) = case_02_geometry();
     let lw = flat_100_db_octave();
-    let lp = evaluate_with_ground(&lw, s, r, 0.5);
+    let lp = evaluate_with_ground(&lw, s, r, 0.5, Atmosphere::iso_reference());
     let total = lp.a_weighted_total();
     assert_relative_eq!(total, 48.00, epsilon = TOL_OVERALL_DBA);
 }
@@ -95,7 +96,7 @@ fn case_02_ad_gradient_w_r_t_source_height_finite_difference() {
         BandSystem::Octave,
         lw_vals.iter().map(|&v| Dual::<1>::constant(v)),
     );
-    let lp_dual = evaluate_with_ground(&lw, s, r, Dual::<1>::constant(0.5));
+    let lp_dual = evaluate_with_ground(&lw, s, r, Dual::<1>::constant(0.5), Atmosphere::iso_reference());
 
     // Compute A-weighted total and its derivative via the dual numbers'
     // chain rule. We mirror the f64 a_weighted_total math.
@@ -124,12 +125,14 @@ fn case_02_ad_gradient_w_r_t_source_height_finite_difference() {
         Vec3::new(0.0, 0.0, 5.0 + h),
         Vec3::new(200.0, 0.0, 1.5),
         0.5,
+        Atmosphere::iso_reference(),
     );
     let lp_minus = evaluate_with_ground(
         &lw_f,
         Vec3::new(0.0, 0.0, 5.0 - h),
         Vec3::new(200.0, 0.0, 1.5),
         0.5,
+        Atmosphere::iso_reference(),
     );
     let fd = (lp_plus.a_weighted_total() - lp_minus.a_weighted_total()) / (2.0 * h);
 

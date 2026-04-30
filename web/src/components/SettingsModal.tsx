@@ -81,6 +81,103 @@ export function SettingsModal({ project, setProject, onClose, gridSpacingM, setG
           </section>
 
           <section className="settings-section">
+            <h3>Solid-angle correction (DΩ)</h3>
+            <label className="fld">
+              <span>DΩ (dB)</span>
+              <select
+                value={(draft.dOmegaDb ?? 0).toString()}
+                onChange={(e) => update({ dOmegaDb: +e.target.value })}
+              >
+                <option value="0">0 dB — strict ISO 9613-2 / IEC 61400-11 (default)</option>
+                <option value="3">+3 dB — hemispherical / common practice (CONCAWE, AS 4959 etc.)</option>
+              </select>
+            </label>
+            <div className="hint">
+              Frequency-independent correction added to every band per ISO 9613-2 Eq (1)
+              <code> Lp = Lw + DΩ + Dc − A</code>.
+              <br />
+              <b>0 dB</b> matches strict ISO 9613-2: WTG LwA per IEC 61400-11 already encodes the
+              hemispherical reflection, so DΩ is 0.
+              <br />
+              <b>+3 dB</b> matches common-practice tools that double-count the ground reflection
+              by adding the +3 dB anyway. If your reference tool sits about 3 dB above BESSTY,
+              switch to this.
+            </div>
+          </section>
+
+          <section className="settings-section">
+            <h3>Atmosphere (ISO 9613-1 Aatm)</h3>
+            <div className="grid-2">
+              <label className="fld">
+                <span>Temperature (°C)</span>
+                <input
+                  type="number" min={-30} max={50} step={1}
+                  value={draft.atmosphere?.temperatureC ?? 10}
+                  onChange={(e) => update({
+                    atmosphere: {
+                      temperatureC: +e.target.value,
+                      relativeHumidityPct: draft.atmosphere?.relativeHumidityPct ?? 70,
+                      pressureKpa: draft.atmosphere?.pressureKpa ?? 101.325,
+                    },
+                  })}
+                />
+              </label>
+              <label className="fld">
+                <span>Relative humidity (%)</span>
+                <input
+                  type="number" min={1} max={100} step={1}
+                  value={draft.atmosphere?.relativeHumidityPct ?? 70}
+                  onChange={(e) => update({
+                    atmosphere: {
+                      temperatureC: draft.atmosphere?.temperatureC ?? 10,
+                      relativeHumidityPct: +e.target.value,
+                      pressureKpa: draft.atmosphere?.pressureKpa ?? 101.325,
+                    },
+                  })}
+                />
+              </label>
+            </div>
+            <div className="hint">
+              Drives the atmospheric absorption coefficient α(f) per ISO 9613-1
+              (closed-form, evaluated inside the WASM solver). The default
+              (10 °C / 70 % RH) is the ISO 9613-2 reference. Bumping the
+              temperature or dropping the humidity tends to increase mid-band α
+              at typical wind-farm distances (1–5 km), which reduces predicted
+              Lp at far receivers. Common alternates: AS 4959 / NSW EPA
+              wind-farm modelling sometimes uses 10 °C / 80 %; some European
+              tools default to 15 °C / 70 %. Atmospheric pressure is fixed at
+              sea level (101.325 kPa) — only matters above ~1000 m elevation.
+            </div>
+          </section>
+
+          <section className="settings-section">
+            <h3>Barrier convention (Abar / Agr interaction)</h3>
+            <label className="fld">
+              <span>Convention</span>
+              <select
+                value={draft.barrierConvention ?? 'iso-eq16'}
+                onChange={(e) => update({ barrierConvention: e.target.value as 'iso-eq16' | 'dz-minus-max-agr-0' })}
+              >
+                <option value="iso-eq16">Strict ISO 9613-2 §7.4 Eq 16/17 (default)</option>
+                <option value="dz-minus-max-agr-0">Common practice: Abar = Dz − max(Agr, 0)</option>
+              </select>
+            </label>
+            <div className="hint">
+              <b>Strict ISO Eq 16/17:</b> when Agr &gt; 0 over-top, Abar absorbs
+              Agr — Abar = max(0, Dz − Agr) and Agr is then NOT added separately.
+              When Agr ≤ 0 (boost case), Abar = Dz and Agr is added separately.
+              <br />
+              <b>Common practice variant:</b> Abar = Dz − max(Agr, 0); Agr is
+              always added separately. Same numerical result as ISO when Agr ≤ 0
+              (boost) or Agr &gt; 0 — only the bookkeeping differs. Choose this
+              if your reference tool follows the simpler convention.
+              <br />
+              No effect on layouts without barriers (and without DEM-derived
+              ridges acting as virtual barriers).
+            </div>
+          </section>
+
+          <section className="settings-section">
             <h3>Annex D — wind turbines</h3>
             <label className="fld">
               <span>Barrier Abar cap (dB)</span>

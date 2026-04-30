@@ -20,7 +20,8 @@ pub use units::{Decibels, Hz, Metres, Vec3};
 mod wasm {
     use super::*;
     use crate::iso9613::annex_d::WtgRules;
-    use crate::iso9613::barrier::WallBarrier;
+    use crate::iso9613::atmosphere::Atmosphere;
+    use crate::iso9613::barrier::{BarrierConvention, WallBarrier};
     use wasm_bindgen::prelude::*;
 
     fn unpack_walls(flat: &[f64]) -> Vec<WallBarrier<f64>> {
@@ -42,11 +43,20 @@ mod wasm {
         }
     }
 
+    /// Helper: parse the JS-side `barrierConvention` int (0 = ISO Eq16,
+    /// 1 = Dz − max(Agr, 0)) into the Rust enum. Default to ISO Eq16
+    /// when callers haven't been updated yet.
+    fn barrier_conv(flag: u32) -> BarrierConvention {
+        if flag == 1 { BarrierConvention::DzMinusMaxAgr0 } else { BarrierConvention::IsoEq16 }
+    }
+
     /// General point source (BESS, auxiliary, generic). Output length matches
     /// input length: 10 for octave, 31 for one-third octave.
     ///
     /// `barriers_flat` is `[a_e, a_n, b_e, b_n, top_z, ...]` — five values
     /// per straight wall.
+    /// Atmosphere is passed as 3 floats (T °C, RH %, p kPa) — pass
+    /// (10, 70, 101.325) for the ISO 9613-2 reference.
     #[wasm_bindgen]
     pub fn evaluate_general_octave(
         lw: &[f64],
@@ -54,13 +64,22 @@ mod wasm {
         rx_e: f64, rx_n: f64, rx_z: f64,
         g: f64,
         barriers_flat: &[f64],
+        atm_temp_c: f64, atm_rh_pct: f64, atm_pres_kpa: f64,
+        barrier_convention: u32,
     ) -> Vec<f64> {
         let bs = band_system_for(lw.len());
         let lw_spec = BandSpectrum::from_iter(bs, lw.iter().copied());
         let s = Vec3::new(src_e, src_n, src_z);
         let r = Vec3::new(rx_e, rx_n, rx_z);
         let walls = unpack_walls(barriers_flat);
-        let out = iso9613::evaluate_with_barriers(&lw_spec, s, r, g, &walls, None);
+        let atm = Atmosphere {
+            temperature_c: atm_temp_c,
+            relative_humidity_pct: atm_rh_pct,
+            pressure_kpa: atm_pres_kpa,
+        };
+        let out = iso9613::evaluate_with_barriers(
+            &lw_spec, s, r, g, &walls, None, atm, barrier_conv(barrier_convention),
+        );
         out.bands.into_iter().collect()
     }
 
@@ -74,15 +93,23 @@ mod wasm {
         barriers_flat: &[f64],
         rotor_diameter_m: f64,
         apply_concave: bool,
+        atm_temp_c: f64, atm_rh_pct: f64, atm_pres_kpa: f64,
+        barrier_convention: u32,
     ) -> Vec<f64> {
         let bs = band_system_for(lw.len());
         let lw_spec = BandSpectrum::from_iter(bs, lw.iter().copied());
         let hub = Vec3::new(hub_e, hub_n, hub_z);
         let r = Vec3::new(rx_e, rx_n, rx_z);
         let walls = unpack_walls(barriers_flat);
+        let atm = Atmosphere {
+            temperature_c: atm_temp_c,
+            relative_humidity_pct: atm_rh_pct,
+            pressure_kpa: atm_pres_kpa,
+        };
         let out = iso9613::annex_d::evaluate_wtg(
             &lw_spec, hub, r, g, &walls,
             WtgRules::default(), apply_concave, rotor_diameter_m,
+            atm, barrier_conv(barrier_convention),
         );
         out.bands.into_iter().collect()
     }
@@ -159,6 +186,8 @@ mod wasm {
         rx_e: f64, rx_n: f64, rx_z: f64,
         g: f64,
         barriers_flat: &[f64],
+        atm_temp_c: f64, atm_rh_pct: f64, atm_pres_kpa: f64,
+        barrier_convention: u32,
     ) -> Vec<f64> {
         type D = crate::dual::Dual<3>;
         let bs = band_system_for(lw.len());
@@ -166,7 +195,14 @@ mod wasm {
         let s = Vec3::new(D::variable(src_e, 0), D::variable(src_n, 1), D::variable(src_z, 2));
         let r = Vec3::new(D::constant(rx_e), D::constant(rx_n), D::constant(rx_z));
         let walls = unpack_walls_dual::<3>(barriers_flat);
-        let out = iso9613::evaluate_with_barriers(&lw_spec, s, r, D::constant(g), &walls, None);
+        let atm = Atmosphere {
+            temperature_c: atm_temp_c,
+            relative_humidity_pct: atm_rh_pct,
+            pressure_kpa: atm_pres_kpa,
+        };
+        let out = iso9613::evaluate_with_barriers(
+            &lw_spec, s, r, D::constant(g), &walls, None, atm, barrier_conv(barrier_convention),
+        );
         pack_dual_grad(&out)
     }
 
@@ -180,6 +216,8 @@ mod wasm {
         barriers_flat: &[f64],
         rotor_diameter_m: f64,
         apply_concave: bool,
+        atm_temp_c: f64, atm_rh_pct: f64, atm_pres_kpa: f64,
+        barrier_convention: u32,
     ) -> Vec<f64> {
         type D = crate::dual::Dual<3>;
         let bs = band_system_for(lw.len());
@@ -187,9 +225,15 @@ mod wasm {
         let hub = Vec3::new(D::variable(hub_e, 0), D::variable(hub_n, 1), D::variable(hub_z, 2));
         let r = Vec3::new(D::constant(rx_e), D::constant(rx_n), D::constant(rx_z));
         let walls = unpack_walls_dual::<3>(barriers_flat);
+        let atm = Atmosphere {
+            temperature_c: atm_temp_c,
+            relative_humidity_pct: atm_rh_pct,
+            pressure_kpa: atm_pres_kpa,
+        };
         let out = iso9613::annex_d::evaluate_wtg(
             &lw_spec, hub, r, D::constant(g), &walls,
             WtgRules::default(), apply_concave, rotor_diameter_m,
+            atm, barrier_conv(barrier_convention),
         );
         pack_dual_grad(&out)
     }

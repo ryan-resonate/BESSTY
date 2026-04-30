@@ -16,6 +16,8 @@ use crate::spectrum::BandSpectrum;
 use crate::units::Vec3;
 
 use super::{atmosphere, barrier, divergence, ground};
+use super::atmosphere::Atmosphere;
+use super::barrier::BarrierConvention;
 
 /// WT-specific configuration applied at every receiver.
 #[derive(Copy, Clone, Debug)]
@@ -93,6 +95,8 @@ pub fn evaluate_wtg<T: ADScalar>(
     rules: WtgRules,
     apply_concave: bool,
     rotor_diameter_m: f64,
+    atm: Atmosphere,
+    barrier_conv: BarrierConvention,
 ) -> BandSpectrum<T> {
     let system = lw.system;
 
@@ -107,7 +111,7 @@ pub fn evaluate_wtg<T: ADScalar>(
     // Adiv and Aatm use the actual receiver height (not the clamped one) so
     // that source-to-receiver geometry is consistent with the user-set point.
     let adiv = divergence::adiv(hub_pos, receiver_pos);
-    let aatm = atmosphere::aatm_spectrum(hub_pos, receiver_pos, system);
+    let aatm = atmosphere::aatm_spectrum(hub_pos, receiver_pos, system, atm);
 
     // Agr uses the clamped receiver height per D.4.
     let mut agr = ground::agr_spectrum(hub_pos, r_for_ground, g_capped, g_capped, g_capped, system);
@@ -132,6 +136,7 @@ pub fn evaluate_wtg<T: ADScalar>(
         &agr,
         system,
         Some(rules.barrier_dz_cap_db),
+        barrier_conv,
     );
 
     let mut out = BandSpectrum::zeros(system);

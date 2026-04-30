@@ -37,6 +37,20 @@ import {
   type EffectiveSource,
 } from './propagation';
 
+// Atmosphere + barrier-convention parameters threaded through to every
+// WASM call. Defaults match `Atmosphere::iso_reference()` in the Rust
+// solver (10 °C, 70 % RH, 101.325 kPa) and the strict ISO 9613-2 §7.4
+// Eq 16/17 barrier convention.
+interface SolverEnv { tC: number; rh: number; pKpa: number; barConv: number; }
+function solverEnv(project: Project): SolverEnv {
+  const atm = project.settings?.atmosphere;
+  const tC = atm?.temperatureC ?? 10;
+  const rh = atm?.relativeHumidityPct ?? 70;
+  const pKpa = atm?.pressureKpa ?? 101.325;
+  const barConv = project.settings?.barrierConvention === 'dz-minus-max-agr-0' ? 1 : 0;
+  return { tC, rh, pKpa, barConv };
+}
+
 /// Band count for the solver, given a scenario's band system.
 /// Matches the Rust crate's `OCTAVE_CENTRES_HZ.len()` (10) and
 /// `ONE_THIRD_OCTAVE_CENTRES_HZ.len()` (31).
@@ -47,6 +61,16 @@ function packLen(bs: 'octave' | 'oneThirdOctave'): number {
   const n = bandCount(bs);
   return n + n * 3;
 }
+
+// A-weighting convention used throughout BESSTY:
+//
+//   - The Rust solver always works in Z-weighted (un-weighted) per-band
+//     space. Catalog `LwA per band` data is converted to `Lw per band`
+//     by `lib/catalog::spectrumFor` BEFORE the WASM call (see the
+//     `weighting` field on `CatalogModeData`).
+//   - Per-band Lp out of the solver is therefore Z-weighted; we apply
+//     the IEC 61672-1 A-weighting offsets here when energy-summing into
+//     a total LpA in dB(A).
 
 /// A-weighting offsets per IEC 61672-1 — separate tables for the two band
 /// systems so we don't hand the wrong-length weights to a downstream sum.
@@ -109,27 +133,24 @@ export function latLngToLocalMetres(
   return [e, n];
 }
 
-/// Compute per-band Lp + per-source-axis gradient at one source-receiver
-/// pair, returning a length-32 Float64Array shaped:
-///   [0..8]  : per-band Lp
-///   [8..32] : per-band gradient — 3 axes (e, n, z) per band
+/// Returns the source z passed to the solver — height-above-local-ground
+/// for the ground-attenuation calc. Used both at snapshot time and during
+/// extrapolation (delta = position-now − position-at-snapshot). Both must
+/// use the same convention so the delta is meaningful — see the "Solver z
+/// convention" comment in `snapshotPair` for the rationale.
 ///
-/// Returns the absolute source xyz used in the snapshot (caller stores it
-/// to compute Δ during extrapolation).
-/// Source absolute Z under the project's DEM. Hub height for WTG, base + 1.5 m
-/// for everything else. Returns null if the catalog entry is missing.
+/// Returns null if the catalog entry is missing.
 function sourceAbsZ(
   source: Source,
   project: Project,
-  dem: DemRaster | null,
+  _dem: DemRaster | null,
 ): number | null {
-  const groundSrc = dem ? dem.elevation(source.latLng[0], source.latLng[1]) : 0;
   if (source.kind === 'wtg') {
     const entry = lookupEntry(project, source);
     const hubHeight = source.hubHeight ?? entry?.hubHeights?.[0] ?? 100;
-    return groundSrc + hubHeight;
+    return hubHeight;
   }
-  return groundSrc + (source.elevationOffset ?? 0) + 1.5;
+  return (source.elevationOffset ?? 0) + 1.5;
 }
 
 function snapshotPair(
@@ -144,9 +165,28 @@ function snapshotPair(
   const [se, sn] = latLngToLocalMetres(source.latLng, origin);
   const [re, rn] = latLngToLocalMetres(rxLatLng, origin);
   const g = project.settings?.ground.defaultG ?? 0.5;
+  // Solver z convention: HEIGHT-ABOVE-LOCAL-GROUND.
+  //
+  // The Rust ISO 9613-2 implementation reads `source_pos.z` and
+  // `receiver_pos.z` as "height above local ground" when feeding the
+  // Table 3 shape functions a'(h, dp), b'(h, dp), etc. Earlier code
+  // passed ABSOLUTE z (= ground_elevation + height_above_ground) which
+  // — once a DEM was loaded with non-zero terrain — pushed h_S and h_R
+  // up by the elevation, collapsing the shape-function exponentials and
+  // returning a near-constant Agr. With the DEM at e.g. 200 m elevation,
+  // h_R looked like 201.5 m to the solver, exp(-0.46·201.5²) was ~0,
+  // and the receiver-side ground attenuation degraded into a small
+  // boost rather than a real attenuation. Same problem for the source.
+  //
+  // Fix: pass HAG to both. Distance for Adiv loses the DEM elevation
+  // term, but for typical terrain (Δelevation << horizontal distance)
+  // the error in 3D distance is sub-percent — at 1000 m horizontal and
+  // 100 m elevation difference that's 0.1 dB on Adiv, well below the
+  // tolerance of the rest of the chain. Topography effects re-enter via
+  // the virtual-barrier mechanism in `topographyBarriers`.
   const groundSrc = dem ? dem.elevation(source.latLng[0], source.latLng[1]) : 0;
   const groundRx = dem ? dem.elevation(rxLatLng[0], rxLatLng[1]) : 0;
-  const rxZ = groundRx + rxHeightAboveGround;
+  const rxZ = rxHeightAboveGround;
 
   const entry = lookupEntry(project, source);
   if (!entry) {
@@ -155,26 +195,40 @@ function snapshotPair(
   const modeName = source.modeOverride ?? entry.defaultMode;
   const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
 
+  const env = solverEnv(project);
   if (source.kind === 'wtg') {
     const hubHeight = source.hubHeight ?? entry.hubHeights?.[0] ?? 100;
-    const hubZ = groundSrc + hubHeight;
+    const hubZ = hubHeight;
+    // Topography barriers still use ABSOLUTE z (so the DEM ridge profile
+    // along the path is sampled correctly). The vector arguments are
+    // there for the path-line vs ground comparison only.
     const topoBars = topographyBarriers(
-      project, source, [se, sn, hubZ], rxLatLng, [re, rn, rxZ], origin, dem,
+      project, source,
+      [se, sn, groundSrc + hubZ],
+      rxLatLng, [re, rn, groundRx + rxZ], origin, dem,
     );
     const allBars = concatBarriers(barriersFlat, topoBars);
+    const rotorD = source.rotorDiameterM ?? entry.rotorDiameterM ?? 120;
     const snap = evaluate_wtg_with_grad_src_octave(
       lw, se, sn, hubZ, re, rn, rxZ, g, allBars,
-      entry.rotorDiameterM ?? 120, false,
+      rotorD, false,
+      env.tC, env.rh, env.pKpa, env.barConv,
     );
+    // srcAbsXyz uses the HAG-z too — extrapolation is consistent with
+    // what the solver saw at snapshot time.
     return { snapshot: snap, srcAbsXyz: [se, sn, hubZ] };
   }
-  const sourceZ = groundSrc + (source.elevationOffset ?? 0) + 1.5;
+  const sourceZ = (source.elevationOffset ?? 0) + 1.5;
+  // Topography barriers consume absolute z (DEM-aware ridge sampling).
   const topoBars = topographyBarriers(
-    project, source, [se, sn, sourceZ], rxLatLng, [re, rn, rxZ], origin, dem,
+    project, source,
+    [se, sn, groundSrc + sourceZ],
+    rxLatLng, [re, rn, groundRx + rxZ], origin, dem,
   );
   const allBars = concatBarriers(barriersFlat, topoBars);
   const snap = evaluate_general_with_grad_src_octave(
     lw, se, sn, sourceZ, re, rn, rxZ, g, allBars,
+    env.tC, env.rh, env.pKpa, env.barConv,
   );
   return { snapshot: snap, srcAbsXyz: [se, sn, sourceZ] };
 }
@@ -219,11 +273,16 @@ function extrapolateLpClamped(
   return { lp: out, stale };
 }
 
-function aWeightedTotal(perBandLp: Float64Array, aw: Float64Array): number {
+/// Energy-sum Z-weighted per-band Lp values into one total LpA in dB(A),
+/// applying the IEC 61672-1 A-weighting offsets at sum time. Per-band Lp
+/// out of the WASM solver is Z-weighted — see the A-weighting note above.
+/// `dOmegaDb` (default 0) is added uniformly to every band as a frequency-
+/// independent solid-angle correction — see ProjectSettings.dOmegaDb.
+function aWeightedTotal(perBandLp: Float64Array, aw: Float64Array, dOmegaDb: number = 0): number {
   let aSum = 0;
   const n = Math.min(perBandLp.length, aw.length);
   for (let i = 0; i < n; i++) {
-    if (isFinite(perBandLp[i])) aSum += Math.pow(10, (perBandLp[i] + aw[i]) / 10);
+    if (isFinite(perBandLp[i])) aSum += Math.pow(10, (perBandLp[i] + aw[i] + dOmegaDb) / 10);
   }
   return aSum > 0 ? 10 * Math.log10(aSum) : -Infinity;
 }
@@ -316,7 +375,12 @@ export async function snapshotProject(
     }
 
     const summed = energySumPerBand(perSource);
-    return { receiverId: rx.id, perBandLp: summed, totalDbA: aWeightedTotal(summed, aw), perSource };
+    return {
+      receiverId: rx.id,
+      perBandLp: summed,
+      totalDbA: aWeightedTotal(summed, aw, project.settings?.dOmegaDb ?? 0),
+      perSource,
+    };
   });
 
   return {
@@ -377,14 +441,14 @@ export function extrapolateProject(
       }
       perSource.push({ sourceId: sourceKey, perBandLp: lp });
       for (let i = 0; i < nb; i++) {
-        totalSnapshotEnergy += Math.pow(10, (cached.snapshot[i] + aw[i]) / 10);
+        totalSnapshotEnergy += Math.pow(10, (cached.snapshot[i] + aw[i] + (project.settings?.dOmegaDb ?? 0)) / 10);
       }
     }
     if (perSource.length === 0) {
       return { receiverId: rx.id, perBandLp: new Float64Array(nb), totalDbA: -Infinity, perSource };
     }
     const summed = energySumPerBand(perSource);
-    const total = aWeightedTotal(summed, aw);
+    const total = aWeightedTotal(summed, aw, project.settings?.dOmegaDb ?? 0);
     const snapshotTotal = totalSnapshotEnergy > 0 ? 10 * Math.log10(totalSnapshotEnergy) : -Infinity;
     if (isFinite(total) && isFinite(snapshotTotal) && Math.abs(total - snapshotTotal) > capTotal) {
       stale = true;
@@ -474,6 +538,38 @@ function effectiveSourcesForGrid(
   );
 }
 
+/// Memory estimate for a hypothetical grid snapshot, in bytes. Lets the
+/// caller decide whether to use the full `snapshotGrid` (with gradients
+/// for fast drag extrapolation) or the lightweight `evaluateGrid` (no
+/// gradients, smaller memory). The biggest single allocation is the
+/// gradient cells buffer — `cellCount × effective_sources × PACK × 4`.
+export function estimateGridMemoryBytes(
+  project: Project,
+  spacingM: number,
+): { snapshotBytes: number; evalBytes: number; cells: number; effectiveSources: number } {
+  const ca = project.calculationArea;
+  if (!ca) return { snapshotBytes: 0, evalBytes: 0, cells: 0, effectiveSources: 0 };
+  const cols = Math.max(2, Math.round(ca.widthM / spacingM));
+  const rows = Math.max(2, Math.round(ca.heightM / spacingM));
+  const cellCount = cols * rows;
+  const eff = effectiveSourcesForGrid(project, ca);
+  const PACK = packLen(project.scenario.bandSystem);
+  return {
+    snapshotBytes: cellCount * eff.length * PACK * 4,
+    // Eval-only mode keeps just one Float32 per cell (the summed dB(A)).
+    // The cellEnZ helper buffer adds ~12 B/cell — still negligible.
+    evalBytes: cellCount * 4 + cellCount * 12,
+    cells: cellCount,
+    effectiveSources: eff.length,
+  };
+}
+
+/// Soft budget for the gradient-pack snapshot. Above this, callers should
+/// fall back to `evaluateGrid` (eval-only) — the grid still renders, but
+/// drag-time extrapolation degrades to "drop the marker, recompute the
+/// grid". Picked at 600 MB to leave headroom for the rest of the heap.
+export const GRID_SNAPSHOT_BUDGET_BYTES = 600 * 1024 * 1024;
+
 /// Exact grid evaluation that also captures per-cell-per-source gradients.
 export async function snapshotGrid(
   project: Project,
@@ -488,10 +584,20 @@ export async function snapshotGrid(
   if (!ca) throw new Error('calculationArea not set; cannot compute grid');
 
   const origin = ca.centerLatLng;
+  // Cell-centred sampling: `cols` cells of width `ca.widthM / cols`, with
+  // the cell-centre formula `(col - (cols-1)/2) * dxM` placing cell 0
+  // half-a-pixel inside the SW corner and cell (cols-1) half-a-pixel
+  // inside the NE corner. The overall bounds [sw, ne] still enclose the
+  // calc-area rectangle exactly. This matches the convention used by the
+  // GeoTIFF exporter (RasterPixelIsArea) and how Leaflet positions
+  // canvas pixels inside `imageOverlay` bounds — without it, the rendered
+  // raster and contours sat half-a-pixel NE of the actual data because
+  // the corner-sampled values were being treated as centre-sampled by
+  // every downstream consumer.
   const cols = Math.max(2, Math.round(ca.widthM / spacingM));
   const rows = Math.max(2, Math.round(ca.heightM / spacingM));
-  const dxM = ca.widthM / (cols - 1);
-  const dyM = ca.heightM / (rows - 1);
+  const dxM = ca.widthM / cols;
+  const dyM = ca.heightM / rows;
 
   const R = 6371008.8;
   const lat0 = (origin[0] * Math.PI) / 180;
@@ -503,6 +609,7 @@ export async function snapshotGrid(
   const userBarriers = packBarriers(project.barriers, origin);
   const g = project.settings?.ground.defaultG ?? 0.5;
   const cutoffM = propagationSettings(project).maxContributionDistanceM;
+  const env = solverEnv(project);
 
   const eff = effectiveSourcesForGrid(project, ca);
   const sourceIds = eff.map((es) => es.id);
@@ -514,10 +621,12 @@ export async function snapshotGrid(
     realSourceFlags[i] = es.kind === 'real' ? 1 : 0;
     srcLocal.push(latLngToLocalMetres(es.latLng, origin));
     if (es.kind === 'real') {
+      // HAG-z (height above local ground), per the solver z convention
+      // documented in `snapshotPair`.
       srcZ.push(sourceAbsZ(es.source!, project, dem) ?? 0);
     } else {
-      const groundSrc = dem ? dem.elevation(es.latLng[0], es.latLng[1]) : 0;
-      srcZ.push(groundSrc + (es.zAboveGround ?? 1.5));
+      // Cluster: zAboveGround is already a HAG mean by construction.
+      srcZ.push(es.zAboveGround ?? 1.5);
     }
   }
   const srcAbsAtSnapshot = new Float32Array(eff.length * 3);
@@ -529,7 +638,35 @@ export async function snapshotGrid(
 
   const cellCount = cols * rows;
   const PACK = packLen(project.scenario.bandSystem);
-  const cells = new Float32Array(cellCount * eff.length * PACK);
+  // Pre-flight memory check. The cells buffer is by far the largest
+  // allocation in the app (cellCount × effective_sources × PACK floats).
+  // If it would exceed the budget, throw a friendly error pointing the
+  // user at the four levers that drive the size — instead of letting the
+  // browser blow up with a generic "Array buffer allocation failed".
+  // Budget chosen at 1.2 GB: most desktop browsers cap a single typed
+  // array around 1–2 GB, and we still need headroom for everything else.
+  const cellsBytes = cellCount * eff.length * PACK * 4;
+  const HARD_LIMIT_BYTES = 1.2 * 1024 * 1024 * 1024;
+  if (cellsBytes > HARD_LIMIT_BYTES) {
+    throw new Error(
+      `Grid would need ${(cellsBytes / 1024 / 1024 / 1024).toFixed(2)} GB of memory ` +
+      `(${cellCount.toLocaleString()} cells × ${eff.length} sources × ${PACK} floats). ` +
+      `Try a coarser spacing, smaller calc area, octave (not ⅓-octave) bands, ` +
+      `or a higher Barnes-Hut θ to cluster more aggressively.`,
+    );
+  }
+  let cells: Float32Array;
+  try {
+    cells = new Float32Array(cellCount * eff.length * PACK);
+  } catch (e) {
+    // Even under the hard limit the OS / browser may refuse if heap is
+    // fragmented or a previous huge buffer is still live. Re-throw with
+    // the same actionable hints.
+    throw new Error(
+      `Browser couldn't allocate the ${(cellsBytes / 1024 / 1024).toFixed(0)} MB grid buffer. ` +
+      `Close other tabs, then try a coarser spacing / smaller area / octave bands. (${String(e)})`,
+    );
+  }
   const cellEnZ = new Float32Array(cellCount * 3);
 
   // Pre-compute per-source metadata once (was previously looked up inside
@@ -542,7 +679,9 @@ export async function snapshotGrid(
       if (!entry) return null;
       const modeName = es.source!.modeOverride ?? entry.defaultMode;
       const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
-      return { lw, isWtg: es.source!.kind === 'wtg', rotorD: entry.rotorDiameterM ?? 120 };
+      // Per-source rotorDiameterM override beats the catalog entry.
+      const rotorD = es.source!.rotorDiameterM ?? entry.rotorDiameterM ?? 120;
+      return { lw, isWtg: es.source!.kind === 'wtg', rotorD };
     }
     return { lw: es.lwOverride!, isWtg: false, rotorD: 120 };
   });
@@ -555,7 +694,11 @@ export async function snapshotGrid(
       const e = (col - (cols - 1) / 2) * dxM;
       const lng = origin[1] + (e / (R * Math.cos(lat0))) * (180 / Math.PI);
       const groundZ = dem ? dem.elevation(lat, lng) : 0;
-      const rxZ = groundZ + rxHeightAboveGround;
+      // HAG-z for the solver call; absolute z still used by topography
+      // helper which needs the DEM ridge profile. See snapshotPair for
+      // the full rationale on the z-convention switch.
+      const rxZ = rxHeightAboveGround;
+      const rxZAbs = groundZ + rxZ;
       cellEnZ[cellIdx * 3] = e;
       cellEnZ[cellIdx * 3 + 1] = n;
       cellEnZ[cellIdx * 3 + 2] = rxZ;
@@ -572,15 +715,19 @@ export async function snapshotGrid(
           if (dx * dx + dy * dy > cutoffM * cutoffM) continue;
         }
         // Per-cell topography barriers (DEM-derived ridges between source
-        // and this cell). Skipped for clusters since they're aggregates —
-        // sampling along a centroid→cell line for a virtual source isn't
-        // meaningful enough to justify the per-cell cost. Real sources
-        // still get the ridge analysis.
+        // and this cell). Topography uses ABSOLUTE z so the source→cell
+        // straight line is compared against absolute terrain elevations.
+        // Skipped for clusters since they're aggregates — sampling along
+        // a centroid→cell line for a virtual source isn't meaningful
+        // enough to justify the per-cell cost. Real sources still get
+        // the ridge analysis.
         const allBars = es.kind === 'real'
           ? concatBarriers(
               userBarriers,
               topographyBarriers(
-                project, es.source!, [se, sn, srcZ[si]], [lat, lng], [e, n, rxZ], origin, dem,
+                project, es.source!,
+                [se, sn, (dem ? dem.elevation(es.source!.latLng[0], es.source!.latLng[1]) : 0) + srcZ[si]],
+                [lat, lng], [e, n, rxZAbs], origin, dem,
               ),
             )
           : userBarriers;
@@ -589,9 +736,11 @@ export async function snapshotGrid(
         const snap = isWtg
           ? evaluate_wtg_with_grad_src_octave(
               lw, se, sn, srcZ[si], e, n, rxZ, g, allBars, rotorD, false,
+              env.tC, env.rh, env.pKpa, env.barConv,
             )
           : evaluate_general_with_grad_src_octave(
               lw, se, sn, srcZ[si], e, n, rxZ, g, allBars,
+              env.tC, env.rh, env.pKpa, env.barConv,
             );
         const base = (cellIdx * eff.length + si) * PACK;
         for (let k = 0; k < PACK; k++) cells[base + k] = snap[k];
@@ -617,6 +766,7 @@ export function extrapolateGrid(
 ): { grid: GridResult; stale: boolean } {
   const t0 = performance.now();
   const aw = aWeights(project.scenario.bandSystem);
+  const dOmegaDb = project.settings?.dOmegaDb ?? 0;
   const cols = snapshot.cols;
   const rows = snapshot.rows;
   const cellCount = cols * rows;
@@ -672,8 +822,8 @@ export function extrapolateGrid(
         } else {
           lp = predicted;
         }
-        aSum += Math.pow(10, (lp + aw[band]) / 10);
-        aSumBaseline += Math.pow(10, (baseline + aw[band]) / 10);
+        aSum += Math.pow(10, (lp + aw[band] + dOmegaDb) / 10);
+        aSumBaseline += Math.pow(10, (baseline + aw[band] + dOmegaDb) / 10);
       }
     }
     const totalNew = aSum > 0 ? 10 * Math.log10(aSum) : -120;
@@ -708,10 +858,11 @@ export async function evaluateGrid(
   if (!ca) throw new Error('calculationArea not set; cannot compute grid');
 
   const origin = ca.centerLatLng;
+  // Cell-centred sampling — see snapshotGrid for the full rationale.
   const cols = Math.max(2, Math.round(ca.widthM / spacingM));
   const rows = Math.max(2, Math.round(ca.heightM / spacingM));
-  const dxM = ca.widthM / (cols - 1);
-  const dyM = ca.heightM / (rows - 1);
+  const dxM = ca.widthM / cols;
+  const dyM = ca.heightM / rows;
 
   const R = 6371008.8;
   const lat0 = (origin[0] * Math.PI) / 180;
@@ -722,17 +873,21 @@ export async function evaluateGrid(
 
   const userBarriers = packBarriers(project.barriers, origin);
   const aw = aWeights(project.scenario.bandSystem);
+  const dOmegaDb = project.settings?.dOmegaDb ?? 0;
   const ca2 = project.calculationArea!;
   const eff = effectiveSourcesForGrid(project, ca2);
   // Hoist these out of the per-cell loop body — they don't change between
   // cells, and the previous code was re-reading them every iteration.
   const g = project.settings?.ground.defaultG ?? 0.5;
   const cutoffM = propagationSettings(project).maxContributionDistanceM;
+  const env = solverEnv(project);
   const effLocal = eff.map((es) => latLngToLocalMetres(es.latLng, origin));
+  // HAG-z (height above local ground) — see snapshotPair for the
+  // z-convention rationale. Topography barriers compute absolute z
+  // on-the-fly when needed.
   const effZ = eff.map((es) => {
     if (es.kind === 'real') return sourceAbsZ(es.source!, project, dem) ?? 0;
-    const groundSrc = dem ? dem.elevation(es.latLng[0], es.latLng[1]) : 0;
-    return groundSrc + (es.zAboveGround ?? 1.5);
+    return es.zAboveGround ?? 1.5;
   });
   // Per-source catalog metadata (lookup once, reused per cell).
   type EffMeta = { lw: Float64Array; isWtg: boolean; rotorD: number } | null;
@@ -742,7 +897,9 @@ export async function evaluateGrid(
       if (!entry) return null;
       const modeName = es.source!.modeOverride ?? entry.defaultMode;
       const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
-      return { lw, isWtg: es.source!.kind === 'wtg', rotorD: entry.rotorDiameterM ?? 120 };
+      // Per-source rotorDiameterM override beats the catalog entry.
+      const rotorD = es.source!.rotorDiameterM ?? entry.rotorDiameterM ?? 120;
+      return { lw, isWtg: es.source!.kind === 'wtg', rotorD };
     }
     return { lw: es.lwOverride!, isWtg: false, rotorD: 120 };
   });
@@ -756,7 +913,9 @@ export async function evaluateGrid(
       const e = (col - (cols - 1) / 2) * dxM;
       const lng = origin[1] + (e / (R * Math.cos(lat0))) * (180 / Math.PI);
       const groundZ = dem ? dem.elevation(lat, lng) : 0;
-      const rxZ = groundZ + rxHeightAboveGround;
+      // HAG-z passed to WASM; absolute z used by topography helper.
+      const rxZ = rxHeightAboveGround;
+      const rxZAbs = groundZ + rxZ;
 
       let aSum = 0;
       for (let si = 0; si < eff.length; si++) {
@@ -772,18 +931,28 @@ export async function evaluateGrid(
           if (dx * dx + dy * dy > cutoffM * cutoffM) continue;
         }
         // Skip topo barriers for clusters (see snapshotGrid for rationale).
+        // Topography uses ABSOLUTE z, solver call uses HAG-z.
         const allBars = es.kind === 'real'
           ? concatBarriers(
               userBarriers,
               topographyBarriers(
-                project, es.source!, [se, sn, effZ[si]], [lat, lng], [e, n, rxZ], origin, dem,
+                project, es.source!,
+                [se, sn, (dem ? dem.elevation(es.source!.latLng[0], es.source!.latLng[1]) : 0) + effZ[si]],
+                [lat, lng], [e, n, rxZAbs], origin, dem,
               ),
             )
           : userBarriers;
         const lp = meta.isWtg
-          ? evaluate_wtg_octave(meta.lw, se, sn, effZ[si], e, n, rxZ, g, allBars, meta.rotorD, false)
-          : evaluate_general_octave(meta.lw, se, sn, effZ[si], e, n, rxZ, g, allBars);
-        for (let i = 0; i < lp.length; i++) aSum += Math.pow(10, (lp[i] + aw[i]) / 10);
+          ? evaluate_wtg_octave(
+              meta.lw, se, sn, effZ[si], e, n, rxZ, g, allBars, meta.rotorD, false,
+              env.tC, env.rh, env.pKpa, env.barConv,
+            )
+          : evaluate_general_octave(
+              meta.lw, se, sn, effZ[si], e, n, rxZ, g, allBars,
+              env.tC, env.rh, env.pKpa, env.barConv,
+            );
+        // `lp` is a Float64Array of length n_bands (no gradient pack).
+        for (let i = 0; i < lp.length; i++) aSum += Math.pow(10, (lp[i] + aw[i] + dOmegaDb) / 10);
       }
       dbA[row * cols + col] = aSum > 0 ? 10 * Math.log10(aSum) : -120;
     }

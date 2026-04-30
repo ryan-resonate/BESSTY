@@ -33,6 +33,11 @@ export interface Source {
   modelId: string;
   catalogScope: CatalogScope;
   hubHeight?: number;          // WTG only
+  /// Per-source override of the rotor diameter (m). When set, takes
+  /// precedence over the catalog entry's `rotorDiameterM` for the Annex
+  /// D.3 elevated-source-for-barrier rule (source z = hub + rotor/2).
+  /// Leave undefined to inherit from the catalog model. WTG only.
+  rotorDiameterM?: number;
   elevationOffset?: number;    // BESS / Auxiliary
   yawDeg?: number;
   modeOverride?: string | null;
@@ -86,12 +91,44 @@ export interface CalculationArea {
 
 export interface ProjectSettings {
   ground: { defaultG: number };
+  /// Frequency-independent corrections applied at every source, in the
+  /// `Lp = Lw + DΩ + Dc − A` form of ISO 9613-2 §5 Eq (1).
+  ///
+  /// **DΩ — solid-angle / "directivity index" correction (dB):**
+  ///   - `0` (default) — strict ISO 9613-2 / IEC 61400-11. Treats LwA
+  ///     as already encoding the hemispherical radiation pattern (which
+  ///     is how IEC 61400-11 reports it). Matches BESSTY's own
+  ///     validation Case 5 number.
+  ///   - `+3` — common practice in Australian / European wind-farm
+  ///     spreadsheets and several commercial tools (CONCAWE, some
+  ///     CadnaA / SoundPLAN setups). Reads as "the source radiates
+  ///     into a hemisphere — apply the +3 dB ground-reflection boost
+  ///     that ISO 9613-2 leaves out". Use this if your reference tool
+  ///     sits ~3 dB above strict ISO output.
+  ///
+  /// Applied uniformly to every WTG / BESS / auxiliary source. There's
+  /// no per-source override yet — set it once at the project level.
+  dOmegaDb?: number;
   annexD: {
     barrierAbarCapDb: number;
     useElevatedSourceForBarrier: boolean;
     applyConcaveCorrection: boolean;
     wtReceiverHeightMin: number;
   };
+  /// Barrier-attenuation convention. Affects how Agr interacts with Abar
+  /// per ISO 9613-2 §7.4.
+  ///   - `'iso-eq16'` (default) — strict ISO 9613-2 Eq 16/17:
+  ///     Abar = max(0, Dz − Agr) when both Agr > 0 and Dz > 0,
+  ///     Abar = Dz otherwise (Agr added separately).
+  ///   - `'dz-minus-max-agr-0'` — common practice variant:
+  ///     Abar = Dz − max(Agr, 0). When Agr is negative (boost), this
+  ///     keeps the boost AND the full Dz attenuation; when Agr is
+  ///     positive, Abar absorbs Agr as in the ISO version.
+  /// Both variants are implemented inside the WASM solver
+  /// (`BarrierConvention` enum); this field selects which the project uses.
+  /// Only relevant when barriers are present (or the DEM injects ridges
+  /// as virtual barriers via the topography path).
+  barrierConvention?: 'iso-eq16' | 'dz-minus-max-agr-0';
   general: { defaultReceiverHeight: number };
   /// Limits on how far first-order Taylor extrapolation is allowed to push
   /// a per-band Lp value before forcing an exact re-snapshot. The clamp
@@ -117,6 +154,18 @@ export interface ProjectSettings {
     /// No longer consulted by the current Barnes-Hut path.
     clusterBeyondM?: number;
     maxClustersPerReceiver?: number;
+  };
+  /// Atmospheric conditions for ISO 9613-1 absorption (Aatm). When
+  /// unset, the solver uses the ISO 9613-2 default reference of
+  /// 10 °C, 70 % RH, 101.325 kPa. Setting these allows the user to
+  /// match commercial tools that default to different conditions
+  /// (e.g. 15 °C / 70 % RH for moderate-climate noise modelling).
+  /// Threaded through to the WASM solver, which evaluates α(f) per
+  /// band from first principles per ISO 9613-1 §8 + Annex E.
+  atmosphere?: {
+    temperatureC: number;
+    relativeHumidityPct: number;
+    pressureKpa?: number;
   };
   /// DEM-driven topography settings. Applies to point + grid solves.
   topography?: {
@@ -166,10 +215,23 @@ export interface Project {
 
 export type CatalogBandSystem = 'octave' | 'oneThirdOctave';
 
+export type SpectrumWeighting = 'A' | 'Z';
+
 export interface CatalogModeData {
   /// Mode name from the source data (or 'default' / 'broadband').
   name: string;
   bandSystem: CatalogBandSystem;
+  /// Frequency-weighting of the per-band Lw values stored in `spectra`:
+  ///   - `'Z'` (default) — un-weighted sound power per band, the
+  ///     ISO 9613-2 convention; values pass straight to the WASM solver.
+  ///   - `'A'` — A-weighted per band (LwA per band). The catalog layer
+  ///     converts to `Z` (un-weighted) before handing to the solver by
+  ///     subtracting the IEC 61672-1 weighting offset for each band's
+  ///     centre frequency. Common for IEC 61400-11 wind turbine reports
+  ///     and ISO 3744 BESS / transformer datasheets.
+  /// Missing field is treated as `'Z'` for backwards compatibility with
+  /// projects saved before this distinction was introduced.
+  weighting?: SpectrumWeighting;
   /// Frequency centres (Hz), ascending. Held verbatim from the source file
   /// — we do not strip out-of-range bands here so audit trail is preserved.
   frequencies: number[];

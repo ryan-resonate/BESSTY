@@ -75,6 +75,11 @@ interface Props {
   setBaseMap(b: BaseMap): void;
   showContours: boolean;
   setShowContours(v: boolean): void;
+  /// Debug overlay — show every grid cell centre as a small dot. Lets
+  /// the user verify alignment between the raster, contours, and the
+  /// underlying source/receiver positions when something looks off.
+  showGridDebug?: boolean;
+  setShowGridDebug?(v: boolean): void;
   contourMode: ContourMode;
   setContourMode(m: ContourMode): void;
   contourOpacity: number;
@@ -413,14 +418,24 @@ function BulkEditPanel(props: {
       )}
 
       {allWtg && (
-        <Field label={`Hub height — ${selectedSources.length} WTGs (m)`}>
-          <NumericInput min={50} max={250} step={1} placeholder="—"
-            value={srcDraft.hubHeight}
-            allowEmpty
-            onChange={() => undefined}
-            onChangeOptional={(v) => setSrc('hubHeight', v)}
-          />
-        </Field>
+        <>
+          <Field label={`Hub height — ${selectedSources.length} WTGs (m)`}>
+            <NumericInput min={50} max={250} step={1} placeholder="—"
+              value={srcDraft.hubHeight}
+              allowEmpty
+              onChange={() => undefined}
+              onChangeOptional={(v) => setSrc('hubHeight', v)}
+            />
+          </Field>
+          <Field label={`Rotor diameter — ${selectedSources.length} WTGs (m)`}>
+            <NumericInput min={50} max={300} step={1} placeholder="—"
+              value={srcDraft.rotorDiameterM}
+              allowEmpty
+              onChange={() => undefined}
+              onChangeOptional={(v) => setSrc('rotorDiameterM', v)}
+            />
+          </Field>
+        </>
       )}
 
       {selectedReceivers.length >= 2 && (
@@ -1039,6 +1054,18 @@ function LayersTab(props: Props) {
             <span>Show contour grid</span>
           </label>
         </Field>
+        {props.setShowGridDebug && (
+          <Field label="">
+            <label className="row-checkbox">
+              <input
+                type="checkbox"
+                checked={!!props.showGridDebug}
+                onChange={(e) => props.setShowGridDebug?.(e.target.checked)}
+              />
+              <span>Debug: show grid cell centres</span>
+            </label>
+          </Field>
+        )}
         <Field label="Style">
           <div className="seg block">
             <button className={contourMode === 'filled' ? 'on' : ''} onClick={() => setContourMode('filled')}>Filled</button>
@@ -1365,11 +1392,18 @@ function SourceItem(props: {
           </select>
         )}
         {s.kind === 'wtg' && (
-          <NumericInput min={50} max={250} step={1}
-            value={s.hubHeight ?? 100}
-            fallback={100}
-            onChange={(v) => onChange({ hubHeight: v })}
-            title="Hub height (m)" />
+          <>
+            <NumericInput min={50} max={250} step={1}
+              value={s.hubHeight ?? 100}
+              fallback={100}
+              onChange={(v) => onChange({ hubHeight: v })}
+              title="Hub height (m)" />
+            <NumericInput min={50} max={300} step={1}
+              value={s.rotorDiameterM ?? entry?.rotorDiameterM ?? 120}
+              fallback={entry?.rotorDiameterM ?? 120}
+              onChange={(v) => onChange({ rotorDiameterM: v })}
+              title="Rotor diameter (m) — feeds Annex D.3 elevated source for barriers" />
+          </>
         )}
         <button className="x-btn" onClick={(e) => { e.stopPropagation(); onRemove(); }}>✕</button>
       </div>
