@@ -1,4 +1,4 @@
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { Logo } from './Logo';
 import { logout } from '../lib/auth';
 
@@ -10,6 +10,7 @@ export function Header({ projectBreadcrumb }: Props) {
   // Carry the current project id through to /catalog so the Local tab is
   // immediately scoped to that project.
   const location = useLocation();
+  const navigate = useNavigate();
   const projectMatch = location.pathname.match(/^\/projects\/([^/]+)/);
   const projectId = projectMatch?.[1];
   const catalogTo = projectId ? `/catalog?project=${projectId}` : '/catalog';
@@ -47,7 +48,12 @@ export function Header({ projectBreadcrumb }: Props) {
       </nav>
 
       <div className="header-right">
-        <button className="ic-btn" title="Help" type="button">?</button>
+        <button
+          className="ic-btn"
+          title="Help / user guide"
+          type="button"
+          onClick={() => navigate('/help')}
+        >?</button>
         <button
           className="ic-btn"
           title="Sign out (Stage-1 placeholder auth)"

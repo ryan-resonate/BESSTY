@@ -462,6 +462,35 @@ header.app-header nav a:hover { background: var(--slate-1); }
   background: #fff;
   font-variant-numeric: tabular-nums;
 }
+/* Inline name input — used in the receiver list. Reads as plain text
+   until the user clicks in to edit, then shows a subtle frame. */
+.inline-edit-name {
+  font: inherit;
+  font-weight: 500;
+  width: 100%;
+  border: 1px dashed transparent;
+  border-radius: 4px;
+  padding: 2px 4px;
+  background: transparent;
+  color: inherit;
+}
+.inline-edit-name:hover { border-color: var(--light); background: #fff; }
+.inline-edit-name:focus {
+  outline: none;
+  border-color: var(--ink);
+  border-style: solid;
+  background: #fff;
+}
+/* Suffix unit ("m", "kPa" etc.) glued to the right of an inline-edit
+   number input. The wrapper is itself flex so the input keeps its
+   shrink-to-fit width and the unit doesn't drift. */
+.inline-unit { display: inline-flex; align-items: center; gap: 2px; }
+.inline-unit-label {
+  font-size: 10px;
+  color: var(--mid);
+  font-family: var(--font-mono);
+  user-select: none;
+}
 .muted { color: var(--mid); }
 
 /* ---- Map area ---- */
@@ -771,3 +800,74 @@ header.app-header nav a:hover { background: var(--slate-1); }
   font-size: 9px !important;
 }
 .leaflet-marker-icon { will-change: transform; }
+
+/* ---- Help screen ---- */
+.help-screen {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 24px 32px 48px;
+  height: calc(100vh - 56px);
+  overflow: auto;
+  line-height: 1.55;
+}
+.help-screen h1 {
+  font-size: 28px; margin: 0 0 12px; font-weight: 700;
+}
+.help-screen h2 {
+  font-size: 18px; margin: 28px 0 8px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule, var(--light));
+  font-weight: 600;
+}
+.help-screen p { margin: 8px 0; }
+.help-screen ol, .help-screen ul { margin: 6px 0 14px 24px; padding: 0; }
+.help-screen li { margin: 4px 0; }
+.help-screen code {
+  font-family: var(--font-mono);
+  background: var(--paper-2);
+  border: 1px solid var(--light);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 12px;
+}
+.help-screen .help-toc {
+  display: flex; flex-wrap: wrap; gap: 6px 14px;
+  margin: 12px 0 4px;
+  padding: 10px 14px;
+  background: var(--paper-2);
+  border: 1px solid var(--light);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.help-screen .help-toc a { color: var(--ink-soft); }
+.help-screen .help-toc a:hover { text-decoration: underline; }
+/* TOC entries are <button> not <a> because HashRouter swallows the URL
+   fragment; reset the default button look so they read as links. */
+.help-screen .help-toc-link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.help-screen .help-toc-link:hover { text-decoration: underline; }
+.help-screen .help-table {
+  border-collapse: collapse;
+  margin: 8px 0 16px;
+  font-size: 13px;
+}
+.help-screen .help-table th, .help-screen .help-table td {
+  text-align: left;
+  padding: 4px 12px 4px 0;
+  border-bottom: 1px solid var(--light);
+  vertical-align: top;
+}
+.help-screen .help-table th {
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.help-screen .help-table td:first-child {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}

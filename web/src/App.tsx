@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { Header } from './components/Header';
 import { LoginScreen } from './components/LoginScreen';
 import { CatalogScreen } from './screens/CatalogScreen';
+import { HelpScreen } from './screens/HelpScreen';
 import { ProjectListScreen } from './screens/ProjectListScreen';
 import { ProjectScreen } from './screens/ProjectScreen';
 import { isAuthenticated } from './lib/auth';
@@ -31,6 +32,7 @@ export default function App() {
         <Route path="/projects" element={<ProjectListScreen />} />
         <Route path="/projects/:projectId" element={<ProjectScreen />} />
         <Route path="/catalog" element={<CatalogScreen />} />
+        <Route path="/help" element={<HelpScreen />} />
       </Routes>
     </>
   );

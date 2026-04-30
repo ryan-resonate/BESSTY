@@ -129,6 +129,13 @@ export interface ProjectSettings {
   /// Only relevant when barriers are present (or the DEM injects ridges
   /// as virtual barriers via the topography path).
   barrierConvention?: 'iso-eq16' | 'dz-minus-max-agr-0';
+  /// Optional uniform per-band cap on Dz for general (non-WTG) sources.
+  /// `null`/`undefined` = use the standard ISO §7.4 caps (20 dB single
+  /// edge, 25 dB multi-edge); a finite non-negative value (e.g. 2)
+  /// overrides them — useful when project rules limit credit for
+  /// terrain / barrier diffraction. WTG sources continue to use
+  /// `annexD.barrierAbarCapDb` (default 3 dB) and ignore this field.
+  barrierDiffractionCapDb?: number | null;
   general: { defaultReceiverHeight: number };
   /// Limits on how far first-order Taylor extrapolation is allowed to push
   /// a per-band Lp value before forcing an exact re-snapshot. The clamp

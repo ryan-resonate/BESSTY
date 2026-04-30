@@ -69,3 +69,62 @@ export function buildContourLines(
   }
   return sets;
 }
+
+/// Per-threshold MultiPolygons in **GeoJSON [lng, lat] order**, suitable
+/// for direct use as a MapLibre / Mapbox `geojson` source. Each entry
+/// represents the level set `dbA >= threshold`. Bands are produced by
+/// stacking features from low → high threshold and painting each in the
+/// band's colour — the higher (smaller-area) polygons render on top of
+/// the lower ones, producing the expected banded fill.
+///
+/// Used by the 3D view's grid overlay where the previous canvas / image
+/// source approach kept getting clipped by MapLibre's terrain-mesh tile
+/// sampler. Polygons drape natively to terrain so the overlay renders
+/// cleanly across zoom levels.
+export interface ContourBandPolygon {
+  threshold: number;
+  /// MultiPolygon coordinates: outer-ring → holes, in [lng, lat] order.
+  polygon: Array<Array<Array<[number, number]>>>;
+}
+
+export function buildContourPolygons(
+  grid: GridResult,
+  thresholds: number[],
+): ContourBandPolygon[] {
+  const generator = d3contours()
+    .size([grid.cols, grid.rows])
+    .thresholds(thresholds)
+    .smooth(true);
+
+  const arr = Array.from(grid.dbA);
+  const features = generator(arr);
+
+  const { sw, ne } = grid.bounds;
+  const latRange = ne[0] - sw[0];
+  const lngRange = ne[1] - sw[1];
+  const lngScale = grid.cols > 0 ? 1 / grid.cols : 0;
+  const latScale = grid.rows > 0 ? 1 / grid.rows : 0;
+
+  const out: ContourBandPolygon[] = [];
+  for (const f of features) {
+    // Each MultiPolygon: array of polygons, each polygon: array of rings,
+    // each ring: array of [col, row] points (cell-centred coords from
+    // d3-contour — see the buildContourLines comment for the +0.5
+    // discussion). We project to [lng, lat] for GeoJSON consumers.
+    const projected: Array<Array<Array<[number, number]>>> = f.coordinates.map(
+      (poly) => poly.map(
+        (ring) => (ring as Array<[number, number]>).map<[number, number]>(
+          ([col, row]) => [
+            sw[1] + col * lngScale * lngRange,
+            sw[0] + row * latScale * latRange,
+          ],
+        ),
+      ),
+    );
+    out.push({ threshold: f.value, polygon: projected });
+  }
+  // Lowest threshold first → renders below higher (more-attenuated)
+  // bands, which sit on top.
+  out.sort((a, b) => a.threshold - b.threshold);
+  return out;
+}

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import type { Group, Project, Source, Receiver, SourceKind } from '../lib/types';
+import { useEffect, useState } from 'react';
+import type { Group, Project, ProjectSettings, Source, Receiver, SourceKind } from '../lib/types';
 import { limitForPeriod } from '../lib/types';
 import type { ReceiverResult } from '../lib/solver';
 import type { BaseMap, ContourMode } from './MapView';
@@ -34,9 +34,9 @@ const GROUP_PALETTE = [
   '#14b8a6', '#ef4444', '#6366f1', '#84cc16', '#06b6d4',
 ];
 
-export type AddMode = 'none' | 'wtg' | 'bess' | 'auxiliary' | 'receiver' | 'measure';
+export type AddMode = 'none' | 'wtg' | 'bess' | 'auxiliary' | 'receiver' | 'measure' | 'barrier';
 
-export type Tab = 'sources' | 'area' | 'receivers' | 'import' | 'results' | 'layers';
+export type Tab = 'sources' | 'area' | 'receivers' | 'barriers' | 'import' | 'settings' | 'results' | 'layers';
 
 interface Props {
   project: Project;
@@ -60,7 +60,6 @@ interface Props {
   onRunGrid(): void;
   computing: boolean;
   lastSolveMs: number | null;
-  onOpenSettings(): void;
   /// Replace the project's DEM (used by the Import tab's DEM uploader).
   setDem(d: DemRaster | null, source: 'auto' | 'upload'): void;
   /// Source of the currently-active DEM — "auto" means AWS Terrain Tiles,
@@ -123,7 +122,9 @@ const TABS: Array<{ id: Tab; label: string; numbered?: number }> = [
   { id: 'sources',   label: 'Sources',   numbered: 1 },
   { id: 'area',      label: 'Area',      numbered: 2 },
   { id: 'receivers', label: 'Receivers', numbered: 3 },
+  { id: 'barriers',  label: 'Barriers' },
   { id: 'import',    label: 'Import' },
+  { id: 'settings',  label: 'Settings' },
   { id: 'results',   label: 'Results' },
   { id: 'layers',    label: 'Layers' },
 ];
@@ -138,7 +139,9 @@ export function SidePanel(props: Props) {
     sources: project.sources.length > 0,
     area: !!project.calculationArea,
     receivers: project.receivers.length > 0,
+    barriers: project.barriers.length > 0,
     import: false,
+    settings: false,
     results: false,
     layers: false,
   };
@@ -176,7 +179,9 @@ export function SidePanel(props: Props) {
         {tab === 'sources' && <SourcesTab {...props} />}
         {tab === 'area' && <AreaTab {...props} />}
         {tab === 'receivers' && <ReceiversTab {...props} />}
+        {tab === 'barriers' && <BarriersTab {...props} />}
         {tab === 'import' && <ImportTab {...props} />}
+        {tab === 'settings' && <SettingsTab {...props} />}
         {tab === 'results' && <ResultsTab {...props} />}
         {tab === 'layers' && <LayersTab {...props} />}
       </div>
@@ -516,7 +521,7 @@ function SourcesTab(props: Props) {
         <Field label="Project wind speed (m/s @ 10 m)">
           <NumericInput min={3} max={20} step={0.5}
             value={project.scenario.windSpeed}
-            fallback={8}
+            fallback={10}
             onChange={(v) => updateScenario({ windSpeed: v })}
           />
         </Field>
@@ -553,7 +558,8 @@ function SourcesTab(props: Props) {
         onSetGroupMembers={props.onSetGroupMembers}
       />
 
-      <CollapsibleCard title="Wind turbines" count={wtgs.length} defaultOpen={wtgs.length > 0}>
+      <CollapsibleCard title="Wind turbines" count={wtgs.length}
+        persistKey="sources.wtg" defaultOpen={false}>
         {wtgs.length === 0 && <div className="hint">No WTGs placed.</div>}
         {wtgs.map((s) => (
           <SourceItem
@@ -565,7 +571,8 @@ function SourcesTab(props: Props) {
         ))}
       </CollapsibleCard>
 
-      <CollapsibleCard title="BESS" count={bess.length} defaultOpen={bess.length > 0}>
+      <CollapsibleCard title="BESS" count={bess.length}
+        persistKey="sources.bess" defaultOpen={false}>
         {bess.length === 0 && <div className="hint">No BESS placed.</div>}
         {bess.map((s) => (
           <SourceItem
@@ -577,7 +584,8 @@ function SourcesTab(props: Props) {
         ))}
       </CollapsibleCard>
 
-      <CollapsibleCard title="Auxiliary equipment" count={aux.length} defaultOpen={aux.length > 0}>
+      <CollapsibleCard title="Auxiliary equipment" count={aux.length}
+        persistKey="sources.auxiliary" defaultOpen={false}>
         {aux.length === 0 && <div className="hint">Inverters and transformers appear here.</div>}
         {aux.map((s) => (
           <SourceItem
@@ -663,21 +671,25 @@ function AreaTab(props: Props) {
             >Fit to objects</button>
           )}
         </div>
-        <div className="hint">Drag the yellow dashed rectangle on the map (TBD); for now use the inputs above.</div>
+        <div className="hint">Drag the yellow dashed rectangle on the map to move it; drag a corner handle to resize. The inputs above always reflect the current geometry.</div>
       </Card>
 
       <Card title="Grid">
         <Field label="Spacing (m)">
           <select value={gridSpacingM} onChange={(e) => setGridSpacingM(+e.target.value)}>
-            <option value={25}>25 m (fine)</option>
+            <option value={25}>25 m</option>
             <option value={50}>50 m</option>
-            <option value={100}>100 m (default)</option>
-            <option value={200}>200 m (preview)</option>
+            <option value={100}>100 m</option>
+            <option value={200}>200 m</option>
+            <option value={300}>300 m</option>
           </select>
         </Field>
         <div className="hint">
           {Math.round(ca.widthM / gridSpacingM) * Math.round(ca.heightM / gridSpacingM)} cells
           ({Math.round(ca.widthM / gridSpacingM)} × {Math.round(ca.heightM / gridSpacingM)})
+          <br />
+          Default spacing is auto-picked from the calc-area size on first
+          creation; pick a value to override and your choice sticks.
         </div>
       </Card>
 
@@ -742,7 +754,17 @@ function ReceiversTab(props: Props) {
               className={`item${selectedIds.has(r.id) ? ' selected' : ''}`}
               onClick={(e) => onSelect(r.id, { shift: e.shiftKey })}
             >
-              <div className="item-name">{r.name}</div>
+              <div className="item-name" onClick={(e) => e.stopPropagation()}>
+                {/* Always-editable name; the visible chrome stays subtle so
+                    it still reads as the row title until you click in. */}
+                <input
+                  className="inline-edit-name"
+                  value={r.name}
+                  onChange={(e) => updateReceiver(r.id, { name: e.target.value })}
+                  placeholder="Receiver name"
+                  title="Receiver name (click to edit)"
+                />
+              </div>
               <div className="item-meta">
                 limit {activeLimit} dB(A) ·{' '}
                 {result && isFinite(result.totalDbA) ? (
@@ -752,10 +774,13 @@ function ReceiversTab(props: Props) {
                 ) : <span className="muted">— run to compute</span>}
               </div>
               <div className="item-controls" onClick={(e) => e.stopPropagation()}>
-                <NumericInput className="inline-edit" min={0} max={300} step={0.5}
-                  value={r.heightAboveGroundM} fallback={1.5}
-                  onChange={(v) => updateReceiver(r.id, { heightAboveGroundM: v })}
-                  title="Height above ground (m)" />
+                <span className="inline-unit" title="Height above ground (m)">
+                  <NumericInput className="inline-edit" min={0} max={300} step={0.5}
+                    value={r.heightAboveGroundM} fallback={1.5}
+                    onChange={(v) => updateReceiver(r.id, { heightAboveGroundM: v })}
+                    title="Height above ground (m)" />
+                  <span className="inline-unit-label">m</span>
+                </span>
                 <PeriodLimitInput
                   label="D" period="day" active={project.scenario.period === 'day'}
                   value={r.limitDayDbA}
@@ -916,7 +941,7 @@ function ImportTab(props: Props) {
 // -------------------- Results --------------------
 
 function ResultsTab(props: Props) {
-  const { project, results, grid, computing, lastSolveMs, onRunGrid, onOpenSettings, contourBounds } = props;
+  const { project, results, grid, computing, lastSolveMs, onRunGrid, contourBounds } = props;
   const exceedances = (results ?? []).filter((r) => {
     const rx = project.receivers.find((x) => x.id === r.receiverId);
     return rx && r.totalDbA > limitForPeriod(rx, project.scenario.period);
@@ -1017,9 +1042,6 @@ function ResultsTab(props: Props) {
         </div>
       </Card>
 
-      <Card title="Project settings">
-        <button className="btn block" onClick={onOpenSettings}>⚙ Open settings</button>
-      </Card>
     </>
   );
 }
@@ -1145,6 +1167,418 @@ function LayersTab(props: Props) {
   );
 }
 
+// -------------------- Barriers --------------------
+
+function BarriersTab(props: Props) {
+  const { project, setProject, addMode, setAddMode, selectedIds, onSelect } = props;
+
+  function updateBarrier(id: string, patch: Partial<Project['barriers'][number]>) {
+    setProject({
+      ...project,
+      barriers: project.barriers.map((b) => (b.id === id ? { ...b, ...patch } : b)),
+    });
+  }
+  function removeBarrier(id: string) {
+    setProject({ ...project, barriers: project.barriers.filter((b) => b.id !== id) });
+  }
+
+  return (
+    <>
+      <Card title="Add barriers">
+        <div className="add-row">
+          <ModeBtn label="+ Barrier" mode="barrier" current={addMode} onClick={setAddMode} />
+        </div>
+        {addMode === 'barrier' && (
+          <div className="hint">
+            Click two points on the map to draw a wall between them. Esc cancels mid-draw.
+          </div>
+        )}
+        <div className="hint">
+          Barriers are straight wall segments characterised by their top
+          height. The solver applies <code>Abar</code> (ISO 9613-2 §7.4)
+          along every source → receiver path that the wall intersects, with
+          the per-band Dz combined with Agr per the convention chosen in
+          Settings.
+        </div>
+      </Card>
+
+      <Card title="Barrier list" count={project.barriers.length}>
+        {project.barriers.length === 0 && <div className="hint">No barriers yet.</div>}
+        {project.barriers.map((b) => (
+          <div
+            key={b.id}
+            className={`item${selectedIds.has(b.id) ? ' selected' : ''}`}
+            onClick={(e) => onSelect(b.id, { shift: e.shiftKey })}
+          >
+            <div className="item-name" onClick={(e) => e.stopPropagation()}>
+              <input
+                className="inline-edit-name"
+                value={b.name}
+                onChange={(e) => updateBarrier(b.id, { name: e.target.value })}
+                placeholder="Barrier name"
+              />
+            </div>
+            <div className="item-meta">
+              {b.polylineLatLng.length >= 2
+                ? `${segmentLengthM(b.polylineLatLng).toFixed(0)} m long`
+                : 'incomplete'}
+              {' · '}top {b.topHeightsM[0]?.toFixed(1) ?? '—'} m
+            </div>
+            <div className="item-controls" onClick={(e) => e.stopPropagation()}>
+              <span className="inline-unit" title="Top height (m above local ground)">
+                <NumericInput className="inline-edit" min={0} max={50} step={0.5}
+                  value={b.topHeightsM[0] ?? 5} fallback={5}
+                  onChange={(v) => updateBarrier(b.id, { topHeightsM: [v] })}
+                  title="Top height (m)" />
+                <span className="inline-unit-label">m</span>
+              </span>
+              <button className="x-btn" onClick={() => removeBarrier(b.id)}>✕</button>
+            </div>
+          </div>
+        ))}
+      </Card>
+    </>
+  );
+}
+
+/// Approximate ground-distance between the first two points of a barrier
+/// polyline. Used purely for display in the barrier-list meta line.
+function segmentLengthM(poly: Array<[number, number]>): number {
+  if (poly.length < 2) return 0;
+  const [a, b] = poly;
+  const R = 6371008.8;
+  const lat0 = (a[0] * Math.PI) / 180;
+  const dLat = ((b[0] - a[0]) * Math.PI) / 180 * R;
+  const dLng = ((b[1] - a[1]) * Math.PI) / 180 * R * Math.cos(lat0);
+  return Math.sqrt(dLat * dLat + dLng * dLng);
+}
+
+// -------------------- Settings --------------------
+
+/// Live-edit Settings tab. Each control commits to project state on the
+/// fly — the structural-key effect in ProjectScreen debounces re-evals so
+/// rapid edits don't flood the solver.
+function SettingsTab(props: Props) {
+  const { project, setProject, gridSpacingM, setGridSpacingM } = props;
+  const settings: ProjectSettings = project.settings ?? {
+    ground: { defaultG: 0.5 },
+    annexD: {
+      barrierAbarCapDb: 3.0,
+      useElevatedSourceForBarrier: true,
+      applyConcaveCorrection: true,
+      wtReceiverHeightMin: 4.0,
+    },
+    general: { defaultReceiverHeight: 1.5 },
+    extrapolation: { capPerBandDb: 6, capTotalDbA: 3 },
+  };
+
+  // Local draft for the band-system picker (which lives on the scenario
+  // not the settings). Other settings commit immediately.
+  const [draftBandSystem, setDraftBandSystem] = useState(project.scenario.bandSystem);
+  // Re-sync if the project changes from elsewhere (e.g. import).
+  useEffect(() => { setDraftBandSystem(project.scenario.bandSystem); }, [project.scenario.bandSystem]);
+
+  function update(patch: Partial<ProjectSettings>) {
+    setProject({ ...project, settings: { ...settings, ...patch } });
+  }
+  function commitBandSystem(bs: 'octave' | 'oneThirdOctave') {
+    setDraftBandSystem(bs);
+    setProject({ ...project, scenario: { ...project.scenario, bandSystem: bs } });
+  }
+
+  const propagation = settings.propagation ?? { maxContributionDistanceM: 20000, treeAcceptanceTheta: 0.25 };
+  const topography = settings.topography ?? { pathSamples: 12, virtualBarrierMinHeightM: 2 };
+  const extrapolation = settings.extrapolation ?? { capPerBandDb: 6, capTotalDbA: 3 };
+
+  return (
+    <>
+      <section className="sp-section">
+        <h3><span>Band system</span></h3>
+        <Field label="Solve in">
+          <select
+            value={draftBandSystem}
+            onChange={(e) => commitBandSystem(e.target.value as 'octave' | 'oneThirdOctave')}
+          >
+            <option value="octave">Octave (10 bands · 16 Hz – 8 kHz)</option>
+            <option value="oneThirdOctave">One-third octave (31 bands · 10 Hz – 10 kHz)</option>
+          </select>
+        </Field>
+        <div className="hint">
+          Octave is faster; one-third octave catches narrowband content. Source data
+          in the other band system is folded automatically (third → octave by energy
+          sum; octave → third by equal distribution across the three children).
+        </div>
+      </section>
+
+      <section className="sp-section">
+        <h3><span>Ground</span></h3>
+        <Field label="Default ground factor G (0 = hard, 1 = porous)">
+          <NumericInput min={0} max={1} step={0.05}
+            value={settings.ground.defaultG} fallback={0.5}
+            onChange={(v) => update({ ground: { ...settings.ground, defaultG: v } })}
+          />
+        </Field>
+        <div className="hint">Annex D rules cap G at 0.5 for wind turbine sources regardless of this setting.</div>
+      </section>
+
+      <section className="sp-section">
+        <h3><span>Solid-angle correction (DΩ)</span></h3>
+        <Field label="DΩ (dB)">
+          <select
+            value={(settings.dOmegaDb ?? 3).toString()}
+            onChange={(e) => update({ dOmegaDb: +e.target.value })}
+          >
+            <option value="3">+3 dB — hemispherical / common practice</option>
+            <option value="0">0 dB — strict ISO 9613-2 / IEC 61400-11</option>
+          </select>
+        </Field>
+        <div className="hint">
+          Frequency-independent correction added to every band per ISO 9613-2 Eq (1)
+          <code> Lp = Lw + DΩ + Dc − A</code>.
+          <br />
+          <b>+3 dB</b> matches common-practice tools that include the ground-reflection
+          boost (CONCAWE, AS 4959 etc.).
+          <br />
+          <b>0 dB</b> matches strict ISO: WTG LwA per IEC 61400-11 already encodes the
+          hemispherical reflection, so DΩ is 0.
+        </div>
+      </section>
+
+      <section className="sp-section">
+        <h3><span>Atmosphere (ISO 9613-1 Aatm)</span></h3>
+        <div className="grid-2">
+          <Field label="Temperature (°C)">
+            <NumericInput min={-30} max={50} step={1}
+              value={settings.atmosphere?.temperatureC ?? 10}
+              fallback={10}
+              onChange={(v) => update({
+                atmosphere: {
+                  temperatureC: v,
+                  relativeHumidityPct: settings.atmosphere?.relativeHumidityPct ?? 70,
+                  pressureKpa: settings.atmosphere?.pressureKpa ?? 101.325,
+                },
+              })}
+            />
+          </Field>
+          <Field label="Relative humidity (%)">
+            <NumericInput min={1} max={100} step={1}
+              value={settings.atmosphere?.relativeHumidityPct ?? 70}
+              fallback={70}
+              onChange={(v) => update({
+                atmosphere: {
+                  temperatureC: settings.atmosphere?.temperatureC ?? 10,
+                  relativeHumidityPct: v,
+                  pressureKpa: settings.atmosphere?.pressureKpa ?? 101.325,
+                },
+              })}
+            />
+          </Field>
+        </div>
+        <div className="hint">
+          Drives the atmospheric absorption coefficient α(f) per ISO 9613-1
+          (closed-form, evaluated inside the WASM solver). The default
+          (10 °C / 70 % RH) is the ISO 9613-2 reference.
+        </div>
+      </section>
+
+      <section className="sp-section">
+        <h3><span>Barrier convention (Abar / Agr interaction)</span></h3>
+        <Field label="Convention">
+          <select
+            value={settings.barrierConvention ?? 'dz-minus-max-agr-0'}
+            onChange={(e) => update({ barrierConvention: e.target.value as 'iso-eq16' | 'dz-minus-max-agr-0' })}
+          >
+            <option value="dz-minus-max-agr-0">Abar = Dz − max(Agr, 0) (Recommended)</option>
+            <option value="iso-eq16">Abar = max(0, Dz − Agr) (Strict ISO 9613-2 §7.4 Eq 16/17)</option>
+          </select>
+        </Field>
+        <div className="hint">
+          Numerically equivalent in every Agr range; only the bookkeeping
+          differs. The recommended variant always adds Agr separately and
+          subtracts only the positive part from Dz, matching what the team's
+          reference tools produce.
+        </div>
+
+        <Field label="Diffraction limit Dz (dB) — general sources">
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <select
+              value={settings.barrierDiffractionCapDb == null ? 'off' : 'on'}
+              onChange={(e) => {
+                if (e.target.value === 'off') {
+                  update({ barrierDiffractionCapDb: null });
+                } else {
+                  // Default to a conservative 2 dB when first switched on —
+                  // the value the user mentioned as a typical project cap.
+                  update({ barrierDiffractionCapDb: settings.barrierDiffractionCapDb ?? 2 });
+                }
+              }}
+            >
+              <option value="off">No limit (ISO §7.4 default — 20 / 25 dB)</option>
+              <option value="on">Limit Dz to…</option>
+            </select>
+            {settings.barrierDiffractionCapDb != null && (
+              <NumericInput min={0} max={25} step={0.5}
+                value={settings.barrierDiffractionCapDb} fallback={2}
+                onChange={(v) => update({ barrierDiffractionCapDb: v })}
+              />
+            )}
+          </div>
+        </Field>
+        <div className="hint">
+          Caps the per-band diffraction attenuation Dz for BESS / auxiliary /
+          generic sources before it combines with Agr per the convention
+          above. Common project values are <b>2</b> or <b>5</b> dB. Wind
+          turbines have their own cap (Annex D — set above) and aren't
+          affected by this field.
+        </div>
+      </section>
+
+      <section className="sp-section">
+        <h3><span>Annex D — wind turbines</span></h3>
+        <Field label="Barrier Abar cap (dB)">
+          <NumericInput min={0} max={25} step={0.5}
+            value={settings.annexD.barrierAbarCapDb} fallback={3.0}
+            onChange={(v) => update({ annexD: { ...settings.annexD, barrierAbarCapDb: v } })}
+          />
+        </Field>
+        <label className="fld checkbox">
+          <input
+            type="checkbox"
+            checked={settings.annexD.useElevatedSourceForBarrier}
+            onChange={(e) => update({ annexD: { ...settings.annexD, useElevatedSourceForBarrier: e.target.checked } })}
+          />
+          <span>Use tip height as barrier source (Annex D.3)</span>
+        </label>
+        <label className="fld checkbox">
+          <input
+            type="checkbox"
+            checked={settings.annexD.applyConcaveCorrection}
+            onChange={(e) => update({ annexD: { ...settings.annexD, applyConcaveCorrection: e.target.checked } })}
+          />
+          <span>Apply concave-ground correction (Annex D.5, −3 dB)</span>
+        </label>
+        <Field label="WT receiver minimum height (m)">
+          <NumericInput min={1} max={20} step={0.5}
+            value={settings.annexD.wtReceiverHeightMin} fallback={4.0}
+            onChange={(v) => update({ annexD: { ...settings.annexD, wtReceiverHeightMin: v } })}
+          />
+        </Field>
+      </section>
+
+      <section className="sp-section">
+        <h3><span>General sources</span></h3>
+        <Field label="Default receiver height (m) for non-WT calcs">
+          <NumericInput min={1} max={5} step={0.1}
+            value={settings.general.defaultReceiverHeight} fallback={1.5}
+            onChange={(v) => update({ general: { ...settings.general, defaultReceiverHeight: v } })}
+          />
+        </Field>
+      </section>
+
+      <section className="sp-section">
+        <h3><span>Contour grid spacing</span></h3>
+        <Field label="Grid spacing (m)">
+          <select value={gridSpacingM} onChange={(e) => setGridSpacingM(+e.target.value)}>
+            <option value={25}>25 m</option>
+            <option value={50}>50 m</option>
+            <option value={100}>100 m</option>
+            <option value={200}>200 m</option>
+            <option value={300}>300 m</option>
+          </select>
+        </Field>
+        <div className="hint">
+          Default spacing is auto-picked from the calc-area size on first
+          creation; pick a value to override and your choice sticks.
+        </div>
+      </section>
+
+      <section className="sp-section">
+        <h3><span>Propagation cutoffs</span></h3>
+        <div className="grid-2">
+          <Field label="Max contribution distance (m)">
+            <NumericInput min={0} step={50}
+              value={propagation.maxContributionDistanceM} fallback={20000}
+              onChange={(v) => update({
+                propagation: { ...propagation, maxContributionDistanceM: v },
+              })}
+            />
+          </Field>
+          <Field label="Tree acceptance θ (0.1–2.0)">
+            <NumericInput min={0.1} max={2} step={0.05}
+              value={propagation.treeAcceptanceTheta} fallback={0.25}
+              onChange={(v) => update({
+                propagation: { ...propagation, treeAcceptanceTheta: v },
+              })}
+            />
+          </Field>
+        </div>
+        <div className="hint">
+          <b>Max distance:</b> sources further than this from a receiver are skipped
+          entirely. Set to <b>0</b> to disable. Default 20 km.
+          <br />
+          <b>Tree acceptance θ (Barnes-Hut):</b> when a cluster's bounding-box diagonal
+          divided by its distance to the receiver is below θ, the cluster collapses to
+          one virtual source. Lower = more accurate but slower (default 0.25).
+        </div>
+      </section>
+
+      <section className="sp-section">
+        <h3><span>Topography (DEM)</span></h3>
+        <div className="grid-2">
+          <Field label="Path samples per source-receiver pair">
+            <NumericInput min={0} max={64} step={1}
+              value={topography.pathSamples} fallback={12}
+              onChange={(v) => update({
+                topography: { ...topography, pathSamples: Math.max(0, Math.round(v)) },
+              })}
+            />
+          </Field>
+          <Field label="Virtual barrier min height (m)">
+            <NumericInput min={0} max={50} step={0.5}
+              value={topography.virtualBarrierMinHeightM} fallback={2}
+              onChange={(v) => update({
+                topography: { ...topography, virtualBarrierMinHeightM: v },
+              })}
+            />
+          </Field>
+        </div>
+        <div className="hint">
+          When a DEM is loaded, the solver samples ground heights along the
+          source→receiver line. Ridges that pierce the line of sight by more
+          than the threshold become virtual barriers. Set samples to <b>0</b>
+          to fall back to flat ground.
+        </div>
+      </section>
+
+      <section className="sp-section">
+        <h3><span>Drag extrapolation caps</span></h3>
+        <div className="grid-2">
+          <Field label="Per-band cap (dB)">
+            <NumericInput min={1} max={20} step={0.5}
+              value={extrapolation.capPerBandDb} fallback={6}
+              onChange={(v) => update({
+                extrapolation: { ...extrapolation, capPerBandDb: v },
+              })}
+            />
+          </Field>
+          <Field label="Total dB(A) cap">
+            <NumericInput min={0.5} max={20} step={0.5}
+              value={extrapolation.capTotalDbA} fallback={3}
+              onChange={(v) => update({
+                extrapolation: { ...extrapolation, capTotalDbA: v },
+              })}
+            />
+          </Field>
+        </div>
+        <div className="hint">
+          When Taylor extrapolation predicts a change larger than these caps,
+          the displayed value is clamped and an exact re-snapshot is queued.
+        </div>
+      </section>
+    </>
+  );
+}
+
 // -------------------- Shared bits --------------------
 
 function Card(props: { title: string; count?: number; children: React.ReactNode }) {
@@ -1159,11 +1593,38 @@ function Card(props: { title: string; count?: number; children: React.ReactNode 
   );
 }
 
-function CollapsibleCard(props: { title: string; count: number; defaultOpen: boolean; children: React.ReactNode }) {
-  const [open, setOpen] = useState(props.defaultOpen);
+function CollapsibleCard(props: {
+  title: string; count: number; defaultOpen: boolean; children: React.ReactNode;
+  /// Optional localStorage key. When set, the open/closed state survives
+  /// across reloads — useful for sub-cards (Wind turbines / BESS / Aux)
+  /// that the user typically wants kept collapsed by default but expanded
+  /// once they've opted in.
+  persistKey?: string;
+}) {
+  const fullKey = props.persistKey ? `bessty.collapse.${props.persistKey}` : null;
+  // Initial state: read from localStorage if a persistKey is provided,
+  // otherwise honour `defaultOpen`. Lazy-init so we hit localStorage once.
+  const [open, setOpen] = useState<boolean>(() => {
+    if (!fullKey) return props.defaultOpen;
+    try {
+      const raw = localStorage.getItem(fullKey);
+      if (raw === '1') return true;
+      if (raw === '0') return false;
+    } catch { /* swallow */ }
+    return props.defaultOpen;
+  });
+  function toggle() {
+    setOpen((prev) => {
+      const next = !prev;
+      if (fullKey) {
+        try { localStorage.setItem(fullKey, next ? '1' : '0'); } catch { /* swallow */ }
+      }
+      return next;
+    });
+  }
   return (
     <section className="sp-section collapsible">
-      <h3 onClick={() => setOpen(!open)} style={{ cursor: 'pointer', userSelect: 'none' }}>
+      <h3 onClick={toggle} style={{ cursor: 'pointer', userSelect: 'none' }}>
         <span><span style={{ display: 'inline-block', width: 10, color: 'var(--mid)' }}>{open ? '▾' : '▸'}</span> {props.title}</span>
         <span className="badge">{props.count}</span>
       </h3>

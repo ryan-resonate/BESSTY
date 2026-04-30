@@ -13,21 +13,27 @@ export function makeDemoProject(): Project {
     updatedAt: new Date().toISOString(),
     owner: 'anonymous',
     scenario: {
-      windSpeed: 8,
+      windSpeed: 10,
       windSpeedReferenceHeight: 10,
       period: 'night',
       bandSystem: 'octave',
     },
     settings: {
       ground: { defaultG: 0.5 },
+      dOmegaDb: 3,
       annexD: {
         barrierAbarCapDb: 3.0,
         useElevatedSourceForBarrier: true,
         applyConcaveCorrection: true,
         wtReceiverHeightMin: 4.0,
       },
+      barrierConvention: 'dz-minus-max-agr-0',
       general: { defaultReceiverHeight: 1.5 },
       extrapolation: { capPerBandDb: 6, capTotalDbA: 3 },
+      propagation: {
+        maxContributionDistanceM: 20000,
+        treeAcceptanceTheta: 0.25,
+      },
     },
     calculationArea: {
       centerLatLng: [-33.595, 138.74],

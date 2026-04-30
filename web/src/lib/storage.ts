@@ -97,12 +97,13 @@ export function loadProject(id: string): Project | null {
     if (p.settings && !p.settings.propagation) {
       p.settings.propagation = {
         maxContributionDistanceM: 20000,
-        treeAcceptanceTheta: 1.25,
+        treeAcceptanceTheta: 0.25,
       };
     } else if (p.settings && p.settings.propagation && p.settings.propagation.treeAcceptanceTheta == null) {
       // v0.x projects had `clusterBeyondM`/`maxClustersPerReceiver` only.
-      // Backfill the new theta knob with a sensible default.
-      p.settings.propagation.treeAcceptanceTheta = 0.5;
+      // Backfill the new theta knob with a conservative default that
+      // keeps geometric error well under 1 dB.
+      p.settings.propagation.treeAcceptanceTheta = 0.25;
     }
     if (p.settings && !p.settings.topography) {
       p.settings.topography = {
@@ -172,24 +173,32 @@ function makeEmptyProject(name: string): Project {
     updatedAt: now,
     owner: 'anonymous',
     scenario: {
-      windSpeed: 8,
+      windSpeed: 10,
       windSpeedReferenceHeight: 10,
       period: 'night',
       bandSystem: 'octave',
     },
     settings: {
       ground: { defaultG: 0.5 },
+      // +3 dB hemispherical / common-practice DΩ as the new default —
+      // matches the reference output of most Australian / European
+      // wind-farm tools the team benchmarks against.
+      dOmegaDb: 3,
       annexD: {
         barrierAbarCapDb: 3.0,
         useElevatedSourceForBarrier: true,
         applyConcaveCorrection: true,
         wtReceiverHeightMin: 4.0,
       },
+      // Default to the simpler bookkeeping convention (Abar = Dz − max(Agr, 0)).
+      // Numerically equivalent to strict ISO Eq 16/17 in every case; just
+      // easier to reconcile with reference tools.
+      barrierConvention: 'dz-minus-max-agr-0',
       general: { defaultReceiverHeight: 1.5 },
       extrapolation: { capPerBandDb: 6, capTotalDbA: 3 },
       propagation: {
         maxContributionDistanceM: 20000,
-        treeAcceptanceTheta: 1.25,
+        treeAcceptanceTheta: 0.25,
       },
       topography: {
         pathSamples: 12,

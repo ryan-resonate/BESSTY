@@ -6,7 +6,6 @@ import { MapView, type BaseMap, type ContourMode } from '../components/MapView';
 import { Map3DView } from '../components/Map3DView';
 import { MapControls } from '../components/MapControls';
 import { Legend, ResultsDock, StatusBar } from '../components/MapChrome';
-import { SettingsModal } from '../components/SettingsModal';
 import { SidePanel, type AddMode, type Tab } from '../components/SidePanel';
 import { listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { gridDomain, type Palette } from '../lib/colormap';
@@ -25,7 +24,7 @@ import {
   type ReceiverResult,
 } from '../lib/solver';
 import { loadProject, saveProject } from '../lib/storage';
-import type { Project, Receiver, Source, SourceKind } from '../lib/types';
+import type { Barrier, Project, Receiver, Source, SourceKind } from '../lib/types';
 
 let nextId = 1000;
 function newId(prefix: string) {
@@ -119,7 +118,7 @@ function sanitizeProject(p: Project): Project {
     : p.calculationArea;
   const scenario = {
     ...p.scenario,
-    windSpeed: safe(p.scenario.windSpeed, 8),
+    windSpeed: safe(p.scenario.windSpeed, 10),
     windSpeedReferenceHeight: safe(p.scenario.windSpeedReferenceHeight, 10),
   };
   return { ...p, receivers: fixedReceivers, sources: fixedSources, calculationArea: ca, scenario };
@@ -151,19 +150,28 @@ export function ProjectScreen() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [addMode, setAddMode] = useState<AddMode>('none');
-  const [showSettings, setShowSettings] = useState(false);
   const [show3D, setShow3D] = useState(false);
   const [cursorLatLng, setCursorLatLng] = useState<[number, number] | null>(null);
   /// Active tab — lifted into ProjectScreen so placing a new object can
   /// auto-switch the panel to Sources / Receivers.
   const [activeTab, setActiveTab] = useState<Tab>('sources');
 
-  // Esc cancels any active add / measure mode and clears the current
-  // selection so the user is back to the default mouse cursor.
+  // Esc cancels any active add / measure mode AND clears the current
+  // selection so the user is back to the default mouse cursor with no
+  // sticky multi-selection. Skipped when focus is in a text field — Esc
+  // there usually means "abandon edit", not "drop selection on the map".
   useEffect(() => {
     function onKey(ev: KeyboardEvent) {
       if (ev.key !== 'Escape') return;
+      const t = ev.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) {
+        // Let the field blur naturally — the keydown listener on the input
+        // (e.g. NumericInput) handles its own Esc semantics.
+        return;
+      }
       setAddMode('none');
+      setSelectedIds(new Set());
+      setSelectedGroupId(null);
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -211,7 +219,17 @@ export function ProjectScreen() {
   const [palette, setPalette] = useState<Palette>('viridis');
   const [domainMode, setDomainMode] = useState<'auto' | 'fixed'>('auto');
   const [fixedDomain, setFixedDomain] = useState<{ min: number; max: number }>({ min: 25, max: 60 });
-  const [gridSpacingM, setGridSpacingM] = useState(100);
+  // Grid spacing — auto-picked from the calc area on first appearance,
+  // then frozen against the user's choice once they touch the picker.
+  // Available choices live in `GRID_SPACING_CHOICES` (SidePanel) — pick
+  // the smallest one that keeps cells per axis ≤ AUTO_TARGET_CELLS so
+  // contours stay smooth on a typical 5–10 km wind farm.
+  const [gridSpacingM, setGridSpacingMState] = useState(100);
+  const gridSpacingTouchedRef = useRef(false);
+  function setGridSpacingM(v: number) {
+    gridSpacingTouchedRef.current = true;
+    setGridSpacingMState(v);
+  }
 
   const [dem, setDem] = useState<DemRaster | null>(null);
   const [demStatus, setDemStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
@@ -393,6 +411,22 @@ export function ProjectScreen() {
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project, projectId, selectedIds]);
+
+  // Auto-pick a sensible grid spacing the first time we see a calc area.
+  // Once the user touches the spacing picker (Settings → Grid spacing or
+  // SidePanel Area tab) we never override their choice again. Aim for
+  // ~200 cells across the long side: smaller area → finer spacing.
+  useEffect(() => {
+    if (!project?.calculationArea || gridSpacingTouchedRef.current) return;
+    const longSide = Math.max(project.calculationArea.widthM, project.calculationArea.heightM);
+    const target = longSide / 200;
+    const choices = [25, 50, 100, 200, 300];
+    const auto = choices.find((s) => target <= s) ?? 300;
+    if (auto !== gridSpacingM) setGridSpacingMState(auto);
+    // Don't depend on `gridSpacingM` — that would cause a feedback loop
+    // when we update it. Only the calc-area dimensions matter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.calculationArea?.widthM, project?.calculationArea?.heightM]);
 
   // Auto-load DEM for the project area on first load. Re-load when the calc
   // area changes significantly (handled via demStatus reset on area edit).
@@ -667,6 +701,42 @@ export function ProjectScreen() {
     selectOne(id);
   }
 
+  /// Replace a barrier's polyline geometry. Used by the map's barrier
+  /// drag handles (both endpoint moves and full-line translations).
+  /// Skipped silently if any vertex is non-finite — the map drag layer
+  /// can occasionally emit garbage during fast cursor moves and we'd
+  /// rather leave the barrier where it was than corrupt project state.
+  function handleUpdateBarrier(id: string, polyline: Array<[number, number]>) {
+    if (!project) return;
+    if (polyline.length < 2) return;
+    for (const [la, ln] of polyline) {
+      if (!Number.isFinite(la) || !Number.isFinite(ln)) return;
+    }
+    setProject({
+      ...project,
+      barriers: project.barriers.map((b) => (b.id === id ? { ...b, polylineLatLng: polyline } : b)),
+    });
+  }
+
+  function handleAddBarrier(a: [number, number], b: [number, number]) {
+    if (!project) return;
+    if (![a[0], a[1], b[0], b[1]].every(Number.isFinite)) return;
+    const id = newId('B');
+    const newBarrier: Barrier = {
+      id,
+      name: `Barrier ${project.barriers.length + 1}`,
+      type: 'wall',
+      polylineLatLng: [a, b],
+      topHeightsM: [5],         // sensible default; user edits in the Barriers tab
+      baseFromGroundM: 0,
+      surfaceDensityKgM2: 20,   // reflective wall — only matters when reflections land
+      absorptionCoeff: 0.2,
+    };
+    setProject({ ...project, barriers: [...project.barriers, newBarrier] });
+    setActiveTab('barriers');
+    selectOne(id);
+  }
+
   function handleAddReceiver(latLng: [number, number]) {
     if (!project) return;
     const id = newId('R');
@@ -818,6 +888,7 @@ export function ProjectScreen() {
       ...project,
       sources: project.sources.filter((s) => !selectedIds.has(s.id)),
       receivers: project.receivers.filter((r) => !selectedIds.has(r.id)),
+      barriers: project.barriers.filter((b) => !selectedIds.has(b.id)),
       groups: (project.groups ?? []).map((g) => ({
         ...g, memberIds: g.memberIds.filter((mid) => !selectedIds.has(mid)),
       })).filter((g) => g.memberIds.length > 0),
@@ -919,7 +990,6 @@ export function ProjectScreen() {
         onRunGrid={runGrid}
         computing={computing || gridStatus === 'computing'}
         lastSolveMs={lastSolveMs}
-        onOpenSettings={() => setShowSettings(true)}
         setDem={setDemAndSource}
         demSource={demSource}
         baseMap={baseMap} setBaseMap={setBaseMap}
@@ -964,6 +1034,8 @@ export function ProjectScreen() {
           dbDomain={dbDomain}
           onAddSource={handleAddSource}
           onAddReceiver={handleAddReceiver}
+          onAddBarrier={handleAddBarrier}
+          onUpdateBarrier={handleUpdateBarrier}
           onMoveSource={handleMoveSource}
           onMoveReceiver={handleMoveReceiver}
           onResizeCalcArea={handleResizeCalcArea}
@@ -1003,14 +1075,6 @@ export function ProjectScreen() {
         </ErrorBoundary>
       </div>
 
-      {showSettings && (
-        <SettingsModal
-          project={project} setProject={setProject}
-          onClose={() => setShowSettings(false)}
-          gridSpacingM={gridSpacingM} setGridSpacingM={setGridSpacingM}
-        />
-      )}
-
       {show3D && (
         <Map3DView
           project={project}
@@ -1018,6 +1082,8 @@ export function ProjectScreen() {
           palette={palette}
           dbDomain={dbDomain}
           baseMap={baseMap}
+          dem={dem}
+          contourStepDb={contourStepDb}
           onClose={() => setShow3D(false)}
         />
       )}

@@ -38,17 +38,35 @@ import {
 } from './propagation';
 
 // Atmosphere + barrier-convention parameters threaded through to every
-// WASM call. Defaults match `Atmosphere::iso_reference()` in the Rust
-// solver (10 °C, 70 % RH, 101.325 kPa) and the strict ISO 9613-2 §7.4
-// Eq 16/17 barrier convention.
-interface SolverEnv { tC: number; rh: number; pKpa: number; barConv: number; }
+// WASM call. Atmosphere defaults match `Atmosphere::iso_reference()` in
+// the Rust solver (10 °C, 70 % RH, 101.325 kPa). Barrier convention
+// defaults to the simpler-bookkeeping variant (`Dz − max(Agr, 0)`) since
+// it's numerically equivalent to strict ISO Eq 16/17 in every case and
+// matches what the team's reference tools produce.
+interface SolverEnv { tC: number; rh: number; pKpa: number; barConv: number; dzCap: number; }
 function solverEnv(project: Project): SolverEnv {
   const atm = project.settings?.atmosphere;
   const tC = atm?.temperatureC ?? 10;
   const rh = atm?.relativeHumidityPct ?? 70;
   const pKpa = atm?.pressureKpa ?? 101.325;
-  const barConv = project.settings?.barrierConvention === 'dz-minus-max-agr-0' ? 1 : 0;
-  return { tC, rh, pKpa, barConv };
+  // 1 = DzMinusMaxAgr0 (recommended); 0 = strict ISO Eq16. Default to 1
+  // when the project hasn't pinned a value.
+  const barConv = project.settings?.barrierConvention === 'iso-eq16' ? 0 : 1;
+  // Diffraction Dz cap. Sentinel −1.0 = "no override, use the standard
+  // ISO §7.4 caps (20 dB single edge / 25 dB multi-edge)". A finite
+  // non-negative value (e.g. 2) overrides those caps for general
+  // (non-WTG) sources. WTG sources use `annexD.barrierAbarCapDb`
+  // independently (default 3 dB) and aren't affected by this field.
+  const userCap = project.settings?.barrierDiffractionCapDb;
+  const dzCap = userCap != null && Number.isFinite(userCap) && userCap >= 0 ? userCap : -1;
+  return { tC, rh, pKpa, barConv, dzCap };
+}
+
+/// Project-wide DΩ correction (dB), with the new +3 dB hemispherical
+/// default applied when the project hasn't pinned a value. Centralised so
+/// every site that adds DΩ uses the same fallback.
+export function projectDOmegaDb(project: Project): number {
+  return project.settings?.dOmegaDb ?? 3;
 }
 
 /// Band count for the solver, given a scenario's band system.
@@ -228,7 +246,7 @@ function snapshotPair(
   const allBars = concatBarriers(barriersFlat, topoBars);
   const snap = evaluate_general_with_grad_src_octave(
     lw, se, sn, sourceZ, re, rn, rxZ, g, allBars,
-    env.tC, env.rh, env.pKpa, env.barConv,
+    env.tC, env.rh, env.pKpa, env.barConv, env.dzCap,
   );
   return { snapshot: snap, srcAbsXyz: [se, sn, sourceZ] };
 }
@@ -378,7 +396,7 @@ export async function snapshotProject(
     return {
       receiverId: rx.id,
       perBandLp: summed,
-      totalDbA: aWeightedTotal(summed, aw, project.settings?.dOmegaDb ?? 0),
+      totalDbA: aWeightedTotal(summed, aw, projectDOmegaDb(project)),
       perSource,
     };
   });
@@ -441,14 +459,14 @@ export function extrapolateProject(
       }
       perSource.push({ sourceId: sourceKey, perBandLp: lp });
       for (let i = 0; i < nb; i++) {
-        totalSnapshotEnergy += Math.pow(10, (cached.snapshot[i] + aw[i] + (project.settings?.dOmegaDb ?? 0)) / 10);
+        totalSnapshotEnergy += Math.pow(10, (cached.snapshot[i] + aw[i] + (projectDOmegaDb(project))) / 10);
       }
     }
     if (perSource.length === 0) {
       return { receiverId: rx.id, perBandLp: new Float64Array(nb), totalDbA: -Infinity, perSource };
     }
     const summed = energySumPerBand(perSource);
-    const total = aWeightedTotal(summed, aw, project.settings?.dOmegaDb ?? 0);
+    const total = aWeightedTotal(summed, aw, projectDOmegaDb(project));
     const snapshotTotal = totalSnapshotEnergy > 0 ? 10 * Math.log10(totalSnapshotEnergy) : -Infinity;
     if (isFinite(total) && isFinite(snapshotTotal) && Math.abs(total - snapshotTotal) > capTotal) {
       stale = true;
@@ -740,7 +758,7 @@ export async function snapshotGrid(
             )
           : evaluate_general_with_grad_src_octave(
               lw, se, sn, srcZ[si], e, n, rxZ, g, allBars,
-              env.tC, env.rh, env.pKpa, env.barConv,
+              env.tC, env.rh, env.pKpa, env.barConv, env.dzCap,
             );
         const base = (cellIdx * eff.length + si) * PACK;
         for (let k = 0; k < PACK; k++) cells[base + k] = snap[k];
@@ -766,7 +784,7 @@ export function extrapolateGrid(
 ): { grid: GridResult; stale: boolean } {
   const t0 = performance.now();
   const aw = aWeights(project.scenario.bandSystem);
-  const dOmegaDb = project.settings?.dOmegaDb ?? 0;
+  const dOmegaDb = projectDOmegaDb(project);
   const cols = snapshot.cols;
   const rows = snapshot.rows;
   const cellCount = cols * rows;
@@ -873,7 +891,7 @@ export async function evaluateGrid(
 
   const userBarriers = packBarriers(project.barriers, origin);
   const aw = aWeights(project.scenario.bandSystem);
-  const dOmegaDb = project.settings?.dOmegaDb ?? 0;
+  const dOmegaDb = projectDOmegaDb(project);
   const ca2 = project.calculationArea!;
   const eff = effectiveSourcesForGrid(project, ca2);
   // Hoist these out of the per-cell loop body — they don't change between
@@ -949,7 +967,7 @@ export async function evaluateGrid(
             )
           : evaluate_general_octave(
               meta.lw, se, sn, effZ[si], e, n, rxZ, g, allBars,
-              env.tC, env.rh, env.pKpa, env.barConv,
+              env.tC, env.rh, env.pKpa, env.barConv, env.dzCap,
             );
         // `lp` is a Float64Array of length n_bands (no gradient pack).
         for (let i = 0; i < lp.length; i++) aSum += Math.pow(10, (lp[i] + aw[i] + dOmegaDb) / 10);

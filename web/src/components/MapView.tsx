@@ -27,6 +27,15 @@ interface Props {
   onBoxSelect(ids: string[], modifiers?: { shift?: boolean }): void;
   onAddSource?(latLng: [number, number]): void;
   onAddReceiver?(latLng: [number, number]): void;
+  /// Called once the user clicks the second endpoint of a barrier draw.
+  /// Parent picks the next id, default name, default height etc.
+  onAddBarrier?(a: [number, number], b: [number, number]): void;
+  /// Called on barrier-vertex drag-end. The vertex array IS the new
+  /// `polylineLatLng` value — parent replaces it wholesale (and saves
+  /// it to the project). Same callback is used for both endpoint drags
+  /// (single vertex moved) and midpoint drags (every vertex shifted by
+  /// the same delta).
+  onUpdateBarrier?(id: string, polyline: Array<[number, number]>): void;
   onMoveSource?(id: string, latLng: [number, number]): void;
   onMoveReceiver?(id: string, latLng: [number, number]): void;
   /// Calc-area edit callbacks. `onResizeCalcArea` is called when a corner
@@ -34,7 +43,7 @@ interface Props {
   /// centre handle is dragged.
   onResizeCalcArea?(widthM: number, heightM: number): void;
   onMoveCalcArea?(centerLatLng: [number, number]): void;
-  addMode: 'none' | 'wtg' | 'bess' | 'auxiliary' | 'receiver' | 'measure';
+  addMode: 'none' | 'wtg' | 'bess' | 'auxiliary' | 'receiver' | 'measure' | 'barrier';
   baseMap: BaseMap;
   showContours: boolean;
   /// Debug overlay — paints a small dot at every grid cell centre so the
@@ -145,7 +154,14 @@ const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max: number
 function tileLayerOpts(b: BaseMap): L.TileLayerOptions {
   const cfg = TILE_URLS[b];
   return {
-    maxZoom: cfg.max,
+    // Two separate caps: `maxNativeZoom` is the highest zoom the tile
+    // server actually has imagery for (Esri / OSM both top out at 19);
+    // `maxZoom` is how far Leaflet will let the user zoom regardless.
+    // Above maxNativeZoom Leaflet up-samples the deepest available tile,
+    // so the basemap stays visible (pixelated) instead of going blank
+    // when the user wants to inspect close-up geometry.
+    maxNativeZoom: cfg.max,
+    maxZoom: 24,
     attribution: cfg.attribution,
     crossOrigin: true,
     subdomains: cfg.subdomains ?? 'abc',
@@ -185,7 +201,7 @@ function gridToCanvas(
 
 export function MapView({
   project, results, grid, selectedIds, onSelect, onBoxSelect,
-  onAddSource, onAddReceiver, onMoveSource, onMoveReceiver,
+  onAddSource, onAddReceiver, onAddBarrier, onUpdateBarrier, onMoveSource, onMoveReceiver,
   onResizeCalcArea, onMoveCalcArea,
   addMode, baseMap, showContours, showGridDebug, contourMode, contourOpacity, contourStepDb,
   palette, dbDomain, onCursorMove, onReady,
@@ -203,6 +219,12 @@ export function MapView({
   const overlayGroupRef = useRef<L.LayerGroup | null>(null);
   const measureGroupRef = useRef<L.LayerGroup | null>(null);
   const measurePointsRef = useRef<L.LatLng[]>([]);
+  /// Layer + draft state for the in-progress barrier draw. The layer
+  /// group hosts both the persistent barrier polylines AND the live
+  /// preview while the user is mid-draw (first endpoint placed, mouse
+  /// hovering for the second).
+  const barriersGroupRef = useRef<L.LayerGroup | null>(null);
+  const barrierDraftRef = useRef<{ start: L.LatLng; preview: L.Polyline | null } | null>(null);
   /// id → Leaflet Marker handle, so we can update sibling marker positions
   /// during a group drag without going through React state.
   const markersByIdRef = useRef<Map<string, L.Marker>>(new Map());
@@ -218,12 +240,12 @@ export function MapView({
   // state on every frame, which would otherwise rebuild markers — and a
   // marker rebuilt mid-drag drops the drag interaction).
   const callbacksRef = useRef({
-    onAddSource, onAddReceiver, onMoveSource, onMoveReceiver,
+    onAddSource, onAddReceiver, onAddBarrier, onUpdateBarrier, onMoveSource, onMoveReceiver,
     onResizeCalcArea, onMoveCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
   });
   useEffect(() => {
     callbacksRef.current = {
-      onAddSource, onAddReceiver, onMoveSource, onMoveReceiver,
+      onAddSource, onAddReceiver, onAddBarrier, onUpdateBarrier, onMoveSource, onMoveReceiver,
       onResizeCalcArea, onMoveCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
     };
   });
@@ -239,6 +261,11 @@ export function MapView({
     const initial = project.calculationArea?.centerLatLng ?? project.sources[0]?.latLng ?? [-33.6, 138.7];
     const map = L.map(containerRef.current, {
       center: initial, zoom: 12,
+      // Allow zooming past the basemap's native max — Leaflet auto-
+      // upscales the deepest available tile so the basemap stays visible
+      // (pixelated) instead of going blank when the user wants to
+      // inspect close-up geometry.
+      maxZoom: 24,
       // Custom MapControls panel replaces Leaflet's default zoom widget.
       zoomControl: false,
       // Disable Leaflet's default left-mouse drag — we use LMB for box-select
@@ -249,6 +276,7 @@ export function MapView({
     });
     baseLayerRef.current = L.tileLayer(TILE_URLS[baseMap].url, tileLayerOpts(baseMap)).addTo(map);
     overlayGroupRef.current = L.layerGroup().addTo(map);
+    barriersGroupRef.current = L.layerGroup().addTo(map);
     measureGroupRef.current = L.layerGroup().addTo(map);
     markersGroupRef.current = L.layerGroup().addTo(map);
 
@@ -297,6 +325,12 @@ export function MapView({
       if (ev.button !== 0) return;
       const target = ev.target as HTMLElement;
       if (target.closest('.leaflet-marker-icon, .leaflet-control')) return;
+      // Polylines (the barriers) live in the SVG overlay pane and we
+      // tag every interactive barrier line with a `bessty-barrier`
+      // class so the box-select ignores them — clicks on a wall should
+      // select the wall, not start a box-select that immediately clears
+      // the selection on mouseup.
+      if (target.closest('.bessty-barrier')) return;
       if (callbacksRef.current.addMode !== 'none') return;
       const cr = containerEl.getBoundingClientRect();
       const cx = ev.clientX - cr.left;
@@ -336,6 +370,15 @@ export function MapView({
         for (const r of p.receivers) {
           if (bounds.contains(L.latLng(r.latLng[0], r.latLng[1]))) ids.push(r.id);
         }
+        // Barriers picked up if ANY vertex falls inside the box. Matches
+        // the most permissive selection idiom most CAD tools use and
+        // doesn't require the user to drag perfectly across both ends.
+        for (const b of p.barriers) {
+          const hit = b.polylineLatLng.some(([la, ln]) =>
+            bounds.contains(L.latLng(la, ln)),
+          );
+          if (hit) ids.push(b.id);
+        }
         callbacksRef.current.onBoxSelect(ids, { shift: ev.shiftKey });
       }
       if (boxRect) { boxRect.remove(); boxRect = null; }
@@ -346,8 +389,24 @@ export function MapView({
     window.addEventListener('mouseup', onBoxUp);
 
     map.on('click', (e: L.LeafletMouseEvent) => {
-      const { addMode, onAddSource, onAddReceiver } = callbacksRef.current;
+      const { addMode, onAddSource, onAddReceiver, onAddBarrier } = callbacksRef.current;
       const latLng: [number, number] = [e.latlng.lat, e.latlng.lng];
+      if (addMode === 'barrier') {
+        const draft = barrierDraftRef.current;
+        if (!draft) {
+          // First endpoint — drop a marker, no callback yet.
+          barrierDraftRef.current = { start: e.latlng, preview: null };
+          return;
+        }
+        // Second endpoint — commit the segment and reset for the next one.
+        onAddBarrier?.(
+          [draft.start.lat, draft.start.lng],
+          [latLng[0], latLng[1]],
+        );
+        if (draft.preview) draft.preview.remove();
+        barrierDraftRef.current = null;
+        return;
+      }
       if (addMode === 'measure') {
         const pts = measurePointsRef.current;
         const group = measureGroupRef.current;
@@ -386,6 +445,8 @@ export function MapView({
     });
 
     // Cursor tracking, throttled to one update per animation frame.
+    // Also drives the barrier-draw preview line when the user has just
+    // placed the first endpoint and is hovering for the second.
     let pendingCursorUpdate: number | null = null;
     let pendingLatLng: [number, number] | null = null;
     map.on('mousemove', (e: L.LeafletMouseEvent) => {
@@ -395,6 +456,13 @@ export function MapView({
           callbacksRef.current.onCursorMove?.(pendingLatLng);
           pendingCursorUpdate = null;
         });
+      }
+      const draft = barrierDraftRef.current;
+      if (draft && barriersGroupRef.current) {
+        if (draft.preview) draft.preview.remove();
+        draft.preview = L.polyline([draft.start, e.latlng], {
+          color: '#F2CB00', weight: 3, dashArray: '6 4', opacity: 0.95,
+        }).addTo(barriersGroupRef.current);
       }
     });
     map.on('mouseout', () => {
@@ -421,6 +489,7 @@ export function MapView({
       markersGroupRef.current = null;
       overlayGroupRef.current = null;
       measureGroupRef.current = null;
+      barriersGroupRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -434,6 +503,7 @@ export function MapView({
     }
     baseLayerRef.current = L.tileLayer(TILE_URLS[baseMap].url, tileLayerOpts(baseMap)).addTo(map);
     if (overlayGroupRef.current) { overlayGroupRef.current.remove(); overlayGroupRef.current.addTo(map); }
+    if (barriersGroupRef.current) { barriersGroupRef.current.remove(); barriersGroupRef.current.addTo(map); }
     if (measureGroupRef.current) { measureGroupRef.current.remove(); measureGroupRef.current.addTo(map); }
     if (markersGroupRef.current) { markersGroupRef.current.remove(); markersGroupRef.current.addTo(map); }
   }, [baseMap]);
@@ -445,6 +515,166 @@ export function MapView({
       measurePointsRef.current = [];
     }
   }, [addMode]);
+
+  // Clear an in-flight barrier draft when leaving barrier mode (Esc, mode
+  // toggle, etc). The persistent layers are repainted by the next effect.
+  useEffect(() => {
+    if (addMode !== 'barrier') {
+      const draft = barrierDraftRef.current;
+      if (draft?.preview) draft.preview.remove();
+      barrierDraftRef.current = null;
+    }
+  }, [addMode]);
+
+  // Render persistent barriers (lines + height label). Selected barriers
+  // get a yellow outline. The draft preview lives in the same layer so it
+  // sits above other overlays consistently.
+  useEffect(() => {
+    const map = mapRef.current;
+    const group = barriersGroupRef.current;
+    if (!map || !group) return;
+    // Wipe everything except a live draft line — we re-add persistent
+    // segments from project.barriers.
+    const draft = barrierDraftRef.current;
+    group.clearLayers();
+    if (draft?.preview) draft.preview.addTo(group);
+
+    // Endpoint drag handle — small yellow square, identical look to the
+    // calc-area corners so the affordance reads consistently.
+    const endpointIcon = () => L.divIcon({
+      className: 'barrier-endpoint',
+      html: `<div style="width:10px;height:10px;background:#F2CB00;border:1.5px solid #1f2937;border-radius:2px;box-shadow:0 1px 2px rgba(0,0,0,.4)"></div>`,
+      iconSize: [12, 12], iconAnchor: [6, 6],
+    });
+    // (Midpoint translate handle removed — line-body drag now handles
+    // translation, see the hit polyline below.)
+
+    for (const b of project.barriers) {
+      if (b.polylineLatLng.length < 2) continue;
+      const sel = selectedIds.has(b.id);
+      const top = b.topHeightsM[0] ?? 0;
+      const stroke = sel ? '#F2CB00' : '#1f2937';
+      const weight = sel ? 5 : 4;
+      const verts = b.polylineLatLng.map(([la, ln]) => L.latLng(la, ln));
+      const line = L.polyline(verts, {
+        color: stroke, weight, opacity: 0.95,
+        // The visible line itself is non-interactive; the hit polyline
+        // below catches all clicks / drags. Stops the SVG path from
+        // grabbing the mousedown that we want the hit line to handle.
+        interactive: false,
+      });
+      line.addTo(group);
+
+      // Transparent hit-area polyline stacked on top of the visible one.
+      // 14 px wide so the wall is comfortably clickable even when its
+      // visible weight is just 4 px. Tagged `bessty-barrier` so the LMB
+      // box-select handler ignores its mousedowns. We attach the
+      // mousedown / drag / click logic here, not on the visible line.
+      const hit = L.polyline(verts, {
+        color: '#000', weight: 14, opacity: 0,
+        interactive: true,
+        className: 'bessty-barrier',
+      });
+      // Mousedown → start tracking. If the cursor moves more than ~3 px
+      // before mouseup we treat it as a drag (translate the whole wall);
+      // otherwise it's a click (select the wall). Threshold is measured
+      // in real container pixels via clientX/Y deltas — no lat/lng-to-px
+      // approximation games.
+      let dragStart: { lat: number; lng: number; px: number; py: number } | null = null;
+      let originalVerts: L.LatLng[] = [];
+      let movedPx = 0;
+      const onHitMove = (ev: MouseEvent) => {
+        if (!dragStart) return;
+        const dxPx = ev.clientX - dragStart.px;
+        const dyPx = ev.clientY - dragStart.py;
+        const distPx = Math.hypot(dxPx, dyPx);
+        if (distPx > movedPx) movedPx = distPx;
+        const ce = containerRef.current;
+        if (!ce) return;
+        const cr = ce.getBoundingClientRect();
+        const here = map.containerPointToLatLng([ev.clientX - cr.left, ev.clientY - cr.top]);
+        const dLat = here.lat - dragStart.lat;
+        const dLng = here.lng - dragStart.lng;
+        const next = originalVerts.map((v) => L.latLng(v.lat + dLat, v.lng + dLng));
+        line.setLatLngs(next);
+        hit.setLatLngs(next);
+      };
+      const onHitUp = (ev: MouseEvent) => {
+        window.removeEventListener('mousemove', onHitMove);
+        window.removeEventListener('mouseup', onHitUp);
+        if (!dragStart) return;
+        const dragged = movedPx > 3;        // 3 px = standard click vs drag threshold
+        if (dragged) {
+          const finalVerts = (line.getLatLngs() as L.LatLng[]);
+          callbacksRef.current.onUpdateBarrier?.(
+            b.id,
+            finalVerts.map((p) => [p.lat, p.lng]),
+          );
+        } else {
+          callbacksRef.current.onSelect(b.id, { shift: !!(ev as MouseEvent).shiftKey });
+        }
+        dragStart = null;
+        movedPx = 0;
+      };
+      hit.on('mousedown', (ev: L.LeafletMouseEvent) => {
+        // Stop the DOM mousedown from bubbling to the container's LMB
+        // box-select handler. The `bessty-barrier` className tag on the
+        // hit polyline already makes onLmbDown ignore us, but stopping
+        // propagation here is belt-and-braces in case Leaflet ever
+        // changes the DOM structure.
+        const dom = ev.originalEvent as MouseEvent;
+        if (dom.button !== 0) return;
+        dom.stopPropagation();
+        dom.preventDefault();
+        dragStart = { lat: ev.latlng.lat, lng: ev.latlng.lng, px: dom.clientX, py: dom.clientY };
+        originalVerts = verts.map((v) => L.latLng(v.lat, v.lng));
+        movedPx = 0;
+        window.addEventListener('mousemove', onHitMove);
+        window.addEventListener('mouseup', onHitUp);
+      });
+      hit.addTo(group);
+
+      // Height label at the segment midpoint.
+      const a = b.polylineLatLng[0];
+      const c = b.polylineLatLng[1];
+      const midLatLng = L.latLng((a[0] + c[0]) / 2, (a[1] + c[1]) / 2);
+      L.marker(midLatLng, {
+        icon: L.divIcon({
+          className: 'barrier-label',
+          html: `<div style="background:#fff;color:#1f2937;border:1px solid #1f2937;border-radius:3px;padding:1px 5px;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,.25)">${top.toFixed(1)} m</div>`,
+          iconSize: [40, 16], iconAnchor: [20, 8],
+        }),
+        interactive: false,
+      }).addTo(group);
+
+      // Drag affordances appear only on the selected barrier — keeps the
+      // map clean when there are lots of walls but still one click away
+      // (click the line → select → drag the line OR drag an endpoint).
+      // Translation of the whole wall lives on the hit polyline above
+      // (drag anywhere along the line); the handles below only need to
+      // cover endpoint moves.
+      if (!sel) continue;
+
+      // Endpoint handles — drag = move just that vertex. Live updates
+      // BOTH the visible line and the hit polyline so the click target
+      // moves with what you see.
+      verts.forEach((v, idx) => {
+        const m = L.marker(v, { icon: endpointIcon(), draggable: true, zIndexOffset: 850 });
+        m.on('drag', () => {
+          const ll = m.getLatLng();
+          verts[idx] = ll;
+          line.setLatLngs(verts);
+          hit.setLatLngs(verts);
+        });
+        m.on('dragend', () => {
+          if (!callbacksRef.current.onUpdateBarrier) return;
+          const next: Array<[number, number]> = verts.map((p) => [p.lat, p.lng]);
+          callbacksRef.current.onUpdateBarrier(b.id, next);
+        });
+        m.addTo(group);
+      });
+    }
+  }, [project.barriers, selectedIds]);
 
   // Re-render markers + calc area outline.
   useEffect(() => {

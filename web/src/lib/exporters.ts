@@ -17,7 +17,7 @@
 import * as XLSX from 'xlsx';
 import { buildPolylineShapefile, buildZip } from './shapefileWriter';
 import type { Project } from './types';
-import type { GridResult, ReceiverResult } from './solver';
+import { projectDOmegaDb, type GridResult, type ReceiverResult } from './solver';
 import type { ContourLineSet } from './contourLines';
 
 // ---------- Trigger download from a Blob ----------
@@ -170,7 +170,7 @@ function perSourceContribRows(
     const rx = project.receivers.find((r) => r.id === rxResult.receiverId);
     if (!rx) continue;
     for (const ps of rxResult.perSource) {
-      const dbA = aWeightedTotal(ps.perBandLp, project.scenario.bandSystem, project.settings?.dOmegaDb ?? 0);
+      const dbA = aWeightedTotal(ps.perBandLp, project.scenario.bandSystem, projectDOmegaDb(project));
       rows.push({
         receiverId: rxResult.receiverId,
         receiverName: rx.name,

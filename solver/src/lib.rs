@@ -50,6 +50,14 @@ mod wasm {
         if flag == 1 { BarrierConvention::DzMinusMaxAgr0 } else { BarrierConvention::IsoEq16 }
     }
 
+    /// Helper: turn the JS-side `dz_cap_db` float into `Option<f64>`.
+    /// Negative or non-finite (sentinel `-1.0` from JS) → no override
+    /// (use the standard ISO §7.4 20 / 25 dB caps); a finite non-negative
+    /// value overrides those caps uniformly across bands.
+    fn dz_cap(v: f64) -> Option<f64> {
+        if v.is_finite() && v >= 0.0 { Some(v) } else { None }
+    }
+
     /// General point source (BESS, auxiliary, generic). Output length matches
     /// input length: 10 for octave, 31 for one-third octave.
     ///
@@ -66,6 +74,7 @@ mod wasm {
         barriers_flat: &[f64],
         atm_temp_c: f64, atm_rh_pct: f64, atm_pres_kpa: f64,
         barrier_convention: u32,
+        dz_cap_db: f64,
     ) -> Vec<f64> {
         let bs = band_system_for(lw.len());
         let lw_spec = BandSpectrum::from_iter(bs, lw.iter().copied());
@@ -78,7 +87,7 @@ mod wasm {
             pressure_kpa: atm_pres_kpa,
         };
         let out = iso9613::evaluate_with_barriers(
-            &lw_spec, s, r, g, &walls, None, atm, barrier_conv(barrier_convention),
+            &lw_spec, s, r, g, &walls, dz_cap(dz_cap_db), atm, barrier_conv(barrier_convention),
         );
         out.bands.into_iter().collect()
     }
@@ -188,6 +197,7 @@ mod wasm {
         barriers_flat: &[f64],
         atm_temp_c: f64, atm_rh_pct: f64, atm_pres_kpa: f64,
         barrier_convention: u32,
+        dz_cap_db: f64,
     ) -> Vec<f64> {
         type D = crate::dual::Dual<3>;
         let bs = band_system_for(lw.len());
@@ -201,7 +211,7 @@ mod wasm {
             pressure_kpa: atm_pres_kpa,
         };
         let out = iso9613::evaluate_with_barriers(
-            &lw_spec, s, r, D::constant(g), &walls, None, atm, barrier_conv(barrier_convention),
+            &lw_spec, s, r, D::constant(g), &walls, dz_cap(dz_cap_db), atm, barrier_conv(barrier_convention),
         );
         pack_dual_grad(&out)
     }
