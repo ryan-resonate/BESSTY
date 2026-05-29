@@ -100,6 +100,12 @@ interface Props {
   /// current ownership + privacy metadata. Wired up in ProjectScreen.
   onApplyVersion?: (snapshot: Project) => void;
 
+  /// Open the BESS-group wizard. Pass a group to edit, or omit to
+  /// create a new one (lands at the current map centre).
+  onOpenBessGroupWizard?: (group?: import('../lib/types').BessGroup) => void;
+  /// Delete an entire BESS group, including its materialised sources.
+  onDeleteBessGroup?: (groupId: string) => void;
+
   // Layer/contour settings, plumbed for the Layers tab.
   baseMap: BaseMap;
   setBaseMap(b: BaseMap): void;
@@ -589,7 +595,56 @@ function SourcesTab(props: Props) {
         {addMode !== 'none' && addMode !== 'measure' && addMode !== 'receiver' && (
           <div className="hint">Click on the map to place a {addMode.toUpperCase()}.</div>
         )}
+        {props.onOpenBessGroupWizard && (
+          <button
+            className="btn primary block"
+            type="button"
+            onClick={() => props.onOpenBessGroupWizard?.()}
+            style={{ marginTop: 8 }}
+          >
+            + BESS group / array…
+          </button>
+        )}
       </Card>
+
+      {project.bessGroups && project.bessGroups.length > 0 && (
+        <Card title={`BESS groups (${project.bessGroups.length})`}>
+          {project.bessGroups.map((g) => {
+            const count = project.sources.filter((s) => s.groupId === g.id).length;
+            return (
+              <div key={g.id} style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '6px 8px', border: '1px solid var(--light)',
+                borderRadius: 4, marginBottom: 6,
+              }}>
+                <div style={{ flex: 1, fontSize: 12 }}>
+                  <div style={{ fontWeight: 600 }}>{g.name}</div>
+                  <div style={{ color: 'var(--ink-soft)', fontSize: 11 }}>
+                    {count} unit{count === 1 ? '' : 's'} · rotation {g.rotationDeg}°
+                  </div>
+                </div>
+                <button
+                  className="btn small"
+                  type="button"
+                  onClick={() => props.onOpenBessGroupWizard?.(g)}
+                  title="Edit group"
+                >Edit</button>
+                <button
+                  className="btn small"
+                  type="button"
+                  onClick={() => {
+                    if (confirm(`Delete BESS group "${g.name}" and its ${count} units?`)) {
+                      props.onDeleteBessGroup?.(g.id);
+                    }
+                  }}
+                  style={{ color: 'var(--red)' }}
+                  title="Delete group + all its units"
+                >✕</button>
+              </div>
+            );
+          })}
+        </Card>
+      )}
 
       <GroupsList
         groups={project.groups ?? []}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import L from 'leaflet';
 import { ErrorBoundary } from '../components/ErrorBoundary';
@@ -27,6 +27,14 @@ import { useAuthState } from '../lib/auth';
 import { useProjectDoc } from '../lib/useProjectDoc';
 import { parseDemGeoTiff } from '../lib/demUpload';
 import { downloadProjectDem } from '../lib/firestoreStorage';
+import { BessGroupWizard } from '../components/BessGroupWizard';
+import {
+  materialiseBessGroup,
+  withGroupSources,
+  withoutGroupSources,
+  type CatalogLookup,
+} from '../lib/bessGroups';
+import type { BessGroup } from '../lib/types';
 import type { Barrier, Project, Receiver, Source, SourceKind } from '../lib/types';
 
 let nextId = 1000;
@@ -281,6 +289,58 @@ export function ProjectScreen() {
     } else if (source === 'upload') {
       setDemStatus('ready');
     }
+  }
+
+  // BESS-group wizard state. `null` = closed; otherwise editing or
+  // creating. The wizard owns its own form state; we just hand it the
+  // group to edit (or undefined for create) and receive the result on
+  // Apply.
+  const [bessWizard, setBessWizard] = useState<{ group?: BessGroup } | null>(null);
+
+  // Catalog lookup adapter for the BESS-group materialiser. Resolves a
+  // (scope, modelId) pair using the live caches via listEntriesByKind
+  // -- the wizard preview re-runs whenever the user changes a row, so
+  // an eagerly-resolved snapshot at component mount would go stale.
+  const catalogLookup: CatalogLookup = useCallback((scope, modelId) => {
+    if (!project) return null;
+    return listEntriesByKind(project, 'bess').find((e) => e._scope === scope && e.id === modelId)
+        ?? listEntriesByKind(project, 'auxiliary').find((e) => e._scope === scope && e.id === modelId)
+        ?? listEntriesByKind(project, 'wtg').find((e) => e._scope === scope && e.id === modelId)
+        ?? null;
+  }, [project]);
+
+  function openBessGroupWizard(group?: BessGroup) {
+    setBessWizard({ group });
+  }
+  function closeBessGroupWizard() {
+    setBessWizard(null);
+  }
+  function applyBessGroupFromWizard(updated: BessGroup) {
+    if (!project) return;
+    const materialised = materialiseBessGroup(updated, catalogLookup);
+    // Re-save the group with the (possibly updated) unitOverrides;
+    // splice the fresh materialised sources into project.sources,
+    // replacing any existing children of this group.
+    const existingGroups = project.bessGroups ?? [];
+    const idx = existingGroups.findIndex((g) => g.id === updated.id);
+    const nextGroups = idx >= 0
+      ? existingGroups.map((g, i) => i === idx ? updated : g)
+      : [...existingGroups, updated];
+    const nextSources = withGroupSources(project.sources, updated.id, materialised.sources);
+    setProject({
+      ...project,
+      bessGroups: nextGroups,
+      sources: nextSources,
+    });
+    setBessWizard(null);
+  }
+  function deleteBessGroup(groupId: string) {
+    if (!project) return;
+    setProject({
+      ...project,
+      bessGroups: (project.bessGroups ?? []).filter((g) => g.id !== groupId),
+      sources: withoutGroupSources(project.sources, groupId),
+    });
   }
 
   // Imperative handle to the Leaflet map for the floating MapControls.
@@ -1138,6 +1198,8 @@ export function ProjectScreen() {
         currentUid={currentUid ?? undefined}
         currentDisplayName={authState.profile?.displayName ?? authState.user?.email ?? undefined}
         projectSource={projectSource}
+        onOpenBessGroupWizard={openBessGroupWizard}
+        onDeleteBessGroup={deleteBessGroup}
         onApplyVersion={(snap) => {
           // Revert flow: restore the snapshot's *content* but keep the
           // current project's ownership and privacy fields, plus the
@@ -1234,6 +1296,21 @@ export function ProjectScreen() {
           dem={dem}
           contourStepDb={contourStepDb}
           onClose={() => setShow3D(false)}
+        />
+      )}
+
+      {bessWizard && (
+        <BessGroupWizard
+          initialGroup={bessWizard.group}
+          newGroupCentre={
+            mapHandleRef.current
+              ? [mapHandleRef.current.getCenter().lat, mapHandleRef.current.getCenter().lng]
+              : (project.calculationArea?.centerLatLng ?? [-25.4, 152.4])
+          }
+          project={project}
+          catalogLookup={catalogLookup}
+          onApply={applyBessGroupFromWizard}
+          onCancel={closeBessGroupWizard}
         />
       )}
     </div>
