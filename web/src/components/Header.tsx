@@ -56,9 +56,9 @@ export function Header({ projectBreadcrumb }: Props) {
         >?</button>
         <button
           className="ic-btn"
-          title="Sign out (Stage-1 placeholder auth)"
+          title="Sign out"
           type="button"
-          onClick={() => { logout(); window.location.reload(); }}
+          onClick={() => { logout(); }}
         >
           ⎋
         </button>

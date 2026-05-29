@@ -1,27 +1,34 @@
-import { useState } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { Header } from './components/Header';
-import { LoginScreen } from './components/LoginScreen';
+import {
+  BlockedScreen,
+  LoadingScreen,
+  LoginScreen,
+  VerifyEmailScreen,
+} from './components/LoginScreen';
 import { CatalogScreen } from './screens/CatalogScreen';
 import { HelpScreen } from './screens/HelpScreen';
 import { ProjectListScreen } from './screens/ProjectListScreen';
 import { ProjectScreen } from './screens/ProjectScreen';
-import { isAuthenticated } from './lib/auth';
+import { useAuthState } from './lib/auth';
 
 export default function App() {
-  // Stage-1 auth gate. Re-evaluated when the login screen calls
-  // `setAuthed(true)`, so a successful login swaps to the app without a
-  // page reload. localStorage persists the marker between refreshes.
-  // Replace with real auth before exposing client data — see lib/auth.ts.
-  const [authed, setAuthed] = useState(() => isAuthenticated());
+  // Reactive Firebase auth + profile state. Re-renders the tree any time
+  // the user signs in/out, verifies their email, or has their profile
+  // doc updated (e.g. an admin flips `allowed = true`).
+  const authState = useAuthState();
 
   const location = useLocation();
   // Crumb shows on per-project routes only.
   const projectMatch = location.pathname.match(/^\/projects\/([^/]+)/);
   const breadcrumb = projectMatch ? `Project · ${projectMatch[1]}` : undefined;
 
-  if (!authed) {
-    return <LoginScreen onLogin={() => setAuthed(true)} />;
+  switch (authState.status) {
+    case 'loading':    return <LoadingScreen />;
+    case 'unauthed':   return <LoginScreen />;
+    case 'unverified': return <VerifyEmailScreen state={authState} />;
+    case 'blocked':    return <BlockedScreen state={authState} />;
+    case 'allowed':    break;
   }
 
   return (

@@ -34,23 +34,39 @@ const MOCK_PROJECTS: ProjectSummary[] = [
 ];
 
 export async function listProjects(): Promise<ProjectSummary[]> {
-  if (!isFirebaseConfigured()) {
+  // localStorage path — used when Firebase isn't configured, OR as a
+  // graceful fallback while the Firestore migration is still in progress
+  // (security rules not deployed yet, no projects collection yet, etc.).
+  const localFallback = (): ProjectSummary[] => {
     ensureDemoSeeded();
     const local = listLocalProjects();
     return local.length > 0 ? local : MOCK_PROJECTS;
-  }
+  };
+  if (!isFirebaseConfigured()) return localFallback();
 
-  const q = query(collection(db(), 'projects'), orderBy('updatedAt', 'desc'));
-  const snap = await getDocs(q);
-  return snap.docs.map((doc) => {
-    const d = doc.data();
-    return {
-      id: doc.id,
-      name: d.name ?? 'Untitled project',
-      description: d.description ?? '',
-      updatedAt: d.updatedAt ?? new Date().toISOString(),
-      sourceCount: d.sources?.length,
-      receiverCount: d.receivers?.length,
-    };
-  });
+  try {
+    const q = query(collection(db(), 'projects'), orderBy('updatedAt', 'desc'));
+    const snap = await getDocs(q);
+    // If Firestore is reachable but empty, fall back to the seeded demos so
+    // the user still has something to click on. The full migration replaces
+    // this with Firestore-hosted public demos owned by the admin account.
+    if (snap.empty) return localFallback();
+    return snap.docs.map((doc) => {
+      const d = doc.data();
+      return {
+        id: doc.id,
+        name: d.name ?? 'Untitled project',
+        description: d.description ?? '',
+        updatedAt: d.updatedAt ?? new Date().toISOString(),
+        sourceCount: d.sources?.length,
+        receiverCount: d.receivers?.length,
+      };
+    });
+  } catch (err) {
+    // Most likely cause: permission-denied (no rules deployed yet) or
+    // offline. Keep the app usable by falling back to the local list.
+    // eslint-disable-next-line no-console
+    console.warn('[BESSTY] Firestore project list failed; using localStorage fallback:', err);
+    return localFallback();
+  }
 }
