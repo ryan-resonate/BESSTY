@@ -97,6 +97,20 @@ jobs:
           # `/<repo-name>/` matches the URL GitHub Pages serves project
           # sites from. For a custom-domain (CNAME) deploy, change to `/`.
           BESSTY_BASE: /${{ github.event.repository.name }}/
+
+          # Firebase web-app config. Mirrors web/.env.local for local dev.
+          # Set these as repo secrets under Settings -> Secrets and variables
+          # -> Actions -> Repository secrets. None of these are sensitive in
+          # the password sense -- the apiKey identifies the project, not a
+          # user -- but they live in CI secrets so the rc-beesty project ID
+          # isn't hard-coded in the workflow file.
+          VITE_FIREBASE_API_KEY:             ${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN:         ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID:          ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET:      ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID:              ${{ secrets.VITE_FIREBASE_APP_ID }}
+          VITE_FIREBASE_MEASUREMENT_ID:      ${{ secrets.VITE_FIREBASE_MEASUREMENT_ID }}
         run: npm run build
 
       - name: Upload artifact
