@@ -23,6 +23,32 @@
 // per doc id, so races between concurrent users are benign.
 
 import type { CatalogEntry, Project, Source, SourceKind } from './types';
+
+/// Per-kind defaults used when a CatalogEntry doesn't specify
+/// `footprintM`. Picked from typical product datasheets:
+///   - BESS: Tesla Megapack 2 XL exterior dims.
+///   - Auxiliary: a generic inverter cabinet (Sungrow SG3300-ish).
+///   - WTG: not applicable (rotorDiameterM serves the same purpose).
+const DEFAULT_FOOTPRINT_M: Record<SourceKind, { widthM: number; lengthM: number }> = {
+  bess:      { widthM: 5.1, lengthM: 1.7 },
+  auxiliary: { widthM: 2.0, lengthM: 1.5 },
+  wtg:       { widthM: 0,   lengthM: 0 },
+};
+
+/// Resolve a catalog entry's footprint, falling back to the kind default
+/// when the entry doesn't pin a value. Always returns finite positive
+/// dimensions for grouped kinds (BESS, auxiliary); WTGs are zero-sized
+/// because they're never grouped.
+export function footprintFor(entry: CatalogEntry): { widthM: number; lengthM: number } {
+  if (entry.footprintM
+      && Number.isFinite(entry.footprintM.widthM)
+      && Number.isFinite(entry.footprintM.lengthM)
+      && entry.footprintM.widthM > 0
+      && entry.footprintM.lengthM > 0) {
+    return entry.footprintM;
+  }
+  return DEFAULT_FOOTPRINT_M[entry.kind];
+}
 import { SEED_CATALOG } from './seedCatalog';
 import {
   deleteGlobalEntryFs,

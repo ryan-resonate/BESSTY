@@ -238,7 +238,35 @@ def parse_workbook(path):
     raise ValueError(f'{fname}: unrecognised layout (A1={a1!r}, B1={b1!r})')
 
 
+# Default unit footprints (m) applied to BESS / Auxiliary entries that
+# don't carry their own. Used by the BESS-group materialiser for
+# edge-to-edge spacing. WTGs are skipped -- they're never grouped, and
+# rotorDiameterM already serves a similar role elsewhere. Mirrors the
+# DEFAULT_FOOTPRINT_M table in web/src/lib/catalog.ts; keep the two
+# in sync.
+DEFAULT_FOOTPRINT_M = {
+    'bess':      {'widthM': 5.1, 'lengthM': 1.7},
+    'auxiliary': {'widthM': 2.0, 'lengthM': 1.5},
+}
+
+
+def inject_default_footprints(entries):
+    """Add a footprintM field to every BESS / Auxiliary entry that
+    doesn't already specify one. Run after parsing but before emitting
+    so the TS seed module ships with sensible defaults even when the
+    source xlsx doesn't include footprint data."""
+    for e in entries:
+        if 'footprintM' in e:
+            continue
+        default = DEFAULT_FOOTPRINT_M.get(e.get('kind'))
+        if default is None:
+            continue
+        e['footprintM'] = default
+    return entries
+
+
 def emit_ts(entries):
+    entries = inject_default_footprints(entries)
     json_blob = json.dumps(entries, indent=2, ensure_ascii=False)
     return f"""// AUTO-GENERATED — do not edit. Regenerate via:
 //   python tools/import_catalog.py

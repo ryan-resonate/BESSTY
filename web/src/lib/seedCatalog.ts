@@ -4060,6 +4060,7 @@ export const SEED_CATALOG: CatalogEntry[] = [
     "id": "tesla-megapack",
     "kind": "bess",
     "displayName": "Tesla Megapack",
+    "footprintM": { "widthM": 5.1, "lengthM": 1.7 },
     "defaultMode": "100% fan speed 4-hour 5 Fan",
     "modes": [
       {

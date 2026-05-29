@@ -480,6 +480,44 @@ export function CatalogEntryEditor(props: {
                   onChange={(e) => update('auxiliaryType', e.target.value)} />
               </label>
             )}
+            {(draft.kind === 'bess' || draft.kind === 'auxiliary') && (
+              <div className="fld" style={{ flex: '1 1 100%' }}>
+                <span>Footprint (m) — used for BESS-group edge-to-edge spacing</span>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input
+                    type="number" step="0.1" min="0.1" max="50"
+                    placeholder="width"
+                    style={{ width: 80 }}
+                    value={draft.footprintM?.widthM ?? ''}
+                    onChange={(e) => {
+                      const w = +e.target.value;
+                      const cur = draft.footprintM ?? { widthM: 0, lengthM: 0 };
+                      update('footprintM', Number.isFinite(w) && w > 0
+                        ? { widthM: w, lengthM: cur.lengthM || 0 }
+                        : undefined);
+                    }}
+                  />
+                  <span style={{ color: 'var(--ink-soft)' }}>×</span>
+                  <input
+                    type="number" step="0.1" min="0.1" max="50"
+                    placeholder="length"
+                    style={{ width: 80 }}
+                    value={draft.footprintM?.lengthM ?? ''}
+                    onChange={(e) => {
+                      const l = +e.target.value;
+                      const cur = draft.footprintM ?? { widthM: 0, lengthM: 0 };
+                      update('footprintM', Number.isFinite(l) && l > 0
+                        ? { widthM: cur.widthM || 0, lengthM: l }
+                        : undefined);
+                    }}
+                  />
+                  <span style={{ color: 'var(--ink-soft)', fontSize: 11 }}>
+                    Leave blank to use kind default
+                    ({draft.kind === 'bess' ? '5.1 × 1.7 m' : '2.0 × 1.5 m'}).
+                  </span>
+                </div>
+              </div>
+            )}
           </section>
 
           <section className="settings-section">

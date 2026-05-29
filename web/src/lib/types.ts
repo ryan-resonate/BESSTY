@@ -336,6 +336,13 @@ export interface CatalogEntry {
   rotorDiameterM?: number;
   /// WTG-only — common installed hub heights (UI hint).
   hubHeights?: number[];
+  /// Physical footprint of one unit (metres). Used by the BESS group
+  /// materialiser to compute edge-to-edge spacing in metres -- without
+  /// this, "1.5 m spacing" wouldn't know how wide a unit is to leave
+  /// 1.5 m of clear gap. Optional because WTGs don't need it
+  /// (rotorDiameterM serves the same purpose, and WTGs aren't grouped).
+  /// Falls back to `defaultFootprintFor(kind)` when unset (see catalog.ts).
+  footprintM?: { widthM: number; lengthM: number };
   /// File of origin, for traceability ('imported from V163.xlsx').
   source?: string;
   /// 'seed' = bundled with the app on first launch; 'user' = user-added.
