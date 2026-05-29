@@ -2,6 +2,23 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import wasm from 'vite-plugin-wasm';
 import topLevelAwait from 'vite-plugin-top-level-await';
+import { execSync } from 'node:child_process';
+
+// Auto-derived build identifiers stamped into the bundle so the deployed
+// app can show a tiny version string. SHA is the short git hash at build
+// time; date is the wall-clock build date (UTC, YYYY-MM-DD). Failures
+// (shallow checkout, no git, dev container with no .git) fall through
+// to 'dev' so local `npm run dev` still works.
+function gitShortSha(): string {
+  try {
+    return execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
+  } catch {
+    return 'dev';
+  }
+}
+function buildDateUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
 // COOP/COEP would be required to use SharedArrayBuffer, but enabling
 // `require-corp` blocks third-party tile providers (Esri, OSM) that don't
@@ -26,6 +43,13 @@ const BASE = process.env.BESSTY_BASE ?? '/';
 export default defineConfig({
   base: BASE,
   plugins: [react(), wasm(), topLevelAwait()],
+  define: {
+    // String literals are wrapped in JSON.stringify so Vite emits valid
+    // JS source (otherwise `__APP_VERSION_SHA__` would become a bare
+    // identifier like `a6bbe74`, which is a syntax error).
+    __APP_VERSION_SHA__: JSON.stringify(gitShortSha()),
+    __APP_VERSION_DATE__: JSON.stringify(buildDateUtc()),
+  },
   build: {
     target: 'es2022',
   },

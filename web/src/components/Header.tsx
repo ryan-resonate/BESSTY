@@ -48,6 +48,26 @@ export function Header({ projectBreadcrumb }: Props) {
       </nav>
 
       <div className="header-right">
+        {/* Tiny build identifier. Stamped at build time from the git short
+            SHA + UTC build date (see vite.config.ts `define`). Renders as
+            subtle gray monospace text so it's findable but never demands
+            attention. Tooltip carries the full string for support / bug
+            reporting purposes. */}
+        <span
+          title={`Build ${__APP_VERSION_SHA__} · ${__APP_VERSION_DATE__}`}
+          style={{
+            fontSize: 10,
+            fontFamily: 'var(--font-mono)',
+            color: 'var(--mid)',
+            opacity: 0.55,
+            marginRight: 8,
+            userSelect: 'text',
+            cursor: 'default',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {__APP_VERSION_SHA__} · {__APP_VERSION_DATE__}
+        </span>
         <button
           className="ic-btn"
           title="Help / user guide"
