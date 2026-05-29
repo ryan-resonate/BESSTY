@@ -247,13 +247,23 @@
 
 <div class="page">
 
-  <p class="scene-tag">Mockup · BESSTY · BESS group creator</p>
+  <p class="scene-tag">Mockup · BESSTY · BESS group creator · v2</p>
   <h1 class="page-title">BESS group / array creator</h1>
   <p class="page-subtitle">
     Two scenes below: (1) the wizard modal that opens when the user clicks
     <strong>+ BESS group</strong>, and (2) the on-map representation of a placed
-    group with the rotation + drag affordances. Static mockup — no working
-    code; meant for a design pass before we lock in the data model.
+    group with rotation + drag affordances. Static mockup; meant for a design
+    pass before we lock in the data model.
+  </p>
+  <p class="page-subtitle" style="background: var(--yellow-soft); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--yellow); margin-top: 10px; color: var(--ink);">
+    <strong>v2 changes from review:</strong> dropped the Origin text field (group
+    now lands in the middle of the map and the user drags it; use a shapefile
+    import for precise unit placement). Added <em>Repeat row × N</em> per row so
+    one row template can stamp many copies with the same gap between each.
+    Renamed spacing labels for clarity. Removed corner-scale handles from the
+    on-map view. Removed "Bake to individual sources" — groups are permanent;
+    exports (shapefile / SoundPlan) flatten the parametric group into one
+    record per physical unit automatically.
   </p>
 
   <!-- ============================================================ -->
@@ -266,13 +276,18 @@
       "+ BESS"). Also re-opens via <em>Edit group</em> in the right-click menu
       shown in Scene 2.
       Left half = parametric form (the "row sequence"); right half = live
-      top-down preview of what the layout will materialise as.
-      Each "Row" in the sequence is one horizontal line of units; rows execute
-      top-to-bottom in the group's local coords (rotation applies to the
-      whole thing). Each row has a <strong>pattern</strong> (e.g. "BESS BESS BESS Inverter")
-      and a <strong>repeat count</strong> for that pattern within the row, plus its
-      own <strong>gap-after</strong> to the next row — so "two close rows, then a wide
-      gap, then two more rows" is just a different gap-after on each row.
+      top-down preview that re-renders ~200&nbsp;ms after each keystroke.
+      Each row in the sequence has:
+      <strong>pattern</strong> (an ordered list of unit chips: BESS / Inverter /
+      Transformer), <strong>pattern × N</strong> (repeat that pattern within one row),
+      <strong>row × N</strong> (stamp this same row N times — gap-to-next applies
+      between each copy <em>and</em> after the last copy if another row follows),
+      <strong>spacing</strong> (edge-to-edge between adjacent units within the row),
+      and <strong>gap-to-next-row</strong> (edge-to-edge from this row's footprint
+      to the next row's footprint). "Two close rows, wide gap, two more rows"
+      is one row with row×2 + gap 8 m, then a placeholder row with gap 0 and
+      no units, then another row × 2. Or three separate row entries — same
+      effect either way.
     </p>
 
     <div class="modal-frame">
@@ -291,67 +306,73 @@
             <input type="text" value="GP BESS — Stage 2 east">
           </label>
           <div class="row">
-            <label class="field">
-              <span>Origin (anchor corner)</span>
-              <input type="text" class="mono" value="-25.3812, 152.4106">
-            </label>
-            <label class="field" style="flex: 0 0 100px;">
+            <label class="field" style="flex: 0 0 140px;">
               <span>Rotation</span>
               <div style="display: flex; gap: 6px; align-items: center;">
-                <input type="number" value="35" step="1" style="width: 60px;">
-                <span style="font-size: 11px; color: var(--mid);">°</span>
+                <input type="number" value="35" step="1" style="width: 70px;">
+                <span style="font-size: 11px; color: var(--mid);">° from north</span>
               </div>
             </label>
             <div class="rot-dial" title="Drag to rotate"><span class="deg">35°</span></div>
+            <div style="flex: 1; align-self: flex-end; font-size: 11px; color: var(--mid); padding-bottom: 8px;">
+              Tip: drag the on-map rotation handle for visual adjustment;
+              Shift snaps to 15°.
+            </div>
           </div>
           <p class="scene-note" style="margin: 4px 0 0; font-size: 11px;">
-            Anchor corner is the top-left of the unrotated layout. Click on the
-            map to set; rotation applies clockwise from north.
+            On Apply, the group drops in the centre of the current map view —
+            drag it to the right place. For a precise unit-by-unit placement,
+            cancel this dialog and use <em>Import locations…</em> with a shapefile
+            of unit centres instead.
           </p>
         </div>
 
         <div class="section">
-          <h4>Row sequence <span class="badge">3 rows · 24 units · 168 m × 18 m</span></h4>
+          <h4>Row sequence <span class="badge">3 row templates · 7 physical rows · 56 BESS + 4 INV</span></h4>
 
           <div class="row-list">
-            <!-- Row 1: BESS pattern -->
+            <!-- Row template 1: BESS-only, repeated 3 times -->
             <div class="row-card active">
               <div class="row-card-header">
                 <span class="drag">⋮⋮</span>
                 <span class="title">Row 1</span>
-                <span class="summary">8 × BESS · gap 2 m</span>
+                <span class="summary">8 × BESS · row × 3 · gap 2 m</span>
               </div>
               <div class="row-card-body">
-                <div class="full" style="font-size: 11px; color: var(--ink-soft); font-weight: 600;">Pattern · repeats inside the row</div>
+                <div class="full" style="font-size: 11px; color: var(--ink-soft); font-weight: 600;">Pattern · repeats inside one row</div>
                 <div class="pattern full">
                   <span class="unit-chip bess">B · Megapack 2 XL</span>
                   <span class="pattern-repeat">× 8</span>
                   <button class="btn ghost tiny" style="margin-left: 6px;">+ add unit</button>
                 </div>
                 <label class="field" style="margin: 0;">
-                  <span>Spacing within row (m)</span>
+                  <span title="Edge-to-edge gap between adjacent units in the same row">Unit spacing — edge-to-edge (m)</span>
                   <input type="number" value="1.5" step="0.1">
                 </label>
                 <label class="field" style="margin: 0;">
-                  <span>Gap after this row (m)</span>
-                  <input type="number" value="2" step="0.1">
+                  <span title="How many copies of this row to stamp, top-to-bottom. Each copy is identical; the gap-to-next applies between every adjacent pair, including the final copy → next row template.">Repeat row × N</span>
+                  <input type="number" value="3" step="1" min="1">
+                </label>
+                <label class="field" style="margin: 0; grid-column: 1 / -1;">
+                  <span title="Edge-to-edge distance between this row's footprint and the next row (same template repetition or next template, whichever comes first)">Gap to next row (m)</span>
+                  <input type="number" value="2" step="0.1" style="max-width: 120px;">
                 </label>
               </div>
               <div class="row-card-actions">
-                <button class="btn ghost tiny">⧉ duplicate</button>
+                <button class="btn ghost tiny">⧉ duplicate template</button>
                 <button class="btn ghost tiny danger">✕ remove</button>
               </div>
             </div>
 
-            <!-- Row 2: BESS + inverter -->
+            <!-- Row template 2: BESS + inverter, single copy -->
             <div class="row-card">
               <div class="row-card-header">
                 <span class="drag">⋮⋮</span>
                 <span class="title">Row 2</span>
-                <span class="summary">8 × BESS + 2 × INV · gap 8 m</span>
+                <span class="summary">8 BESS + 2 INV · row × 1 · gap 8 m</span>
               </div>
               <div class="row-card-body">
-                <div class="full" style="font-size: 11px; color: var(--ink-soft); font-weight: 600;">Pattern · repeats inside the row</div>
+                <div class="full" style="font-size: 11px; color: var(--ink-soft); font-weight: 600;">Pattern · repeats inside one row</div>
                 <div class="pattern full">
                   <span class="unit-chip bess">B · Megapack 2 XL</span>
                   <span class="unit-chip bess">B · Megapack 2 XL</span>
@@ -362,41 +383,51 @@
                   <button class="btn ghost tiny" style="margin-left: 6px;">+ add unit</button>
                 </div>
                 <label class="field" style="margin: 0;">
-                  <span>Spacing within row (m)</span>
+                  <span>Unit spacing — edge-to-edge (m)</span>
                   <input type="number" value="1.5" step="0.1">
                 </label>
                 <label class="field" style="margin: 0;">
-                  <span>Gap after this row (m)</span>
-                  <input type="number" value="8" step="0.1">
+                  <span>Repeat row × N</span>
+                  <input type="number" value="1" step="1" min="1">
+                </label>
+                <label class="field" style="margin: 0; grid-column: 1 / -1;">
+                  <span>Gap to next row (m)</span>
+                  <input type="number" value="8" step="0.1" style="max-width: 120px;">
                 </label>
               </div>
               <div class="row-card-actions">
-                <button class="btn ghost tiny">⧉ duplicate</button>
+                <button class="btn ghost tiny">⧉ duplicate template</button>
                 <button class="btn ghost tiny danger">✕ remove</button>
               </div>
             </div>
 
-            <!-- Row 3: BESS pattern -->
+            <!-- Row template 3: BESS-only, repeated 3 times -->
             <div class="row-card">
               <div class="row-card-header">
                 <span class="drag">⋮⋮</span>
                 <span class="title">Row 3</span>
-                <span class="summary">8 × BESS · last row</span>
+                <span class="summary">8 × BESS · row × 3 · last row</span>
               </div>
               <div class="row-card-body" style="display: none;"></div>
             </div>
           </div>
 
-          <button class="btn-add-row">+ Add row</button>
+          <button class="btn-add-row">+ Add row template</button>
+          <p class="scene-note" style="margin-top: 6px; font-size: 11px;">
+            Reuse: <em>duplicate template</em> clones a row template inline so
+            you can tweak it slightly. For an exactly-identical row repeated
+            N times, use <em>Repeat row × N</em> on the template itself.
+          </p>
         </div>
 
         <div class="section">
           <h4>Summary</h4>
           <div class="summary-tile">
-            <div class="stat"><span>BESS units</span><span class="val">24</span></div>
-            <div class="stat"><span>Inverters</span><span class="val">2</span></div>
-            <div class="stat"><span>Bounding box</span><span class="val">15 m × 18 m</span></div>
-            <div class="stat"><span>Approx footprint</span><span class="val">270 m²</span></div>
+            <div class="stat"><span>Row templates</span><span class="val">3</span></div>
+            <div class="stat"><span>Physical rows</span><span class="val">7</span></div>
+            <div class="stat"><span>BESS units</span><span class="val">56</span></div>
+            <div class="stat"><span>Inverters</span><span class="val">4</span></div>
+            <div class="stat"><span>Bounding box</span><span class="val">52 m × 38 m</span></div>
           </div>
         </div>
       </div>
@@ -415,51 +446,93 @@
               </defs>
               <rect width="420" height="380" fill="url(#g)"/>
 
-              <!-- rotated group (rotation = 35deg around top-left) -->
-              <g transform="translate(60 70) rotate(20)">
+              <!-- rotated group: Row 1 × 3 (gap 2 m), Row 2 × 1 (gap 8 m), Row 3 × 3 -->
+              <g transform="translate(40 30) rotate(20)">
                 <!-- bounding box -->
-                <rect x="-4" y="-4" width="328" height="68" fill="none" stroke="#1f2937" stroke-width="1" stroke-dasharray="4 3" opacity="0.4"/>
+                <rect x="-4" y="-4" width="220" height="240" fill="none" stroke="#1f2937" stroke-width="1" stroke-dasharray="4 3" opacity="0.4"/>
 
-                <!-- Row 1: 8 BESS in a line, 1.5 m spacing (px scale 8x => 12px gap) -->
-                <g>
-                  <rect x="0"   y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="42"  y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="84"  y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="126" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="168" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="210" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="252" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="294" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                <!-- Row 1, copy 1 -->
+                <g transform="translate(0 0)">
+                  <rect x="0"   y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="26"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="52"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="78"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="104" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="130" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="156" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="182" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                </g>
+                <!-- Row 1, copy 2 (gap 2m → ~3px) -->
+                <g transform="translate(0 21)">
+                  <rect x="0"   y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="26"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="52"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="78"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="104" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="130" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="156" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="182" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                </g>
+                <!-- Row 1, copy 3 -->
+                <g transform="translate(0 42)">
+                  <rect x="0"   y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="26"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="52"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="78"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="104" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="130" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="156" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="182" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
                 </g>
 
-                <!-- Row 2: 8 BESS + 2 INV interspersed -->
-                <g transform="translate(0 28)">
-                  <rect x="0"   y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="42"  y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="84"  y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="126" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="168" y="0" width="18" height="22" rx="2" fill="#fed7aa" stroke="#7c2d12" stroke-width="0.8"/>
-                  <rect x="196" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="238" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="280" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="322" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="364" y="0" width="18" height="22" rx="2" fill="#fed7aa" stroke="#7c2d12" stroke-width="0.8"/>
+                <!-- Row 2: 8 BESS + 2 INV (gap 8m → wider stripe) -->
+                <g transform="translate(0 75)">
+                  <rect x="0"   y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="26"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="52"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="78"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="104" y="0" width="12" height="18" rx="2" fill="#fed7aa" stroke="#7c2d12" stroke-width="0.8"/>
+                  <rect x="122" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="148" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="174" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="200" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="226" y="0" width="12" height="18" rx="2" fill="#fed7aa" stroke="#7c2d12" stroke-width="0.8"/>
                 </g>
 
-                <!-- Row 3 (after wider gap): 8 BESS -->
-                <g transform="translate(0 78)">
-                  <rect x="0"   y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="42"  y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="84"  y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="126" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="168" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="210" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="252" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
-                  <rect x="294" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                <!-- Row 3, copies 1, 2, 3 (gap 2m again) -->
+                <g transform="translate(0 125)">
+                  <rect x="0"   y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="26"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="52"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="78"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="104" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="130" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="156" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="182" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                </g>
+                <g transform="translate(0 146)">
+                  <rect x="0"   y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="26"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="52"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="78"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="104" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="130" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="156" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="182" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                </g>
+                <g transform="translate(0 167)">
+                  <rect x="0"   y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="26"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="52"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="78"  y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="104" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="130" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="156" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="182" y="0" width="20" height="18" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
                 </g>
 
-                <!-- anchor corner pin -->
-                <circle cx="0" cy="0" r="4" fill="#f2cb00" stroke="#1f2937" stroke-width="1"/>
+                <!-- group centroid pin (anchor is now the centre, not the corner) -->
+                <circle cx="110" cy="95" r="5" fill="#f2cb00" stroke="#1f2937" stroke-width="1.5"/>
               </g>
 
               <!-- north arrow -->
@@ -474,7 +547,7 @@
             <span><span class="swatch" style="background: #dbeafe; border: 1px solid #1e3a8a;"></span>BESS</span>
             <span><span class="swatch" style="background: #fed7aa; border: 1px solid #7c2d12;"></span>Inverter</span>
             <span><span class="swatch" style="background: #fce7f3; border: 1px solid #831843;"></span>Transformer</span>
-            <span><span class="swatch" style="background: #f2cb00; border: 1px solid #1f2937;"></span>Anchor corner</span>
+            <span><span class="swatch" style="background: #f2cb00; border: 1px solid #1f2937;"></span>Group centre (drag handle)</span>
           </div>
         </div>
       </div>
@@ -496,12 +569,13 @@
     <h2>Scene 2 · On-map view (placed group, selected)</h2>
     <p class="scene-note">
       Once applied, the group appears on the map as a translucent bounding
-      rectangle with the individual units inside. When the group is selected:
-      a rotation handle floats above the top edge, a translate handle sits in
-      the middle, and corner handles let you scale the row spacing
-      proportionally (alt-drag for free corners). Right-click anywhere on the
-      group opens the contextual menu shown. Double-clicking the group
-      re-opens the wizard from Scene 1 with the saved parameters.
+      rectangle with the individual units inside. When selected: a rotation
+      handle floats above the top edge, a translate handle (the yellow centre
+      dot) lets you drag the whole array. Numeric spacing changes go through
+      the wizard — no corner-scale handles, intentionally, because per-axis
+      scaling of edge-to-edge gaps is more confusing than helpful.
+      Right-click anywhere on the group opens the contextual menu shown;
+      double-click re-opens the wizard with the saved parameters.
     </p>
 
     <div class="top-bar">
@@ -556,26 +630,18 @@
             <rect x="364" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
           </g>
 
-          <!-- handles -->
-          <!-- corner handles (4) -->
-          <rect x="-13" y="-13" width="6" height="6" fill="#fff" stroke="#1f2937" stroke-width="1"/>
-          <rect x="417" y="-13" width="6" height="6" fill="#fff" stroke="#1f2937" stroke-width="1"/>
-          <rect x="-13" y="121" width="6" height="6" fill="#fff" stroke="#1f2937" stroke-width="1"/>
-          <rect x="417" y="121" width="6" height="6" fill="#fff" stroke="#1f2937" stroke-width="1"/>
+          <!-- handles: rotation + translate only -->
 
           <!-- rotation handle (above top edge, connected by stem) -->
           <line x1="205" y1="-10" x2="205" y2="-44" stroke="#1f2937" stroke-width="1"/>
           <circle cx="205" cy="-50" r="8" fill="#f2cb00" stroke="#1f2937" stroke-width="1.5"/>
           <text x="205" y="-46" text-anchor="middle" font-size="9" font-family="Inter" fill="#1f2937">↻</text>
 
-          <!-- translate handle in middle -->
+          <!-- translate handle in the middle of the array (also marks the group's centre) -->
           <g transform="translate(205 62)">
-            <circle r="11" fill="#fff" stroke="#1f2937" stroke-width="1.5"/>
+            <circle r="11" fill="#f2cb00" stroke="#1f2937" stroke-width="1.5"/>
             <text x="0" y="3" text-anchor="middle" font-size="10" font-family="Inter" fill="#1f2937">✥</text>
           </g>
-
-          <!-- anchor corner indicator -->
-          <circle cx="0" cy="0" r="4" fill="#f2cb00" stroke="#1f2937" stroke-width="1.5"/>
         </g>
       </svg>
 
@@ -583,10 +649,6 @@
       <div class="ctx-menu" style="left: 720px; top: 200px;">
         <div class="item">Edit group… <span class="kbd">⏎ / dblclick</span></div>
         <div class="item">Duplicate group <span class="kbd">Ctrl+D</span></div>
-        <hr>
-        <div class="item">Bake to individual sources</div>
-        <div class="item">Add row above current selection</div>
-        <div class="item">Add row below current selection</div>
         <hr>
         <div class="item">Rotate 90° CW</div>
         <div class="item">Reset rotation</div>
@@ -601,13 +663,13 @@
       </div>
 
       <div class="map-callout" style="left: 280px; top: 380px;">
-        <strong>Translate handle</strong>
-        <div class="hint">Drag the centre handle (or any non-handle area of the group) to move the whole array. Snaps to map / grid lines if enabled.</div>
+        <strong>Translate handle (group centre)</strong>
+        <div class="hint">Drag the yellow centre dot (or any non-handle area of the group) to move the whole array. Snaps to map / grid lines if enabled.</div>
       </div>
 
-      <div class="map-callout" style="right: 30px; top: 50px;">
-        <strong>Corner handles</strong>
-        <div class="hint">Drag to proportionally scale row spacing. Alt-drag a corner for free scaling. Use the wizard for precise per-row numbers.</div>
+      <div class="map-callout" style="right: 30px; top: 80px;">
+        <strong>Spacing changes go through the wizard</strong>
+        <div class="hint">No corner-scale handles by design — per-axis scaling of edge-to-edge gaps is confusing to predict. Double-click the group to edit spacing / row counts / patterns in numbers.</div>
       </div>
     </div>
   </section>
@@ -616,39 +678,66 @@
   <!-- Notes for review                                              -->
   <!-- ============================================================ -->
   <section class="scene">
-    <h2>Open design questions to flag</h2>
+    <h2>Resolved design decisions (v2)</h2>
+    <ul style="line-height: 1.7; color: var(--ink-soft); font-size: 13px;">
+      <li>
+        <strong>Layout model</strong> = rows with explicit patterns + <em>row × N</em> stamp.
+        Each row template can be repeated N times (gap-to-next applies between
+        every copy). Reusable identical rows = bump <em>row × N</em>; near-identical
+        rows = <em>duplicate template</em> button then tweak.
+      </li>
+      <li><strong>Preview</strong> = live, debounced ~200 ms after the last keystroke.</li>
+      <li>
+        <strong>Per-unit edits</strong> survive regeneration. Hand-edited units (e.g.
+        BESS shifted 3 m for a fence) keep their position; the wizard shows
+        a "<em>N units modified</em>" chip with a "reset to parametric" affordance.
+      </li>
+      <li>
+        <strong>Groups are permanent</strong>. No "bake to individual sources" escape
+        hatch. <em>Exports</em> (shapefile / SoundPlan / receivers CSV) automatically
+        flatten the parametric group into one record per physical unit — the
+        downstream tool never sees the group as a concept, just the materialised
+        sources.
+      </li>
+      <li>
+        <strong>Origin</strong> isn't typed in the form. New groups drop in the centre
+        of the map view; user drags into place via the centre handle. For
+        precise placement, use <em>Import locations…</em> with a shapefile instead.
+      </li>
+      <li>
+        <strong>On-map handles</strong> = rotation handle (above top edge, Shift snaps
+        to 15°) + centre translate handle only. No corner-scale handles —
+        per-axis spacing changes happen in the wizard with numbers.
+      </li>
+    </ul>
+
+    <h2 style="margin-top: 24px;">Still open / proposed for implementation</h2>
     <ol style="line-height: 1.7; color: var(--ink-soft); font-size: 13px;">
       <li>
-        Is the <strong>row sequence model</strong> (each row has its own pattern + repeat
-        + gap-after) flexible enough for what you've described, or do you
-        need a higher-level "block" abstraction (e.g. "BESS+INV block ×3,
-        then gap, then BESS+INV block ×2")?
+        <strong>Unit footprint dimensions</strong>: the materialiser needs to know each
+        unit's width/length to compute edge-to-edge spacing in metres. Proposal:
+        add <code>footprintM: { widthM, lengthM }</code> to <code>CatalogEntry</code>,
+        seeded with sensible defaults per kind (BESS Megapack 2 XL = 5.1 × 1.7 m;
+        Inverter Sungrow SG3300 = 2.0 × 1.5 m; Transformer = 4.0 × 4.0 m).
+        Users can override per-entry in the Catalog screen.
       </li>
       <li>
-        Should the <strong>preview update live</strong> as the user edits the form, or
-        only on an explicit "Refresh preview" button? Live is friendlier but
-        means a recompute on every keystroke.
+        <strong>"Placeholder" row for asymmetric gaps</strong>: if a row's pattern is
+        empty, it acts as a pure spacer (just adds <em>gap-to-next</em>). Useful for
+        "wide aisle between blocks" without inventing block syntax. The v2
+        scene-1 description hints at this; let me know if it's worth
+        surfacing as an explicit "Spacer" row type in the UI.
       </li>
       <li>
-        For <strong>parametric editing</strong> after Apply, when the user re-opens a
-        group and changes parameters: should per-unit edits made on the map
-        (e.g. dragged one BESS 3 m east for a fence clearance) be
-        <strong>preserved</strong> across regeneration (and rendered as a small "modified"
-        chip), or <strong>discarded</strong> with a warning?
+        <strong>Drag-reorder of row templates</strong>: drag handle on each row card
+        (⋮⋮) is shown. Confirm we want this in v1 or defer (move via up/down
+        arrows instead).
       </li>
       <li>
-        <strong>Bake to individual sources</strong> (in the right-click menu) — should
-        this be exposed? It's a one-way decommit that converts the group's
-        sources to standalone, losing parametric editing. Useful escape hatch
-        for projects where the array layout becomes too irregular for the
-        parametric model.
-      </li>
-      <li>
-        For the <strong>auxiliary pattern</strong>, is "<em>insert 1 INV after every N BESS within
-        a row</em>" the right primitive, or do you want freer composition (e.g.
-        alternating BESS / TX / BESS / INV)? The current mockup uses the
-        freer "explicit unit list per pattern" approach, which subsumes the
-        N-per-block case.
+        <strong>Catalog scope picker per unit chip</strong>: each unit in the pattern
+        references a catalog entry. The mockup chips show names only;
+        implementation needs a dropdown per chip (global / personal / local).
+        Easy but a UI consideration when chips get small.
       </li>
     </ol>
   </section>
