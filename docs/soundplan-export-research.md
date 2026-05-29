@@ -4,35 +4,70 @@ Question: can BESSTY export a project (sources, receivers, calculation
 area, topography, settings) in a form SoundPLAN can ingest, so a user
 can cross-check / continue work in SoundPLAN?
 
-Short answer: **Yes for the geometry + source data, via a bundle of
-shapefiles (+ an ASCII/GeoTIFF DGM). No for a one-click "open this as a
-SoundPLAN project" file** — SoundPLAN's native project format (`.spb`
-project folders, the binary Geo-Database) is proprietary and
-undocumented, so we don't write it directly. We hand SoundPLAN the
-ingredients it already knows how to import; the user runs SoundPLAN's
-import wizard once.
+Short answer: **Yes for the geometry + source data + spectra. No for a
+one-click "open this as a SoundPLAN project" file** — SoundPLAN's native
+project format (binary Geo-Database) is proprietary and undocumented, so
+we don't write it directly. We hand SoundPLAN the ingredients it already
+knows how to import; the user runs SoundPLAN's import wizard once.
 
 This matches how every other package (CadnaA, IMMI, Predictor) exchanges
 with SoundPLAN — nobody writes each other's native project files; they
-exchange shapefiles + DXF + ASCII grids.
+exchange shapefiles + DXF + ASCII grids + the QSI standard.
 
-## What SoundPLAN can import (confirmed from vendor + general GIS docs)
+**Two viable export targets**, in order of fidelity:
+
+1. **QSI (DIN 45687)** — the *purpose-built* German-standard interchange
+   format for noise-calculation software. SoundPLAN imports it (Base
+   module); CadnaA, IMMI and Predictor all read/write it. It carries
+   sources + spectra + geometry in one model, which is exactly our
+   problem. **This is the ideal target** — but the format is a DIN
+   standard (DIN 45687), so the spec isn't freely available and writing
+   a conformant QSI exporter is more work and needs the standard
+   purchased / reverse-engineered from a sample QSI file. Flagged as the
+   gold-standard option if cross-package exchange becomes a core
+   workflow.
+
+2. **Shapefile bundle (+ DGM grid + README)** — the pragmatic path. Uses
+   only formats whose specs we already implement (shapefile writer
+   exists in `exporters.ts`). SoundPLAN's import wizard maps the
+   attribute columns onto its object fields, spectra included. Lower
+   fidelity than QSI (one import pass per file, calc settings via the
+   README) but **far less effort and zero format risk**. Recommended
+   first build.
+
+## What SoundPLAN can import (confirmed from vendor docs, May 2026)
 
 SoundPLAN's **Geo-Database** is the central store for geometry +
 acoustics (point/line/area sources, receivers, buildings, barriers,
-DGM). It imports via a mapping wizard from:
+DGM). Confirmed import paths:
 
-| Format | Used for |
-|---|---|
-| **Shapefile (.shp + .dbf + .shx + .prj)** | point sources, receivers, buildings, barriers, contour lines — with an attribute table the wizard maps onto SoundPLAN object fields |
-| **DXF** | CAD geometry (contours, spot heights, footprints) |
-| **ASCII / text (X Y Z, or tabular)** | spot heights, coordinate lists, tabular attributes |
-| **Excel** | tabular attribute data |
-| **ESRI/ASCII grid + DXF contours** | DGM (digital ground model) elevation |
+| Format | Used for | Confirmed |
+|---|---|---|
+| **Shapefile (.shp/.dbf/.shx/.prj)** | point sources, receivers, buildings, barriers, contour lines — bi-directional ("ArcView Shape File Interface"); one file per object type; attribute table carries object properties | ✓ vendor |
+| **QSI (DIN 45687)** | full noise-model interchange (sources + spectra + geometry) — Base module | ✓ vendor |
+| **DXF** | CAD geometry (contours, footprints) | ✓ vendor |
+| **ASCII / text** | coordinate lists, spot heights, AND "Import of point sources (ASCII)" — point sources with spectra | ✓ vendor |
+| **Excel (direct)** | tabular attribute + spectrum data, pasted/imported in the Geo-Database | ✓ vendor |
+| **KML** | geometry (Cartography module) | ✓ vendor |
+| **DGM elevation**: ASCII files, **ESRI ASCII Grid**, ESRI Binary Grid, **GeoTIFF**, LAS/LAZ, ITF | digital ground model | ✓ vendor |
 
-The import wizard lets you map source-file attribute columns → SoundPLAN
-object properties, **including sound-power levels and per-band spectra**.
-That attribute-mapping step is the linchpin that makes this feasible.
+Two facts that simplify our exporter:
+
+- **Frequency range is 1 Hz – 20 kHz, octave OR 1/3-octave**, both
+  natively. So we do **not** need to drop our 16/31.5 Hz octave bands,
+  and we do **not** have to fold 1/3-octave → octave — we can export in
+  whichever band system the source data already uses. (A fold-to-octave
+  option is still nice for users whose SoundPLAN library is octave-only,
+  but it's optional, not mandatory.)
+- **Point sources can be imported via ASCII or Excel directly**, not
+  only via shapefile. Excel-paste is actually how many SoundPLAN users
+  enter source spectra by hand, so an Excel/CSV source table with an
+  octave/third-octave block is a familiar, low-friction artefact.
+
+The shapefile/ASCII/Excel import wizard maps source-file columns →
+SoundPLAN object properties, **including sound-power levels and per-band
+spectra**. That attribute-mapping step is the linchpin that makes this
+feasible.
 
 ## Mapping BESSTY → SoundPLAN
 
@@ -50,25 +85,31 @@ materialiser does the work for us). Attribute columns:
 | overall LwA | `LWA` | A-weighted total, dB |
 | per-band Lw (un-weighted, Z) | `LW63`, `LW125`, `LW250`, `LW500`, `LW1000`, `LW2000`, `LW4000`, `LW8000` | octave bands; the 10-char DBF field-name limit forces these short names |
 
-**The octave-band columns are the crux.** SoundPLAN works natively in
-octave bands 63 Hz – 8 kHz (8 bands). BESSTY stores spectra in either
-octave (10 bands, 16 Hz – 8 kHz) or 1/3-octave (31 bands). On export we:
+**The octave-band columns are the crux.** SoundPLAN handles 1 Hz –
+20 kHz in octave OR 1/3-octave (confirmed), so we have options:
 
-- Fold 1/3-octave → octave by energy summation (we already have
-  `foldThirdsToOctave` in `catalog.ts`).
-- Drop the 16 Hz and 31.5 Hz octave bands (outside SoundPLAN's standard
-  63–8k industrial range) OR carry them as `LW16` / `LW31` extra columns
-  if the user wants the low-frequency content — SoundPLAN can be
-  configured for extended bands but the default is 63–8k. Recommend a
-  toggle on export ("include 16/31.5 Hz LF bands").
-- Emit **un-weighted Lw** per band (SoundPLAN expects Lw; it applies
-  A-weighting internally). This is exactly the `Z`-weighted internal
-  representation our solver already uses — no conversion needed beyond
-  the band fold. (Reassuringly, this is also why the DΩ=0 default we
-  set during validation matters: SoundPLAN won't add the +3 dB either.)
+- **Export in the source's native band system.** If a model's spectra
+  are 1/3-octave (e.g. the V163 WTG data), emit 1/3-octave columns; if
+  octave (e.g. the Tesla Megapack), emit octave columns. No mandatory
+  fold — SoundPLAN takes both. Our 16/31.5 Hz octave bands are inside
+  SoundPLAN's range, so they're kept, not dropped (this corrects an
+  earlier assumption).
+- **Optional fold-to-octave toggle** for users whose SoundPLAN source
+  library is octave-only — we already have `foldThirdsToOctave` in
+  `catalog.ts`.
+- Emit **un-weighted Lw** per band (SoundPLAN expects Lw; it
+  A-weights internally). This is exactly the `Z`-weighted internal
+  representation our solver already uses — no conversion needed.
+  (Reassuringly, this is also why the DΩ=0 validation default matters:
+  SoundPLAN won't add the +3 dB either, so the two tools line up.)
 
-DBF field-name limit (10 chars) and field-count limit (255) are both
-fine for 8–10 band columns + a handful of metadata columns.
+Octave column names (DBF 10-char limit): `LW16 LW31 LW63 LW125 LW250
+LW500 LW1000 LW2000 LW4000 LW8000`. 1/3-octave needs 31 columns
+(`LW10 LW12_5 LW16 … LW20000`) — well within the DBF 255-field limit,
+and the `_` in `LW12_5` is a legal DBF field-name char. If shapefile
+column-count ever feels cramped, the **Excel/CSV source table** path
+sidesteps the 10-char limit entirely (friendlier full headers like
+`Lw 125 Hz`).
 
 ### 2. Receivers → `receivers.shp`
 
@@ -143,23 +184,27 @@ shapefile machinery exists):
 
 1. `exportSoundPlanBundle(project, dem, opts)` →
    produces a `.zip` containing:
-   - `sources.shp/.dbf/.shx/.prj`
+   - `sources.shp/.dbf/.shx/.prj` (and/or `sources.csv` for the
+     Excel-paste path)
    - `receivers.shp/...`
    - `calc_area.shp/...`
    - `barriers.shp/...` (if any)
-   - `dem.asc` (or the original `.tif`)
+   - `dem.asc` (ESRI ASCII grid) or the original `.tif` verbatim
    - `README_soundplan.txt`
-2. Reuse `spectrumFor` / `foldThirdsToOctave` to get per-source octave
-   Lw in SoundPLAN's 63–8k convention.
+2. Reuse `spectrumFor` to get per-source Lw in the source's native band
+   system (octave or 1/3-octave — SoundPLAN takes both). Apply
+   `foldThirdsToOctave` ONLY if the user ticks the optional
+   "fold to octave" export option.
 3. Reproject lat/lng → the project's projected CRS via the existing
    `proj4` setup (`lib/projections.ts`).
 4. Wire a "Export → SoundPLAN bundle (.zip)" button into the side
    panel's export section.
 
-Estimated effort: **~1 day**. The shapefile writer + projection +
-spectrum-fold are all already in the codebase; the new work is the
-attribute schema, the ASCII-grid DEM writer, the README generator, and
-the zip bundling.
+Estimated effort: **~1 day** for the shapefile-bundle path. The
+shapefile writer + projection + spectrum helpers all already exist; the
+new work is the attribute schema, the ESRI-ASCII-grid DEM writer, the
+README generator, and the zip bundling. (A QSI/DIN-45687 exporter would
+be a separate, larger effort — see the two-targets note up top.)
 
 ## Recommendation
 
@@ -171,25 +216,44 @@ are stable, decades-old, well-understood), and most of the hard parts
 BESSTY.
 
 Two open questions to confirm with the user before building:
-1. **Octave vs 1/3-octave export** — default to octave 63–8k
-   (SoundPLAN's industrial norm), with an optional "include 16/31.5 Hz"
-   toggle? Or export 1/3-octave when the source data is 1/3-octave?
+1. **Band system on export** — research resolved the original
+   octave-vs-1/3 question: SoundPLAN takes both across 1–20 kHz, so the
+   plan is **export in the source's native band system**, with an
+   optional "fold to octave" toggle for octave-only SoundPLAN libraries.
+   Confirm that's the wanted default.
 2. **WTG sources** — export the effective Lw at the scenario wind speed
    (cross-check path), or also emit a separate per-wind-speed table for
    users who want SoundPLAN to interpolate? The former is simpler and
    covers the main use case.
+3. **(New) Which target first** — the shapefile bundle (recommended,
+   ~1 day, low risk) or invest in a QSI/DIN-45687 exporter (higher
+   fidelity, single-file model exchange, but needs the DIN standard and
+   is a multi-day effort)?
 
 ## Sources consulted
 
-- SoundPLAN vendor material on the Geo-Database + data exchange
-  (import/export of SHP, DXF, ASCII, Excel; attribute mapping wizard).
-- General GIS references on the ESRI shapefile / DBF 10-char field-name
-  limit (drives the short `LW63`… column naming).
-- Cross-package practice (CadnaA ↔ SoundPLAN exchange via shapefile/DXF/
-  ASCII rather than native project files).
+- SoundPLAN GmbH vendor docs — Geo-Database + data exchange: bi-
+  directional ArcView shapefile interface; DXF, QSI (DIN 45687) and
+  ASCII interfaces in the Base module; direct Excel import; "Import of
+  point sources (ASCII)"; KML import/export (Cartography); grid-map
+  GeoTIFF export.
+  - https://www.soundplan.eu/en/software/soundplannoise/modules/
+  - http://www.soundplan.com/arcview.htm
+  - http://www.soundplan.com/geo-database.htm
+- DGM import formats (ASCII, ESRI ASCII Grid, ESRI Binary Grid,
+  GeoTIFF, LAS/LAZ, ITF) — SoundPLANnoise module description (April
+  2024) and SoundPLANessential 5.1 manual.
+- Frequency handling (octave + 1/3-octave, 1–20 kHz) — SoundPLAN module
+  descriptions; point/line/area source emission entry.
+- CadnaA ↔ SoundPLAN interoperability via QSI (DIN 45687) + shapefile —
+  Datakustik CadnaA documentation (QSI export, SoundPLAN receiver
+  import).
+- ESRI shapefile / DBF 10-char field-name limit (drives the short
+  `LW63`… column naming) — Esri ArcGIS Pro documentation + knowledge
+  base.
 
-Note: SoundPLAN's exact native binary formats (`.spb` project, the
-Geo-Database internal structure) are not publicly documented; this
-research deliberately targets the documented *import* path rather than
-attempting to reverse-engineer the native project file, which would be
-fragile and version-dependent.
+Note: SoundPLAN's native binary project / Geo-Database format is not
+publicly documented; this research deliberately targets the documented
+*import* paths (shapefile / ASCII / Excel / QSI / DGM grids) rather than
+reverse-engineering the native project file, which would be fragile and
+version-dependent.
