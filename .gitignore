@@ -1,0 +1,24 @@
+# Build artefacts
+solver/target/
+web/node_modules/
+web/dist/
+web/.vite/
+web/tsconfig.tsbuildinfo
+
+# Firebase Cloud Functions build output + deps
+functions/node_modules/
+functions/lib/
+functions/.firebase/
+.firebase/
+firebase-debug.log
+
+# Environment files (per-checkout, never committed)
+.env
+.env.local
+*.local
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*~
+~$*

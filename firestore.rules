@@ -1,0 +1,168 @@
+rules_version = '2';
+
+// BESSTY (rc-beesty) Firestore security rules.
+// Mirrors docs/firestore-schema.md.
+//
+// Mental model:
+//   - users/{uid} = the user's profile + flags. Owner edits own fields
+//     EXCEPT `allowed` and `flags.*` -- those are admin/Cloud-Function
+//     territory so a user can't grant themselves access or admin powers.
+//   - projects/{id} = the project doc. Public projects are world-readable
+//     to any signed-in user; private projects are restricted to the
+//     owner + allowedUserIds. Admins can read/write anything.
+//   - projects/{id}/versions/{vid} = immutable-content snapshots.
+//     Write access mirrors the parent project. Update is allowed but
+//     restricted to label/note (snapshot data is locked once created).
+//   - catalogsGlobal/{id} = shared library, RW by any signed-in user.
+//   - users/{uid}/catalogs/{id} = personal library, owner only.
+//   - authAllowlist/{hash} = manually-added non-Resonate emails.
+//     Admin-only (Cloud Function reads it with admin SDK, bypassing rules).
+//
+// Conventions:
+//   `signedIn()` is required almost everywhere. Public reads are
+//   intentional choices, not the default.
+//   `isAdmin()` reads the user's profile doc. Each call costs a read,
+//   so prefer to check ownership/allowlist first.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===== Helpers =====
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isMe(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      // Costs one document read. Cached within a single security-rule
+      // evaluation so referring to isAdmin() twice in the same rule is
+      // not 2x the cost.
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid))
+             .data.flags.admin == true;
+    }
+
+    // For project rules: combines owner / allowlist / admin.
+    function isProjectEditor(projectData) {
+      return signedIn() && (
+        request.auth.uid == projectData.ownerUid ||
+        (projectData.allowedUserIds is list && request.auth.uid in projectData.allowedUserIds) ||
+        isAdmin()
+      );
+    }
+
+    function isProjectReader(projectData) {
+      return signedIn() && (
+        projectData.visibility == 'public' ||
+        isProjectEditor(projectData)
+      );
+    }
+
+    // ===== users/{uid} — profile + flags =====
+
+    match /users/{uid} {
+      // Any signed-in user can read other profiles (needed for the
+      // project list's owner column and the "Add by email" lookup).
+      // Profile docs hold no secrets -- email, displayName, createdAt,
+      // a coarse `allowed` boolean. Admins can read everything.
+      allow read: if signedIn();
+
+      // Create your own profile on first verified sign-in. The client
+      // sets allowed = isResonateEmail(email); the Cloud Function may
+      // overwrite that with the allowlist-aware value moments later.
+      // Block creation of `flags.admin = true` via direct client write.
+      allow create: if isMe(uid)
+        && request.resource.data.email is string
+        && (
+          !('flags' in request.resource.data) ||
+          request.resource.data.flags.admin == false
+        );
+
+      // Owner can update displayName / email-derived metadata, but
+      // NOT `allowed` (Cloud-Function-only) and NOT `flags.*` (admin-only).
+      // Admin updates are unrestricted.
+      allow update: if isAdmin() || (
+        isMe(uid)
+        && request.resource.data.allowed == resource.data.allowed
+        && (
+          !('flags' in request.resource.data) ||
+          request.resource.data.flags == resource.data.get('flags', {})
+        )
+      );
+
+      // Personal catalog under each user's profile -- owner only.
+      match /catalogs/{entryId} {
+        allow read, write: if isMe(uid) || isAdmin();
+      }
+    }
+
+    // ===== projects/{id} =====
+
+    match /projects/{projectId} {
+      allow read: if isProjectReader(resource.data);
+
+      // Create: only as yourself (ownerUid must equal request.auth.uid).
+      // Prevents masquerading as another user via a client write.
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid;
+
+      // Update: editor (owner / allowlist / admin). Ownership transfer is
+      // not exposed -- updating ownerUid is forbidden except by admin.
+      allow update: if isProjectEditor(resource.data) && (
+        isAdmin() || request.resource.data.ownerUid == resource.data.ownerUid
+      );
+
+      // Delete: owner OR admin only. Allowlist members can edit, not delete.
+      allow delete: if signedIn() && (
+        request.auth.uid == resource.data.ownerUid || isAdmin()
+      );
+
+      // ----- Versions subcollection -----
+      // Snapshot CONTENT is immutable. Metadata (label, note) is editable
+      // by anyone with write access to the parent project. Delete is
+      // allowed for the same audience -- versions aren't precious history;
+      // they're user-managed save points.
+      match /versions/{versionId} {
+        allow read: if isProjectReader(
+          get(/databases/$(database)/documents/projects/$(projectId)).data
+        );
+
+        allow create: if isProjectEditor(
+          get(/databases/$(database)/documents/projects/$(projectId)).data
+        );
+
+        // Allow updates only when the snapshot field is unchanged. Clients
+        // can rename / re-note but not rewrite history.
+        allow update: if isProjectEditor(
+            get(/databases/$(database)/documents/projects/$(projectId)).data
+          )
+          && request.resource.data.snapshot == resource.data.snapshot;
+
+        allow delete: if isProjectEditor(
+          get(/databases/$(database)/documents/projects/$(projectId)).data
+        );
+      }
+    }
+
+    // ===== catalogsGlobal/{entryId} =====
+    // Shared library. Per the agreed model: any signed-in user can RW.
+    // If we ever want curation, swap this to admin-only writes.
+    match /catalogsGlobal/{entryId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.createdByUid == request.auth.uid;
+      allow update, delete: if signedIn();
+    }
+
+    // ===== authAllowlist/{hashedEmail} =====
+    // Admin-only. Cloud Functions read via admin SDK (rule-bypassed).
+    match /authAllowlist/{hashedEmail} {
+      allow read, write: if isAdmin();
+    }
+  }
+}
