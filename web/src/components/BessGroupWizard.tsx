@@ -907,8 +907,17 @@ const inputStyle: React.CSSProperties = {
   width: '100%', padding: '6px 8px', border: '1px solid var(--light)', borderRadius: 4,
   background: 'var(--paper)', color: 'var(--ink)', fontSize: 13, outline: 'none', fontFamily: 'inherit',
 };
+// `overflow: 'visible'` (and the position:relative below) so the segment-
+// edit popover can extend below the card without being clipped. The
+// previous `overflow: 'hidden'` was clipping the popover's lower fields
+// (count / spacing / gap-to-next / orientation), leaving only the Model
+// dropdown visible. The cost of dropping the clip is that the header's
+// gray background and the actions row's tint can technically poke 1 px
+// past the rounded corners -- imperceptible at default border weights.
 const rowCardStyle: React.CSSProperties = {
-  border: '1px solid var(--light)', borderRadius: 6, background: 'var(--paper)', overflow: 'hidden',
+  border: '1px solid var(--light)', borderRadius: 6, background: 'var(--paper)',
+  overflow: 'visible',
+  position: 'relative',
 };
 const rowCardActiveStyle: React.CSSProperties = {
   ...rowCardStyle, borderColor: 'var(--ink)',
@@ -949,12 +958,15 @@ const unitChipMissingStyle: React.CSSProperties = {
   ...unitChipBaseStyle, background: '#fee2e2', border: '1px dashed #dc2626', color: '#991b1b',
 };
 // Segment-editor popover that opens when the user clicks a segment chip.
-// Taller than the old single-select chipMenu because the segment form has
-// model + mode + count + spacing + gap + orientation in one place.
+// Taller than the old single-select chipMenu because the segment form
+// has model + mode + count + spacing + gap + orientation in one place.
+// High zIndex so it sits above sibling row cards when the popover
+// overflows downward into the next row.
 const segmentMenuStyle: React.CSSProperties = {
-  position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 30,
+  position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 100,
   background: 'var(--paper)', border: '1px solid var(--light)', borderRadius: 6,
-  padding: 10, display: 'flex', flexDirection: 'column', gap: 8, minWidth: 280,
+  padding: 10, display: 'flex', flexDirection: 'column', gap: 8,
+  width: 320, maxWidth: 'calc(100vw - 40px)',
   boxShadow: 'var(--shadow-2)',
 };
 const menuHeaderStyle: React.CSSProperties = {
