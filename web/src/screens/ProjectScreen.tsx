@@ -342,6 +342,40 @@ export function ProjectScreen() {
       sources: withoutGroupSources(project.sources, groupId),
     });
   }
+  /// Centre-handle drag from the on-map overlay: rewrite the group's
+  /// centerLatLng and re-materialise.
+  function moveBessGroup(groupId: string, newCentre: [number, number]) {
+    if (!project) return;
+    const groups = project.bessGroups ?? [];
+    const next = groups.map((g) =>
+      g.id === groupId ? { ...g, centerLatLng: newCentre } : g,
+    );
+    const moved = next.find((g) => g.id === groupId);
+    if (!moved) return;
+    const mat = materialiseBessGroup(moved, catalogLookup);
+    setProject({
+      ...project,
+      bessGroups: next,
+      sources: withGroupSources(project.sources, groupId, mat.sources),
+    });
+  }
+  /// Rotation-handle drag from the on-map overlay: rewrite the
+  /// group's rotationDeg and re-materialise.
+  function rotateBessGroup(groupId: string, newRotationDeg: number) {
+    if (!project) return;
+    const groups = project.bessGroups ?? [];
+    const next = groups.map((g) =>
+      g.id === groupId ? { ...g, rotationDeg: newRotationDeg } : g,
+    );
+    const rotated = next.find((g) => g.id === groupId);
+    if (!rotated) return;
+    const mat = materialiseBessGroup(rotated, catalogLookup);
+    setProject({
+      ...project,
+      bessGroups: next,
+      sources: withGroupSources(project.sources, groupId, mat.sources),
+    });
+  }
 
   // Imperative handle to the Leaflet map for the floating MapControls.
   const mapHandleRef = useRef<L.Map | null>(null);
@@ -1253,6 +1287,9 @@ export function ProjectScreen() {
           onMoveCalcArea={handleMoveCalcArea}
           onCursorMove={setCursorLatLng}
           onReady={(m) => { mapHandleRef.current = m; }}
+          onOpenBessGroupWizard={openBessGroupWizard}
+          onMoveBessGroup={moveBessGroup}
+          onRotateBessGroup={rotateBessGroup}
         />
 
         <MapControls

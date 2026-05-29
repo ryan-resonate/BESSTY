@@ -43,6 +43,13 @@ interface Props {
   /// centre handle is dragged.
   onResizeCalcArea?(widthM: number, heightM: number): void;
   onMoveCalcArea?(centerLatLng: [number, number]): void;
+  /// BESS-group on-map editing callbacks. `onOpenBessGroupWizard` opens
+  /// the editor wizard for a group (fired on double-click of any
+  /// group member). `onMoveBessGroup` is fired on centre-handle drag.
+  /// `onRotateBessGroup` is fired on rotation-handle drag.
+  onOpenBessGroupWizard?(group: import('../lib/types').BessGroup): void;
+  onMoveBessGroup?(groupId: string, newCenter: [number, number]): void;
+  onRotateBessGroup?(groupId: string, newRotationDeg: number): void;
   addMode: 'none' | 'wtg' | 'bess' | 'auxiliary' | 'receiver' | 'measure' | 'barrier';
   baseMap: BaseMap;
   showContours: boolean;
@@ -203,6 +210,7 @@ export function MapView({
   project, results, grid, selectedIds, onSelect, onBoxSelect,
   onAddSource, onAddReceiver, onAddBarrier, onUpdateBarrier, onMoveSource, onMoveReceiver,
   onResizeCalcArea, onMoveCalcArea,
+  onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
   addMode, baseMap, showContours, showGridDebug, contourMode, contourOpacity, contourStepDb,
   palette, dbDomain, onCursorMove, onReady,
 }: Props) {
@@ -225,6 +233,10 @@ export function MapView({
   /// hovering for the second).
   const barriersGroupRef = useRef<L.LayerGroup | null>(null);
   const barrierDraftRef = useRef<{ start: L.LatLng; preview: L.Polyline | null } | null>(null);
+  /// BESS-group overlays: one bounding rect, rotation handle, centre
+  /// handle per group. Re-rendered when project.bessGroups, the
+  /// materialised sources, or the selection change.
+  const bessGroupsLayerRef = useRef<L.LayerGroup | null>(null);
   /// id → Leaflet Marker handle, so we can update sibling marker positions
   /// during a group drag without going through React state.
   const markersByIdRef = useRef<Map<string, L.Marker>>(new Map());
@@ -242,11 +254,13 @@ export function MapView({
   const callbacksRef = useRef({
     onAddSource, onAddReceiver, onAddBarrier, onUpdateBarrier, onMoveSource, onMoveReceiver,
     onResizeCalcArea, onMoveCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
+    onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
   });
   useEffect(() => {
     callbacksRef.current = {
       onAddSource, onAddReceiver, onAddBarrier, onUpdateBarrier, onMoveSource, onMoveReceiver,
       onResizeCalcArea, onMoveCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
+      onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
     };
   });
   // ProjectScreen needs to know the lat/lng of every source/receiver to
@@ -278,6 +292,10 @@ export function MapView({
     overlayGroupRef.current = L.layerGroup().addTo(map);
     barriersGroupRef.current = L.layerGroup().addTo(map);
     measureGroupRef.current = L.layerGroup().addTo(map);
+    // BESS-group overlays render UNDER the source markers (so the
+    // handles draw on top of the bounding rect, and unit markers stay
+    // clickable). Add to map BEFORE the markers layer.
+    bessGroupsLayerRef.current = L.layerGroup().addTo(map);
     markersGroupRef.current = L.layerGroup().addTo(map);
 
     // ---- Middle-mouse pan (Leaflet's left-mouse drag is disabled above) ----
@@ -716,6 +734,16 @@ export function MapView({
         const shift = !!e.originalEvent?.shiftKey;
         callbacksRef.current.onSelect(s.id, { shift });
       });
+      // Double-click on a group member re-opens the BESS-group wizard
+      // for that group. Standalone sources have no double-click action
+      // (Leaflet emits both a click and a dblclick; the click selects
+      // first, then the wizard opens with that group in edit mode).
+      if (s.groupId) {
+        marker.on('dblclick', () => {
+          const g = (projectRef.current.bessGroups ?? []).find((x) => x.id === s.groupId);
+          if (g) callbacksRef.current.onOpenBessGroupWizard?.(g);
+        });
+      }
       marker.on('dragstart', () => {
         cancelBoxSelectRef.current();
         const sel = selectedIdsRef.current;
@@ -858,6 +886,203 @@ export function MapView({
     // the click handlers, so we don't want a fresh closure to invalidate the
     // markers (and break in-flight drags) every time the parent re-renders.
   }, [project, results, selectedIds]);
+
+  // ===== BESS-group overlays: bounding rect + rotation handle + centre handle =====
+  //
+  // For each group: compute the unrotated bbox in metres from the
+  // materialised sources' positions back-projected to local coords,
+  // then draw the rotated polygon + handles. The handles are
+  // draggable Leaflet markers; their drag callbacks fire
+  // onMoveBessGroup / onRotateBessGroup so ProjectScreen can
+  // re-materialise.
+  useEffect(() => {
+    const map = mapRef.current;
+    const layer = bessGroupsLayerRef.current;
+    if (!map || !layer) return;
+    layer.clearLayers();
+    if (!project.bessGroups || project.bessGroups.length === 0) return;
+
+    const R = 6371008.8;
+    const dragRefs = new Map<string, { startCentre: L.LatLng; startAngleRad: number; startRotDeg: number }>();
+
+    for (const g of project.bessGroups) {
+      const members = project.sources.filter((s) => s.groupId === g.id);
+      if (members.length === 0) continue;
+
+      // Project each member back into a local metre-frame centred on
+      // group.centerLatLng (NOT the source's own bbox centroid -- they
+      // should be the same in practice, but using the parametric
+      // centre keeps the rotation handle anchored to the user-set
+      // origin when overrides have shifted things).
+      const cLatRad = (g.centerLatLng[0] * Math.PI) / 180;
+      const cosLat = Math.cos(cLatRad);
+      const local: Array<{ x: number; y: number }> = members.map((s) => ({
+        x: (s.latLng[1] - g.centerLatLng[1]) * (Math.PI / 180) * R * cosLat,
+        y: -(s.latLng[0] - g.centerLatLng[0]) * (Math.PI / 180) * R,
+      }));
+      // Bounding box in the GROUP'S local frame -- i.e. UNROTATED.
+      // Each member's local (x,y) is rotated by g.rotationDeg from the
+      // group's local frame, so we de-rotate first to get the bbox.
+      const rotRad = (g.rotationDeg * Math.PI) / 180;
+      const cosNeg = Math.cos(-rotRad);
+      const sinNeg = Math.sin(-rotRad);
+      let minLX = Infinity, maxLX = -Infinity, minLY = Infinity, maxLY = -Infinity;
+      // Need a footprint to pad the bbox so the rect surrounds the
+      // units rather than passing through their centres. Use the
+      // largest footprint of any member.
+      let maxHalfW = 0, maxHalfH = 0;
+      for (let i = 0; i < members.length; i++) {
+        const ux = local[i].x * cosNeg - local[i].y * sinNeg;
+        const uy = local[i].x * sinNeg + local[i].y * cosNeg;
+        if (ux < minLX) minLX = ux;
+        if (ux > maxLX) maxLX = ux;
+        if (uy < minLY) minLY = uy;
+        if (uy > maxLY) maxLY = uy;
+        // We don't have the catalog footprint cheaply here -- pad by
+        // 3 m which covers the Megapack's longest dimension. Good
+        // enough for a visual bounding rect; the wizard preview is
+        // the authoritative footprint view.
+        maxHalfW = Math.max(maxHalfW, 3);
+        maxHalfH = Math.max(maxHalfH, 3);
+      }
+      const padX = maxHalfW;
+      const padY = maxHalfH;
+      const corners4Local = [
+        { x: minLX - padX, y: minLY - padY },
+        { x: maxLX + padX, y: minLY - padY },
+        { x: maxLX + padX, y: maxLY + padY },
+        { x: minLX - padX, y: maxLY + padY },
+      ];
+      // Re-rotate each corner back into the world (group rotation) and
+      // convert to lat/lng.
+      const cosR = Math.cos(rotRad);
+      const sinR = Math.sin(rotRad);
+      const cornersLatLng: Array<[number, number]> = corners4Local.map((c) => {
+        const wx = c.x * cosR - c.y * sinR;
+        const wy = c.x * sinR + c.y * cosR;
+        return [
+          g.centerLatLng[0] + (-wy / R) * (180 / Math.PI),
+          g.centerLatLng[1] + (wx / (R * cosLat)) * (180 / Math.PI),
+        ];
+      });
+
+      // Determine if the group is "selected" -- treat any member's
+      // selection as selecting the group. Drives the rect stroke +
+      // handle visibility.
+      const groupSelected = members.some((m) => selectedIds.has(m.id));
+
+      const poly = L.polygon(cornersLatLng, {
+        color: '#1f2937', weight: groupSelected ? 1.5 : 1,
+        opacity: groupSelected ? 0.9 : 0.4,
+        fillColor: '#f2cb00', fillOpacity: groupSelected ? 0.10 : 0.04,
+        dashArray: groupSelected ? undefined : '4 3',
+        // Clicking the rect (away from any member marker) selects the
+        // first member as a proxy for "group selected".
+        interactive: true,
+        bubblingMouseEvents: false,
+      });
+      poly.on('click', () => {
+        if (members.length > 0) callbacksRef.current.onSelect(members[0].id);
+      });
+      poly.on('dblclick', () => {
+        callbacksRef.current.onOpenBessGroupWizard?.(g);
+      });
+      poly.addTo(layer);
+
+      if (!groupSelected) continue;
+
+      // ===== Handles (only when selected) =====
+
+      // Rotation handle: 5 m above the top edge of the bounding box,
+      // in the group's LOCAL frame, then rotated to world.
+      const topMidLocal = { x: (minLX + maxLX) / 2, y: minLY - padY - 5 };
+      const topMidWX = topMidLocal.x * cosR - topMidLocal.y * sinR;
+      const topMidWY = topMidLocal.x * sinR + topMidLocal.y * cosR;
+      const rotHandleLatLng: [number, number] = [
+        g.centerLatLng[0] + (-topMidWY / R) * (180 / Math.PI),
+        g.centerLatLng[1] + (topMidWX / (R * cosLat)) * (180 / Math.PI),
+      ];
+      // Stem from top-edge centre to handle.
+      const topMidEdgeLocal = { x: (minLX + maxLX) / 2, y: minLY - padY };
+      const topEdgeWX = topMidEdgeLocal.x * cosR - topMidEdgeLocal.y * sinR;
+      const topEdgeWY = topMidEdgeLocal.x * sinR + topMidEdgeLocal.y * cosR;
+      const topEdgeLatLng: [number, number] = [
+        g.centerLatLng[0] + (-topEdgeWY / R) * (180 / Math.PI),
+        g.centerLatLng[1] + (topEdgeWX / (R * cosLat)) * (180 / Math.PI),
+      ];
+      L.polyline([topEdgeLatLng, rotHandleLatLng], {
+        color: '#1f2937', weight: 1, opacity: 0.7, interactive: false,
+      }).addTo(layer);
+      const rotHandle = L.marker(rotHandleLatLng, {
+        draggable: true,
+        bubblingMouseEvents: false,
+        icon: L.divIcon({
+          className: 'bessty-bess-rot-handle',
+          html: '<div style="width:16px;height:16px;border-radius:50%;background:#f2cb00;border:1.5px solid #1f2937;display:flex;align-items:center;justify-content:center;font-size:10px;color:#1f2937;cursor:grab;">↻</div>',
+          iconSize: [16, 16], iconAnchor: [8, 8],
+        }),
+        title: 'Rotate group',
+      });
+      rotHandle.on('dragstart', () => {
+        const cLL = L.latLng(g.centerLatLng[0], g.centerLatLng[1]);
+        const here = rotHandle.getLatLng();
+        const dx0 = (here.lng - cLL.lng) * cosLat;
+        const dy0 = here.lat - cLL.lat;
+        const angle0 = Math.atan2(dx0, dy0);  // clockwise from north
+        dragRefs.set(g.id, {
+          startCentre: cLL,
+          startAngleRad: angle0,
+          startRotDeg: g.rotationDeg,
+        });
+      });
+      rotHandle.on('drag', () => {
+        const ref = dragRefs.get(g.id);
+        if (!ref) return;
+        const here = rotHandle.getLatLng();
+        const dx = (here.lng - ref.startCentre.lng) * cosLat;
+        const dy = here.lat - ref.startCentre.lat;
+        const angleNow = Math.atan2(dx, dy);
+        const deltaDeg = ((angleNow - ref.startAngleRad) * 180) / Math.PI;
+        // Live preview: don't fire the callback until dragend (would
+        // re-render the whole group mid-drag, which fights Leaflet).
+        // Show interim rotation by stashing it on a custom property.
+        rotHandle.options.title = `${(ref.startRotDeg + deltaDeg).toFixed(0)}°`;
+      });
+      rotHandle.on('dragend', () => {
+        const ref = dragRefs.get(g.id);
+        if (!ref) return;
+        const here = rotHandle.getLatLng();
+        const dx = (here.lng - ref.startCentre.lng) * cosLat;
+        const dy = here.lat - ref.startCentre.lat;
+        const angleNow = Math.atan2(dx, dy);
+        const deltaDeg = ((angleNow - ref.startAngleRad) * 180) / Math.PI;
+        let nextDeg = ref.startRotDeg + deltaDeg;
+        // Normalise to [-180, 180].
+        while (nextDeg > 180) nextDeg -= 360;
+        while (nextDeg < -180) nextDeg += 360;
+        callbacksRef.current.onRotateBessGroup?.(g.id, +nextDeg.toFixed(1));
+        dragRefs.delete(g.id);
+      });
+      rotHandle.addTo(layer);
+
+      // Centre translate handle.
+      const centreHandle = L.marker(g.centerLatLng, {
+        draggable: true,
+        bubblingMouseEvents: false,
+        icon: L.divIcon({
+          className: 'bessty-bess-centre-handle',
+          html: '<div style="width:18px;height:18px;border-radius:50%;background:#f2cb00;border:1.5px solid #1f2937;display:flex;align-items:center;justify-content:center;font-size:11px;color:#1f2937;cursor:move;">✥</div>',
+          iconSize: [18, 18], iconAnchor: [9, 9],
+        }),
+        title: 'Drag to move the whole group',
+      });
+      centreHandle.on('dragend', () => {
+        const ll = centreHandle.getLatLng();
+        callbacksRef.current.onMoveBessGroup?.(g.id, [ll.lat, ll.lng]);
+      });
+      centreHandle.addTo(layer);
+    }
+  }, [project, selectedIds]);
 
   // Render contour overlay (filled raster, iso-lines, or both).
   useEffect(() => {
