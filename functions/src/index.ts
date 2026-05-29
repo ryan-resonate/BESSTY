@@ -1,5 +1,13 @@
 // BESSTY Cloud Functions (Node 20 / Gen 2).
 //
+// !! NOT DEPLOYED -- see docs/blaze-upgrade.md.
+// This file is written + type-checks cleanly but the rc-beesty Firebase
+// project is on the free Spark plan, which doesn't include the Cloud
+// Build / Artifact Registry / Cloud Run infrastructure that Functions
+// (Gen 1 or Gen 2) require. Upgrade to Blaze and run
+// `firebase deploy --only functions` to activate. Workarounds while
+// off-Blaze are documented in the upgrade doc.
+//
 // Two responsibilities:
 //
 //   1. `onAuthUserCreate` — runs immediately when a new Firebase Auth
