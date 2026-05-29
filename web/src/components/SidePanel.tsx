@@ -6,6 +6,7 @@ import type { BaseMap, ContourMode } from './MapView';
 import type { Palette } from '../lib/colormap';
 import { listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { ImportObjectsModal } from './ImportObjectsModal';
+import { ProjectMetaPanel } from './ProjectMetaPanel';
 import { EpsgPicker } from './EpsgPicker';
 import { NumericInput } from './NumericInput';
 import { inferGeoTiffCrs, parseDemGeoTiff } from '../lib/demUpload';
@@ -36,7 +37,7 @@ const GROUP_PALETTE = [
 
 export type AddMode = 'none' | 'wtg' | 'bess' | 'auxiliary' | 'receiver' | 'measure' | 'barrier';
 
-export type Tab = 'sources' | 'area' | 'receivers' | 'barriers' | 'import' | 'settings' | 'results' | 'layers';
+export type Tab = 'sources' | 'area' | 'receivers' | 'barriers' | 'import' | 'settings' | 'results' | 'layers' | 'project';
 
 interface Props {
   project: Project;
@@ -68,6 +69,17 @@ interface Props {
   /// Active tab — lifted into ProjectScreen so placement can switch tabs.
   activeTab: Tab;
   setActiveTab(t: Tab): void;
+
+  /// Project-level metadata (versions, privacy) needs these. Optional
+  /// so the SidePanel still type-checks for callers that don't expose
+  /// the cloud-project context (none today, but keeps it loose-coupled).
+  projectId?: string;
+  currentUid?: string;
+  currentDisplayName?: string;
+  /// Where the live project lives — 'firestore' enables the Project tab's
+  /// version + privacy controls; anything else shows a "local project"
+  /// note instead.
+  projectSource?: 'firestore' | 'local' | 'none';
 
   // Layer/contour settings, plumbed for the Layers tab.
   baseMap: BaseMap;
@@ -125,6 +137,7 @@ const TABS: Array<{ id: Tab; label: string; numbered?: number }> = [
   { id: 'barriers',  label: 'Barriers' },
   { id: 'import',    label: 'Import' },
   { id: 'settings',  label: 'Settings' },
+  { id: 'project',   label: 'Project' },
   { id: 'results',   label: 'Results' },
   { id: 'layers',    label: 'Layers' },
 ];
@@ -142,6 +155,7 @@ export function SidePanel(props: Props) {
     barriers: project.barriers.length > 0,
     import: false,
     settings: false,
+    project: false,
     results: false,
     layers: false,
   };
@@ -182,6 +196,15 @@ export function SidePanel(props: Props) {
         {tab === 'barriers' && <BarriersTab {...props} />}
         {tab === 'import' && <ImportTab {...props} />}
         {tab === 'settings' && <SettingsTab {...props} />}
+        {tab === 'project' && props.projectId && props.currentUid && (
+          <ProjectMetaPanel
+            projectId={props.projectId}
+            project={project}
+            currentUid={props.currentUid}
+            currentDisplayName={props.currentDisplayName ?? ''}
+            source={props.projectSource ?? 'none'}
+          />
+        )}
         {tab === 'results' && <ResultsTab {...props} />}
         {tab === 'layers' && <LayersTab {...props} />}
       </div>

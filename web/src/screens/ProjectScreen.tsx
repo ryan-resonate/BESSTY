@@ -1067,6 +1067,10 @@ export function ProjectScreen() {
         onFitCalcAreaToObjects={fitCalcAreaToObjects}
         grid={grid}
         onAutoFitContourBounds={autoFitContourBoundsToGrid}
+        projectId={projectId}
+        currentUid={currentUid ?? undefined}
+        currentDisplayName={authState.profile?.displayName ?? authState.user?.email ?? undefined}
+        projectSource={projectSource}
       />
       </ErrorBoundary>
 
