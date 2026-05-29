@@ -100,7 +100,11 @@ export async function createProject(
   // queries don't suffer from client clock skew.
   docData.createdAt = serverTimestamp();
   docData.updatedAt = serverTimestamp();
-  const ref = await addDoc(collection(db(), 'projects'), docData as DocumentData);
+  // Firestore rejects `undefined` values at write time, so strip them out.
+  // Common offenders for a brand-new project: calculationArea, settings,
+  // localCatalog (all optional fields on the Project interface).
+  const payload = pruneUndefined(docData as DocumentData);
+  const ref = await addDoc(collection(db(), 'projects'), payload);
   return ref.id;
 }
 

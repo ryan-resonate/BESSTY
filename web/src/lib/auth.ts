@@ -144,13 +144,19 @@ async function ensureProfileDoc(user: FirebaseUser): Promise<void> {
   // First-verified-signin: write the profile. `allowed` is set based on
   // the email-domain check. Cloud Function (when present) will overwrite
   // this with the allowlist-aware value.
+  //
+  // `flags.admin` is written explicitly as `false` (rather than an empty
+  // `flags: {}`) so the field is visible in the Firebase Console — that
+  // makes the manual bootstrap-admin step (flip the field to `true`)
+  // a one-click change instead of "add new field, type map, add child
+  // field admin, type bool, value true".
   const email = (user.email ?? '').trim();
   await setDoc(ref, {
-    email,
+    email: email.toLowerCase(),  // canonical-case so "Add by email" lookups match
     displayName: user.displayName ?? email.split('@')[0],
     createdAt: serverTimestamp(),
     allowed: isResonateEmail(email),
-    flags: {},
+    flags: { admin: false },
   });
 }
 
