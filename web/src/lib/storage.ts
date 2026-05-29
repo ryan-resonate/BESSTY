@@ -1,9 +1,10 @@
-// Local-storage project persistence. Stand-in for Firestore until the
-// back end is wired. Same shape as the eventual Firestore documents
-// (see docs/firestore-schema.md), so swap-in is mechanical.
+// Local-storage project persistence. Used as a fallback by `useProjectDoc`
+// for legacy `demo-*` IDs that predate the Firestore migration. New
+// projects always write to Firestore; this module is kept for the
+// read-side of legacy URLs and as a defence-in-depth fallback when
+// Firestore is unreachable.
 
 import type { Project, ProjectSummary } from './types';
-import { makeGpBessProject, makeTarongWfProject } from './demoProject';
 
 const INDEX_KEY = 'bessty.projects.index';
 const PROJECT_KEY = (id: string) => `bessty.projects.${id}`;
@@ -221,24 +222,7 @@ export function createProject(name: string): { id: string; project: Project } {
   return { id, project };
 }
 
-/// One-shot seed: drop in the GP BESS and Tarong WF examples on first
-/// launch so the project list isn't empty. Also runs a tiny migration
-/// step that clears the previous synthetic Mt Brown demo IF and only IF
-/// the user hasn't touched it (heuristic: still bears its seeded name).
-/// Real user projects are never touched by either branch.
-export function ensureDemoSeeded() {
-  // 1. Migration: drop the unmodified Mt Brown demo from earlier builds.
-  const mtBrown = loadProject('demo-mtbrown');
-  if (mtBrown && mtBrown.name === 'Demo project — Mt Brown') {
-    deleteProject('demo-mtbrown');
-  }
-
-  // 2. Seed each new demo only when its slot is empty — avoids stomping
-  // on user edits if they renamed/customised the demo project.
-  const seeded = (id: string, factory: () => Project) => {
-    if (loadProject(id)) return;
-    saveProject(id, factory());
-  };
-  seeded('demo-gp-bess', makeGpBessProject);
-  seeded('demo-tarong-wf', makeTarongWfProject);
-}
+// (Demo seeding lived here in the localStorage era. It has been replaced
+// by the Firestore "Seed example projects" admin button in
+// ProjectListScreen, which writes the demos to Firestore where every
+// user can see them. See web/src/lib/firestoreSeed.ts.)

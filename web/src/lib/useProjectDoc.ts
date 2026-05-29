@@ -36,6 +36,13 @@ import type { Project } from './types';
 
 export type ProjectSource = 'firestore' | 'local' | 'none';
 
+export type SaveStatus =
+  | 'idle'      // no recent save, no pending edit
+  | 'pending'   // edit made; debounced write not yet fired
+  | 'saving'    // write in flight to Firestore / localStorage
+  | 'saved'     // last write succeeded (auto-fades back to 'idle')
+  | 'error';    // last write failed (sticky until the next success)
+
 export interface RemoteUpdateNotice {
   byUid: string;
   byDisplayName?: string;
@@ -51,6 +58,11 @@ export interface UseProjectDocResult {
   /// Where this project is being persisted. 'none' = couldn't find it
   /// anywhere; the caller should navigate away.
   source: ProjectSource;
+  /// Current state of the save pipeline -- drives the UI's "Saving…" /
+  /// "Saved" badge.
+  saveStatus: SaveStatus;
+  /// Human-readable error from the last failed save, if any.
+  saveError: string | null;
   /// Set when a remote collaborator's write lands while we have unsaved
   /// local changes. Cleared by `dismissRemoteUpdate` or `reloadFromRemote`.
   remoteUpdate: RemoteUpdateNotice | null;
@@ -67,6 +79,7 @@ export interface UseProjectDocResult {
 }
 
 const DEBOUNCE_MS = 800;
+const SAVED_FADE_MS = 2000;
 
 export function useProjectDoc(
   projectId: string | undefined,
@@ -76,6 +89,8 @@ export function useProjectDoc(
   const [loading, setLoading] = useState(true);
   const [source, setSource] = useState<ProjectSource>('none');
   const [remoteUpdate, setRemoteUpdate] = useState<RemoteUpdateNotice | null>(null);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Refs for the debounce + echo-suppression machinery. Kept in refs (not
   // state) because writes shouldn't trigger re-renders.
@@ -84,6 +99,7 @@ export function useProjectDoc(
   const writeInFlightRef = useRef(false);
   const sourceRef = useRef<ProjectSource>('none');
   const firstSnapshotResolvedRef = useRef(false);
+  const savedFadeTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     sourceRef.current = source;
@@ -194,6 +210,7 @@ export function useProjectDoc(
     pendingProjectRef.current = null;
     writeTimerRef.current = null;
     writeInFlightRef.current = true;
+    setSaveStatus('saving');
     try {
       if (sourceRef.current === 'firestore') {
         await saveFirestoreProject(projectId, next, currentUid ?? '');
@@ -202,13 +219,28 @@ export function useProjectDoc(
       } else {
         // source === 'none' — don't persist
       }
+      setSaveError(null);
+      // Show "Saved" briefly, then fade back to idle if no new edits.
+      setSaveStatus('saved');
+      if (savedFadeTimerRef.current !== null) {
+        window.clearTimeout(savedFadeTimerRef.current);
+      }
+      savedFadeTimerRef.current = window.setTimeout(() => {
+        // Only fade to idle if nothing has changed in the meantime --
+        // otherwise the user typed and we're already back in pending.
+        setSaveStatus((cur) => (cur === 'saved' ? 'idle' : cur));
+      }, SAVED_FADE_MS);
     } catch (err) {
+      const msg = (err as Error)?.message ?? String(err);
       // eslint-disable-next-line no-console
       console.error('[BESSTY] save failed:', err);
+      setSaveError(msg);
+      setSaveStatus('error');
     } finally {
       writeInFlightRef.current = false;
       // If a new write came in while we were saving, re-debounce it.
       if (pendingProjectRef.current && writeTimerRef.current === null) {
+        setSaveStatus('pending');
         writeTimerRef.current = window.setTimeout(performWrite, DEBOUNCE_MS);
       }
     }
@@ -219,6 +251,11 @@ export function useProjectDoc(
     pendingProjectRef.current = next;
     if (writeTimerRef.current !== null) {
       window.clearTimeout(writeTimerRef.current);
+    }
+    // Only show 'pending' for Firestore-backed saves -- localStorage writes
+    // are synchronous and there's nothing in-flight to indicate.
+    if (sourceRef.current === 'firestore') {
+      setSaveStatus('pending');
     }
     writeTimerRef.current = window.setTimeout(performWrite, DEBOUNCE_MS);
   }, [performWrite]);
@@ -233,14 +270,30 @@ export function useProjectDoc(
     }
   }, [performWrite]);
 
-  // Flush on unmount/page-hide so navigating away doesn't lose the last
-  // ~800ms of edits.
+  // Flush on every page-lifecycle exit point we can hook:
+  //   - beforeunload: full page navigation / tab close (best-effort, no
+  //     guarantees because browsers may cut us off mid-write).
+  //   - visibilitychange (hidden): the user switched tabs or minimised.
+  //     Earlier than beforeunload on mobile / Safari, so flushes land
+  //     reliably even when the OS suspends the tab.
+  //   - effect cleanup (component unmount): in-app route changes.
   useEffect(() => {
     const handler = () => { void flushPendingSave(); };
+    const visibilityHandler = () => {
+      if (document.visibilityState === 'hidden') handler();
+    };
     window.addEventListener('beforeunload', handler);
+    document.addEventListener('visibilitychange', visibilityHandler);
     return () => {
       window.removeEventListener('beforeunload', handler);
+      document.removeEventListener('visibilitychange', visibilityHandler);
       void flushPendingSave();
+      // Cancel the "Saved" fade timer if the component unmounts while
+      // it's pending (otherwise it tries to setState on a dead component).
+      if (savedFadeTimerRef.current !== null) {
+        window.clearTimeout(savedFadeTimerRef.current);
+        savedFadeTimerRef.current = null;
+      }
     };
   }, [flushPendingSave]);
 
@@ -252,6 +305,8 @@ export function useProjectDoc(
     project,
     loading,
     source,
+    saveStatus,
+    saveError,
     remoteUpdate,
     setProject,
     flushPendingSave,

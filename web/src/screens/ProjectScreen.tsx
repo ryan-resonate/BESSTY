@@ -147,6 +147,8 @@ export function ProjectScreen() {
     loading: projectLoading,
     source: projectSource,
     setProject: persistProject,
+    saveStatus,
+    saveError,
     remoteUpdate,
     dismissRemoteUpdate,
   } = useProjectDoc(projectId, currentUid);
@@ -990,6 +992,7 @@ export function ProjectScreen() {
 
   return (
     <div className="workspace">
+      <SaveIndicator status={saveStatus} error={saveError} source={projectSource} />
       {remoteUpdate && (
         <div style={{
           position: 'fixed', top: 56, left: '50%', transform: 'translateX(-50%)',
@@ -1169,6 +1172,53 @@ export function ProjectScreen() {
           onClose={() => setShow3D(false)}
         />
       )}
+    </div>
+  );
+}
+
+// Tiny "Saving…" / "Saved" / "Save failed" pill, fixed-positioned in the
+// top-right of the workspace so it's always visible without taking up
+// chrome real estate. Hidden when there's nothing to report (idle) or
+// for legacy local projects (writes are synchronous, no async state to
+// surface).
+function SaveIndicator({
+  status, error, source,
+}: {
+  status: 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+  error: string | null;
+  source: 'firestore' | 'local' | 'none';
+}) {
+  if (source !== 'firestore') return null;
+  if (status === 'idle') return null;
+
+  const styles: Record<string, { bg: string; fg: string; border: string }> = {
+    pending: { bg: '#fef3c7', fg: '#78350f', border: '#f59e0b' },
+    saving:  { bg: '#fef3c7', fg: '#78350f', border: '#f59e0b' },
+    saved:   { bg: 'rgba(16, 185, 129, 0.12)', fg: '#047857', border: 'rgba(16, 185, 129, 0.4)' },
+    error:   { bg: 'rgba(239, 68, 68, 0.10)', fg: '#dc2626', border: 'rgba(239, 68, 68, 0.4)' },
+  };
+  const s = styles[status];
+  const label =
+    status === 'pending' ? 'Editing…' :
+    status === 'saving'  ? 'Saving…' :
+    status === 'saved'   ? 'Saved' :
+    'Save failed';
+
+  return (
+    <div
+      role="status"
+      title={status === 'error' && error ? error : undefined}
+      style={{
+        position: 'fixed', top: 56, right: 16, zIndex: 9998,
+        background: s.bg, color: s.fg,
+        border: `1px solid ${s.border}`,
+        padding: '4px 10px', borderRadius: 999,
+        fontSize: 11, fontWeight: 600, letterSpacing: '0.02em',
+        boxShadow: '0 2px 6px rgba(0,0,0,0.06)',
+        userSelect: 'none', pointerEvents: status === 'error' ? 'auto' : 'none',
+      }}
+    >
+      {label}
     </div>
   );
 }
