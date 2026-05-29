@@ -10,6 +10,11 @@ import { ProjectMetaPanel } from './ProjectMetaPanel';
 import { EpsgPicker } from './EpsgPicker';
 import { NumericInput } from './NumericInput';
 import { inferGeoTiffCrs, parseDemGeoTiff } from '../lib/demUpload';
+import {
+  DEM_MAX_BYTES,
+  deleteProjectDem,
+  uploadProjectDem,
+} from '../lib/firestoreStorage';
 import { presetForEpsg } from '../lib/projections';
 import {
   defaultFilenameStem,
@@ -842,16 +847,34 @@ function ImportTab(props: Props) {
 
   // Two-step DEM upload: (1) user picks file → we sniff the CRS and stash
   // the file for confirmation; (2) user confirms / overrides the CRS and
-  // hits "Use this DEM" → we actually parse the raster.
+  // hits "Use this DEM" → we actually parse the raster. Then for cloud
+  // projects we also upload to Firebase Storage so the DEM persists.
   const [demFile, setDemFile] = useState<File | null>(null);
   const [demEpsg, setDemEpsg] = useState<number>(4326);
   const [demInferredEpsg, setDemInferredEpsg] = useState<number | null>(null);
   const [demBusy, setDemBusy] = useState(false);
   const [demError, setDemError] = useState<string | null>(null);
-  const [demName, setDemName] = useState<string | null>(null);
+  const [demName, setDemName] = useState<string | null>(
+    project.dem?.filename ?? null,
+  );
+  const [demUploadProgress, setDemUploadProgress] = useState<number | null>(null);
+
+  // Keep the display name in sync when the project doc updates from a
+  // remote source (collaborator uploaded a DEM in another tab).
+  useEffect(() => {
+    if (project.dem?.filename) setDemName(project.dem.filename);
+  }, [project.dem?.filename]);
 
   async function pickDemFile(file: File) {
     setDemError(null);
+    if (file.size > DEM_MAX_BYTES) {
+      setDemError(
+        `DEM is ${(file.size / 1024 / 1024).toFixed(1)} MB; max is ` +
+        `${(DEM_MAX_BYTES / 1024 / 1024).toFixed(0)} MB. ` +
+        `Re-export at a coarser resolution or smaller area.`,
+      );
+      return;
+    }
     setDemFile(file);
     try {
       const inferred = await inferGeoTiffCrs(file);
@@ -870,12 +893,56 @@ function ImportTab(props: Props) {
     if (!demFile) return;
     setDemError(null);
     setDemBusy(true);
+    setDemUploadProgress(null);
     try {
+      // Parse first so we fail fast on bad/corrupt GeoTIFFs without
+      // having uploaded a useless file to Storage.
       const dem = await parseDemGeoTiff(demFile, { epsgOverride: demEpsg });
       setDem(dem, 'upload');
       setDemName(demFile.name);
+
+      // Persist to Firebase Storage if this is a cloud-backed project.
+      // Local-only projects keep the in-memory DEM but skip the upload
+      // -- they can't reference a Storage path from a non-Firestore doc.
+      if (props.projectSource === 'firestore' && props.projectId && props.currentUid) {
+        try {
+          setDemUploadProgress(0);
+          const meta = await uploadProjectDem(
+            props.projectId,
+            demFile,
+            { onProgress: (frac) => setDemUploadProgress(frac) },
+          );
+          // If there was a previous DEM at a different path, clean it up
+          // so we don't leak storage. Fire-and-forget; the rules already
+          // gate this to project editors.
+          const oldPath = project.dem?.storagePath;
+          if (oldPath && oldPath !== meta.storagePath) {
+            void deleteProjectDem(oldPath).catch(() => {});
+          }
+          setProject({
+            ...project,
+            dem: {
+              storagePath: meta.storagePath,
+              filename: meta.filename,
+              sizeBytes: meta.sizeBytes,
+              epsg: demEpsg,
+              uploadedAt: new Date().toISOString(),
+              uploadedByUid: props.currentUid,
+            },
+          });
+        } catch (uploadErr) {
+          // Upload failed but the in-memory DEM works for this session.
+          // Surface a warning but don't reject the parse.
+          setDemError(
+            `DEM loaded for this session but cloud save failed: ${String(uploadErr)}. ` +
+            `Other users won't see this DEM until the upload succeeds.`,
+          );
+        }
+      }
+
       setDemFile(null);
       setDemInferredEpsg(null);
+      setDemUploadProgress(null);
     } catch (e) {
       setDemError(String(e));
     }
@@ -927,9 +994,29 @@ function ImportTab(props: Props) {
               />
             </label>
             {demSource === 'upload' && (
-              <button className="btn small" onClick={() => { setDem(null, 'auto'); setDemName(null); }}>
+              <button className="btn small" onClick={() => {
+                setDem(null, 'auto');
+                setDemName(null);
+                // Also clear the persisted DEM reference (and storage object).
+                if (project.dem) {
+                  const oldPath = project.dem.storagePath;
+                  const { dem: _drop, ...rest } = project;
+                  setProject(rest as Project);
+                  void deleteProjectDem(oldPath).catch(() => {});
+                }
+              }}>
                 Reset to auto
               </button>
+            )}
+            {demUploadProgress != null && (
+              <div className="hint" style={{ marginTop: 6 }}>
+                Uploading DEM to cloud… {Math.round(demUploadProgress * 100)}%
+              </div>
+            )}
+            {project.dem && demSource === 'upload' && demUploadProgress == null && (
+              <div className="hint" style={{ marginTop: 6, color: 'var(--ink-soft, #475569)' }}>
+                Cloud-saved · {(project.dem.sizeBytes / 1024 / 1024).toFixed(1)} MB
+              </div>
             )}
           </div>
         ) : (

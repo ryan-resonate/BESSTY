@@ -1,0 +1,71 @@
+rules_version = '2';
+
+// BESSTY (rc-beesty) Firebase Storage rules.
+//
+// Currently only used for per-project DEM uploads at
+// `projects/{projectId}/dem/{filename}`. Access mirrors the Firestore
+// project's read/write semantics: anyone who can see the project doc
+// can read the DEM; anyone who can edit the project doc can upload /
+// replace it; only owners + admins can effectively delete (by
+// deleting the project, or by uploading a replacement which we then
+// clean up client-side).
+//
+// Hard 200 MB cap per upload, enforced server-side as a second line
+// of defence beyond the client-side check in firestoreStorage.ts.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && firestore.exists(/databases/(default)/documents/users/$(request.auth.uid))
+        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid))
+            .data.flags.admin == true;
+    }
+
+    function project(projectId) {
+      return firestore.get(/databases/(default)/documents/projects/$(projectId)).data;
+    }
+
+    function canReadProject(projectId) {
+      let p = project(projectId);
+      return signedIn() && (
+        p.visibility == 'public' ||
+        request.auth.uid == p.ownerUid ||
+        (p.allowedUserIds is list && request.auth.uid in p.allowedUserIds) ||
+        isAdmin()
+      );
+    }
+
+    function canEditProject(projectId) {
+      let p = project(projectId);
+      return signedIn() && (
+        request.auth.uid == p.ownerUid ||
+        (p.allowedUserIds is list && request.auth.uid in p.allowedUserIds) ||
+        isAdmin()
+      );
+    }
+
+    // ===== Project DEMs =====
+    match /projects/{projectId}/dem/{filename} {
+      allow read: if canReadProject(projectId);
+
+      // Upload: writer-level access AND under the 200 MB cap.
+      allow write: if canEditProject(projectId)
+        && request.resource.size < 200 * 1024 * 1024;
+
+      // Delete: writer-level (covers the "replace DEM" flow that
+      // deletes the old object after the new one uploads).
+      allow delete: if canEditProject(projectId);
+    }
+
+    // ===== Default: deny =====
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

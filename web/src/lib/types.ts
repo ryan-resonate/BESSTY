@@ -250,6 +250,33 @@ export interface Project {
   /// Project-local catalog of source models. Independent of the global
   /// catalog: entries can be in either, both, or just one.
   localCatalog?: CatalogEntry[];
+
+  /// User-uploaded DEM, persisted to Firebase Storage.
+  ///
+  /// When present, the project editor auto-downloads the file from
+  /// Storage on open and parses it into a DemRaster (replacing the
+  /// auto-loaded AWS Terrain Tiles for the area). When absent, the
+  /// project falls back to AWS tiles.
+  ///
+  /// The raster bytes themselves are NEVER stored in the project doc --
+  /// only this reference. Keeps the project under Firestore's 1 MB doc
+  /// limit even for users who upload very detailed DEMs.
+  dem?: {
+    /// Path within the default Storage bucket.
+    /// Format: `projects/{projectId}/dem/{timestamp}-{filename}`.
+    storagePath: string;
+    /// Original filename (e.g. "site-DEM-5m.tif"). For display only.
+    filename: string;
+    /// Original size in bytes. Used by the loading indicator + by the
+    /// upload size cap (currently 200 MB).
+    sizeBytes: number;
+    /// EPSG override the user picked at upload time, if any. Replays
+    /// the user's CRS choice when re-parsing -- otherwise we'd have to
+    /// re-prompt every time the project opens.
+    epsg?: number;
+    uploadedAt: string;          // ISO 8601
+    uploadedByUid: string;
+  };
 }
 
 // =================== Catalog ===================

@@ -25,6 +25,8 @@ import {
 } from '../lib/solver';
 import { useAuthState } from '../lib/auth';
 import { useProjectDoc } from '../lib/useProjectDoc';
+import { parseDemGeoTiff } from '../lib/demUpload';
+import { downloadProjectDem } from '../lib/firestoreStorage';
 import type { Barrier, Project, Receiver, Source, SourceKind } from '../lib/types';
 
 let nextId = 1000;
@@ -457,9 +459,12 @@ export function ProjectScreen() {
 
   // Auto-load DEM for the project area on first load. Re-load when the calc
   // area changes significantly (handled via demStatus reset on area edit).
-  // Skipped entirely when the user has supplied their own GeoTIFF.
+  // Skipped when the user has supplied their own GeoTIFF in this session OR
+  // when the project has a Firebase-Storage-persisted DEM that the effect
+  // below is responsible for downloading.
   useEffect(() => {
     if (!project || demStatus !== 'idle' || demSource === 'upload') return;
+    if (persistedProject?.dem) return;   // saved DEM takes over via the next effect
     const ca = project.calculationArea;
     if (!ca) return;
     setDemStatus('loading');
@@ -472,7 +477,39 @@ export function ProjectScreen() {
     loadDemForBounds(sw, ne)
       .then((r) => { setDem(r); setDemStatus('ready'); })
       .catch((e) => { console.warn('DEM load failed (continuing flat-ground):', e); setDemStatus('error'); });
-  }, [project, demStatus, demSource]);
+  }, [project, demStatus, demSource, persistedProject?.dem]);
+
+  // Auto-download a previously persisted DEM from Firebase Storage on
+  // project open (or when the persisted DEM reference changes -- e.g. a
+  // collaborator uploaded a different one). Uses a generation counter
+  // to discard stale responses if the user uploads a new DEM mid-
+  // download or navigates away.
+  const demLoadGenRef = useRef(0);
+  useEffect(() => {
+    const persistedDem = persistedProject?.dem;
+    if (!persistedDem) return;
+    // Already have this exact one loaded? Skip.
+    if (demSource === 'upload' && dem != null) {
+      const cur = (dem as DemRaster & { source?: string }).source;
+      if (cur === persistedDem.filename) return;
+    }
+    const gen = ++demLoadGenRef.current;
+    void (async () => {
+      setDemStatus('loading');
+      try {
+        const file = await downloadProjectDem(persistedDem.storagePath, persistedDem.filename);
+        if (gen !== demLoadGenRef.current) return;
+        const parsed = await parseDemGeoTiff(file, { epsgOverride: persistedDem.epsg });
+        if (gen !== demLoadGenRef.current) return;
+        setDemAndSource(parsed, 'upload');
+        setDemStatus('ready');
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[BESSTY] saved DEM download failed:', err);
+        setDemStatus('error');
+      }
+    })();
+  }, [persistedProject?.dem?.storagePath, persistedProject?.dem?.filename, persistedProject?.dem?.epsg, dem, demSource]);
 
   // Project state changes are split into two reactive surfaces:
   //

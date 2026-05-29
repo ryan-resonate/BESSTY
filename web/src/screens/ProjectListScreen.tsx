@@ -19,10 +19,12 @@ import { useAuthState } from '../lib/auth';
 import {
   createProject,
   deleteProject,
+  getProject,
   subscribeToAllAccessibleProjects,
   subscribeToMyProjects,
   type ProjectListItem,
 } from '../lib/firestoreProjects';
+import { deleteProjectDem } from '../lib/firestoreStorage';
 import { seedExampleProjects } from '../lib/firestoreSeed';
 
 type Tab = 'all' | 'mine';
@@ -85,6 +87,25 @@ export function ProjectListScreen() {
     e.preventDefault(); e.stopPropagation();
     if (!confirm(`Delete project "${item.name}"? This cannot be undone.`)) return;
     try {
+      // Best-effort: clean up the project's Firebase Storage objects
+      // BEFORE deleting the Firestore doc. The Storage rules gate this
+      // on having edit access to the project, so once the doc is gone
+      // the storage delete would be denied. A Blaze Cloud Function
+      // (functions/src/index.ts onProjectDelete -- TODO when on Blaze)
+      // would handle this server-side independently of the rule check.
+      try {
+        const full = await getProject(item.id);
+        if (full?.dem?.storagePath) {
+          await deleteProjectDem(full.dem.storagePath);
+        }
+      } catch (cleanupErr) {
+        // Storage cleanup failed (offline, permission issue, race) -- log
+        // and continue with the project delete. Orphan storage objects
+        // are a leak we can clean up out-of-band; not worth blocking
+        // the user's primary intent.
+        // eslint-disable-next-line no-console
+        console.warn('[BESSTY] failed to clean up project Storage objects:', cleanupErr);
+      }
       await deleteProject(item.id);
     } catch (err) {
       setError((err as Error).message);
