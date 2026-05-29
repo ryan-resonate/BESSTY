@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>BESSTY · BESS group creator — mockup</title>
+  <meta name="viewport" content="width=1400">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #1f2937;
+      --ink-soft: #374151;
+      --mid: #6b7280;
+      --light: #d9dde2;
+      --paper: #ffffff;
+      --paper-2: #f5f7fa;
+      --slate-1: #eef1f5;
+      --yellow: #f2cb00;
+      --yellow-soft: #fff4b3;
+      --red: #d32f2f;
+      --green: #2e7d32;
+      --amber: #f59e0b;
+      --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.05);
+      --shadow-2: 0 4px 12px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.06);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--paper-2); color: var(--ink);
+      font-family: 'Inter', system-ui, sans-serif; font-size: 14px;
+      -webkit-font-smoothing: antialiased; font-feature-settings: 'cv11';
+    }
+    .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+    /* ===== Page layout ===== */
+    .page { max-width: 1400px; margin: 0 auto; padding: 32px 24px 80px; }
+    .page-title {
+      font-size: 22px; font-weight: 700; margin: 0 0 4px;
+      letter-spacing: -0.01em;
+    }
+    .page-subtitle { color: var(--mid); margin: 0 0 6px; font-size: 13px; }
+    .scene-tag {
+      display: inline-block; padding: 2px 10px; font-size: 11px; font-weight: 600;
+      background: var(--yellow); color: var(--ink); border-radius: 99px;
+      letter-spacing: 0.06em; text-transform: uppercase;
+    }
+    .scene { margin-top: 32px; }
+    .scene h2 { font-size: 16px; font-weight: 600; margin: 0 0 10px; }
+    .scene .scene-note {
+      color: var(--mid); font-size: 12px; max-width: 800px; line-height: 1.5;
+      margin: 0 0 14px;
+    }
+
+    /* ===== Scene 1: wizard modal ===== */
+    .modal-frame {
+      background: var(--paper); border: 1px solid var(--light); border-radius: 10px;
+      box-shadow: var(--shadow-2); overflow: hidden;
+      display: grid; grid-template-columns: 1fr 460px; min-height: 600px;
+    }
+    .modal-header {
+      grid-column: 1 / -1;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 20px; border-bottom: 1px solid var(--light);
+      background: var(--paper);
+    }
+    .modal-header h3 { margin: 0; font-size: 15px; font-weight: 600; }
+    .modal-header .x { background: none; border: none; font-size: 18px; color: var(--mid); cursor: pointer; }
+
+    .form-col { padding: 16px 20px 20px; border-right: 1px solid var(--light); overflow: auto; max-height: 720px; }
+    .preview-col { background: var(--slate-1); padding: 16px 20px; overflow: auto; max-height: 720px; }
+
+    .section { margin-bottom: 18px; }
+    .section h4 {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+      color: var(--ink-soft); margin: 0 0 8px; display: flex; align-items: center; gap: 8px;
+    }
+    .section h4 .badge {
+      background: var(--slate-1); padding: 1px 6px; border-radius: 99px;
+      font-size: 10px; color: var(--mid); font-weight: 500;
+    }
+
+    label.field { display: block; margin-bottom: 8px; }
+    label.field > span { display: block; font-size: 11px; color: var(--ink-soft); font-weight: 600; margin-bottom: 3px; }
+    input[type=text], input[type=number], select {
+      width: 100%; padding: 7px 10px; border: 1px solid var(--light); border-radius: 5px;
+      background: var(--paper); color: var(--ink); font-size: 13px; outline: none;
+    }
+    input[type=number] { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
+    input:focus, select:focus { border-color: var(--ink); }
+    .row { display: flex; gap: 8px; }
+    .row > * { flex: 1; }
+
+    /* Rotation dial */
+    .rot-dial {
+      width: 70px; height: 70px; border-radius: 50%;
+      border: 2px solid var(--light); position: relative;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .rot-dial::after {
+      content: ''; position: absolute; left: 50%; top: 4px;
+      width: 2px; height: 30px; background: var(--ink);
+      transform-origin: bottom; transform: translateX(-50%) rotate(35deg);
+    }
+    .rot-dial .deg { font-size: 11px; color: var(--ink-soft); font-family: 'JetBrains Mono', monospace; }
+
+    /* Row sequence editor */
+    .row-list { display: flex; flex-direction: column; gap: 8px; }
+    .row-card {
+      border: 1px solid var(--light); border-radius: 6px; background: var(--paper);
+      overflow: hidden;
+    }
+    .row-card.active { border-color: var(--ink); box-shadow: var(--shadow-1); }
+    .row-card-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px; background: var(--slate-1); border-bottom: 1px solid var(--light);
+      cursor: pointer;
+    }
+    .row-card-header .drag { color: var(--mid); cursor: grab; font-size: 14px; }
+    .row-card-header .title { flex: 1; font-weight: 600; font-size: 13px; }
+    .row-card-header .summary { font-size: 11px; color: var(--mid); font-family: 'JetBrains Mono', monospace; }
+    .row-card-body { padding: 10px 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .row-card-body .full { grid-column: 1 / -1; }
+    .row-card-body .pattern {
+      display: flex; gap: 4px; align-items: center; flex-wrap: wrap;
+      padding: 6px 8px; background: var(--slate-1); border-radius: 4px;
+      font-size: 12px; min-height: 36px;
+    }
+    .unit-chip {
+      display: inline-flex; align-items: center; gap: 3px;
+      padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 500;
+      background: var(--paper); border: 1px solid var(--light);
+    }
+    .unit-chip.bess  { background: #dbeafe; border-color: #93c5fd; color: #1e3a8a; }
+    .unit-chip.inv   { background: #fed7aa; border-color: #fdba74; color: #7c2d12; }
+    .unit-chip.tx    { background: #fce7f3; border-color: #f9a8d4; color: #831843; }
+    .pattern-repeat {
+      margin-left: auto; padding: 2px 8px; background: var(--yellow); color: var(--ink);
+      font-weight: 600; border-radius: 99px; font-size: 11px;
+    }
+    .row-card-actions {
+      display: flex; gap: 4px; justify-content: flex-end;
+      padding: 6px 10px; border-top: 1px solid var(--light); background: #fafbfc;
+    }
+
+    /* Buttons */
+    .btn {
+      padding: 7px 14px; border-radius: 5px; border: 1px solid var(--light);
+      background: var(--paper); color: var(--ink); font-size: 13px; font-weight: 500;
+      cursor: pointer;
+    }
+    .btn.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+    .btn.small { padding: 4px 10px; font-size: 12px; }
+    .btn.tiny { padding: 2px 8px; font-size: 11px; }
+    .btn.ghost { background: transparent; border-color: transparent; color: var(--ink-soft); }
+    .btn.danger { color: var(--red); }
+    .btn-add-row {
+      width: 100%; padding: 10px; border: 1px dashed var(--light); border-radius: 6px;
+      background: transparent; color: var(--mid); font-size: 13px; font-weight: 500;
+      cursor: pointer; margin-top: 6px;
+    }
+    .btn-add-row:hover { color: var(--ink); border-color: var(--ink-soft); }
+
+    /* Summary tile */
+    .summary-tile {
+      background: var(--yellow-soft); border: 1px solid var(--yellow);
+      padding: 10px 12px; border-radius: 6px; font-size: 12px; line-height: 1.6;
+    }
+    .summary-tile .stat { display: flex; justify-content: space-between; align-items: baseline; }
+    .summary-tile .stat .val { font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+
+    /* Preview SVG */
+    .preview-shell {
+      position: sticky; top: 0;
+    }
+    .preview-shell h4 { font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--ink-soft); margin: 0 0 8px; }
+    .preview-canvas {
+      width: 100%; aspect-ratio: 1 / 0.9;
+      background: var(--paper); border: 1px solid var(--light); border-radius: 6px;
+      box-shadow: var(--shadow-1); overflow: hidden;
+    }
+    .preview-legend {
+      margin-top: 10px; display: flex; flex-wrap: wrap; gap: 12px;
+      font-size: 11px; color: var(--ink-soft);
+    }
+    .preview-legend .swatch {
+      display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+      vertical-align: middle; margin-right: 4px;
+    }
+
+    /* Footer */
+    .modal-footer {
+      grid-column: 1 / -1;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 20px; border-top: 1px solid var(--light); background: #fafbfc;
+    }
+    .modal-footer .info { color: var(--mid); font-size: 12px; }
+    .modal-footer .actions { display: flex; gap: 8px; }
+
+    /* ===== Scene 2: on-map view ===== */
+    .map-frame {
+      background: #e8efe8; border: 1px solid var(--light); border-radius: 10px;
+      box-shadow: var(--shadow-2); overflow: hidden;
+      height: 540px; position: relative;
+      background-image:
+        linear-gradient(45deg, rgba(0,0,0,0.025) 25%, transparent 25%),
+        linear-gradient(-45deg, rgba(0,0,0,0.025) 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, rgba(0,0,0,0.025) 75%),
+        linear-gradient(-45deg, transparent 75%, rgba(0,0,0,0.025) 75%);
+      background-size: 40px 40px;
+      background-position: 0 0, 0 20px, 20px -20px, -20px 0;
+    }
+    .map-callout {
+      position: absolute;
+      background: var(--paper); padding: 8px 10px; border-radius: 6px;
+      font-size: 11px; box-shadow: var(--shadow-2);
+      border: 1px solid var(--light);
+      max-width: 260px;
+    }
+    .map-callout .arrow {
+      position: absolute; width: 0; height: 0;
+    }
+    .map-callout strong { display: block; font-size: 11px; margin-bottom: 2px; }
+    .map-callout .hint { color: var(--mid); }
+
+    /* Right-click menu */
+    .ctx-menu {
+      position: absolute; background: var(--paper); border-radius: 6px;
+      box-shadow: var(--shadow-2); padding: 4px 0; min-width: 200px;
+      border: 1px solid var(--light); z-index: 50;
+    }
+    .ctx-menu .item { padding: 7px 14px; font-size: 13px; cursor: pointer; display: flex; justify-content: space-between; }
+    .ctx-menu .item:hover { background: var(--slate-1); }
+    .ctx-menu .item .kbd { color: var(--mid); font-size: 11px; }
+    .ctx-menu hr { border: none; border-top: 1px solid var(--light); margin: 4px 0; }
+    .ctx-menu .item.danger { color: var(--red); }
+
+    /* Map button (the "+ BESS group" entry point) */
+    .top-bar {
+      display: flex; gap: 8px; padding: 10px 14px; background: var(--paper);
+      border: 1px solid var(--light); border-radius: 8px; margin-bottom: 18px;
+      align-items: center; box-shadow: var(--shadow-1);
+    }
+    .top-bar .label { color: var(--mid); font-size: 12px; margin-right: auto; }
+  </style>
+</head>
+<body>
+
+<div class="page">
+
+  <p class="scene-tag">Mockup · BESSTY · BESS group creator</p>
+  <h1 class="page-title">BESS group / array creator</h1>
+  <p class="page-subtitle">
+    Two scenes below: (1) the wizard modal that opens when the user clicks
+    <strong>+ BESS group</strong>, and (2) the on-map representation of a placed
+    group with the rotation + drag affordances. Static mockup — no working
+    code; meant for a design pass before we lock in the data model.
+  </p>
+
+  <!-- ============================================================ -->
+  <!-- Scene 1: the wizard modal                                     -->
+  <!-- ============================================================ -->
+  <section class="scene">
+    <h2>Scene 1 · Wizard modal</h2>
+    <p class="scene-note">
+      Opens on <em>+ BESS group</em> (a new button in the Sources tab next to
+      "+ BESS"). Also re-opens via <em>Edit group</em> in the right-click menu
+      shown in Scene 2.
+      Left half = parametric form (the "row sequence"); right half = live
+      top-down preview of what the layout will materialise as.
+      Each "Row" in the sequence is one horizontal line of units; rows execute
+      top-to-bottom in the group's local coords (rotation applies to the
+      whole thing). Each row has a <strong>pattern</strong> (e.g. "BESS BESS BESS Inverter")
+      and a <strong>repeat count</strong> for that pattern within the row, plus its
+      own <strong>gap-after</strong> to the next row — so "two close rows, then a wide
+      gap, then two more rows" is just a different gap-after on each row.
+    </p>
+
+    <div class="modal-frame">
+      <header class="modal-header">
+        <h3>BESS group — New</h3>
+        <button class="x">×</button>
+      </header>
+
+      <!-- ----- Left: form ----- -->
+      <div class="form-col">
+
+        <div class="section">
+          <h4>General</h4>
+          <label class="field">
+            <span>Group name</span>
+            <input type="text" value="GP BESS — Stage 2 east">
+          </label>
+          <div class="row">
+            <label class="field">
+              <span>Origin (anchor corner)</span>
+              <input type="text" class="mono" value="-25.3812, 152.4106">
+            </label>
+            <label class="field" style="flex: 0 0 100px;">
+              <span>Rotation</span>
+              <div style="display: flex; gap: 6px; align-items: center;">
+                <input type="number" value="35" step="1" style="width: 60px;">
+                <span style="font-size: 11px; color: var(--mid);">°</span>
+              </div>
+            </label>
+            <div class="rot-dial" title="Drag to rotate"><span class="deg">35°</span></div>
+          </div>
+          <p class="scene-note" style="margin: 4px 0 0; font-size: 11px;">
+            Anchor corner is the top-left of the unrotated layout. Click on the
+            map to set; rotation applies clockwise from north.
+          </p>
+        </div>
+
+        <div class="section">
+          <h4>Row sequence <span class="badge">3 rows · 24 units · 168 m × 18 m</span></h4>
+
+          <div class="row-list">
+            <!-- Row 1: BESS pattern -->
+            <div class="row-card active">
+              <div class="row-card-header">
+                <span class="drag">⋮⋮</span>
+                <span class="title">Row 1</span>
+                <span class="summary">8 × BESS · gap 2 m</span>
+              </div>
+              <div class="row-card-body">
+                <div class="full" style="font-size: 11px; color: var(--ink-soft); font-weight: 600;">Pattern · repeats inside the row</div>
+                <div class="pattern full">
+                  <span class="unit-chip bess">B · Megapack 2 XL</span>
+                  <span class="pattern-repeat">× 8</span>
+                  <button class="btn ghost tiny" style="margin-left: 6px;">+ add unit</button>
+                </div>
+                <label class="field" style="margin: 0;">
+                  <span>Spacing within row (m)</span>
+                  <input type="number" value="1.5" step="0.1">
+                </label>
+                <label class="field" style="margin: 0;">
+                  <span>Gap after this row (m)</span>
+                  <input type="number" value="2" step="0.1">
+                </label>
+              </div>
+              <div class="row-card-actions">
+                <button class="btn ghost tiny">⧉ duplicate</button>
+                <button class="btn ghost tiny danger">✕ remove</button>
+              </div>
+            </div>
+
+            <!-- Row 2: BESS + inverter -->
+            <div class="row-card">
+              <div class="row-card-header">
+                <span class="drag">⋮⋮</span>
+                <span class="title">Row 2</span>
+                <span class="summary">8 × BESS + 2 × INV · gap 8 m</span>
+              </div>
+              <div class="row-card-body">
+                <div class="full" style="font-size: 11px; color: var(--ink-soft); font-weight: 600;">Pattern · repeats inside the row</div>
+                <div class="pattern full">
+                  <span class="unit-chip bess">B · Megapack 2 XL</span>
+                  <span class="unit-chip bess">B · Megapack 2 XL</span>
+                  <span class="unit-chip bess">B · Megapack 2 XL</span>
+                  <span class="unit-chip bess">B · Megapack 2 XL</span>
+                  <span class="unit-chip inv">I · Sungrow SG3300</span>
+                  <span class="pattern-repeat">× 2</span>
+                  <button class="btn ghost tiny" style="margin-left: 6px;">+ add unit</button>
+                </div>
+                <label class="field" style="margin: 0;">
+                  <span>Spacing within row (m)</span>
+                  <input type="number" value="1.5" step="0.1">
+                </label>
+                <label class="field" style="margin: 0;">
+                  <span>Gap after this row (m)</span>
+                  <input type="number" value="8" step="0.1">
+                </label>
+              </div>
+              <div class="row-card-actions">
+                <button class="btn ghost tiny">⧉ duplicate</button>
+                <button class="btn ghost tiny danger">✕ remove</button>
+              </div>
+            </div>
+
+            <!-- Row 3: BESS pattern -->
+            <div class="row-card">
+              <div class="row-card-header">
+                <span class="drag">⋮⋮</span>
+                <span class="title">Row 3</span>
+                <span class="summary">8 × BESS · last row</span>
+              </div>
+              <div class="row-card-body" style="display: none;"></div>
+            </div>
+          </div>
+
+          <button class="btn-add-row">+ Add row</button>
+        </div>
+
+        <div class="section">
+          <h4>Summary</h4>
+          <div class="summary-tile">
+            <div class="stat"><span>BESS units</span><span class="val">24</span></div>
+            <div class="stat"><span>Inverters</span><span class="val">2</span></div>
+            <div class="stat"><span>Bounding box</span><span class="val">15 m × 18 m</span></div>
+            <div class="stat"><span>Approx footprint</span><span class="val">270 m²</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ----- Right: live preview ----- -->
+      <div class="preview-col">
+        <div class="preview-shell">
+          <h4>Layout preview · top-down</h4>
+          <div class="preview-canvas">
+            <svg viewBox="0 0 420 380" width="100%" height="100%">
+              <!-- subtle gridlines -->
+              <defs>
+                <pattern id="g" width="20" height="20" patternUnits="userSpaceOnUse">
+                  <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#eef1f5" stroke-width="0.5"/>
+                </pattern>
+              </defs>
+              <rect width="420" height="380" fill="url(#g)"/>
+
+              <!-- rotated group (rotation = 35deg around top-left) -->
+              <g transform="translate(60 70) rotate(20)">
+                <!-- bounding box -->
+                <rect x="-4" y="-4" width="328" height="68" fill="none" stroke="#1f2937" stroke-width="1" stroke-dasharray="4 3" opacity="0.4"/>
+
+                <!-- Row 1: 8 BESS in a line, 1.5 m spacing (px scale 8x => 12px gap) -->
+                <g>
+                  <rect x="0"   y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="42"  y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="84"  y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="126" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="168" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="210" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="252" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="294" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                </g>
+
+                <!-- Row 2: 8 BESS + 2 INV interspersed -->
+                <g transform="translate(0 28)">
+                  <rect x="0"   y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="42"  y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="84"  y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="126" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="168" y="0" width="18" height="22" rx="2" fill="#fed7aa" stroke="#7c2d12" stroke-width="0.8"/>
+                  <rect x="196" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="238" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="280" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="322" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="364" y="0" width="18" height="22" rx="2" fill="#fed7aa" stroke="#7c2d12" stroke-width="0.8"/>
+                </g>
+
+                <!-- Row 3 (after wider gap): 8 BESS -->
+                <g transform="translate(0 78)">
+                  <rect x="0"   y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="42"  y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="84"  y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="126" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="168" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="210" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="252" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                  <rect x="294" y="0" width="32" height="22" rx="2" fill="#dbeafe" stroke="#1e3a8a" stroke-width="0.8"/>
+                </g>
+
+                <!-- anchor corner pin -->
+                <circle cx="0" cy="0" r="4" fill="#f2cb00" stroke="#1f2937" stroke-width="1"/>
+              </g>
+
+              <!-- north arrow -->
+              <g transform="translate(380 30)">
+                <line x1="0" y1="20" x2="0" y2="-12" stroke="#1f2937" stroke-width="1.5"/>
+                <polygon points="-4,-10 0,-18 4,-10" fill="#1f2937"/>
+                <text x="0" y="32" text-anchor="middle" font-size="9" font-family="Inter" fill="#374151">N</text>
+              </g>
+            </svg>
+          </div>
+          <div class="preview-legend">
+            <span><span class="swatch" style="background: #dbeafe; border: 1px solid #1e3a8a;"></span>BESS</span>
+            <span><span class="swatch" style="background: #fed7aa; border: 1px solid #7c2d12;"></span>Inverter</span>
+            <span><span class="swatch" style="background: #fce7f3; border: 1px solid #831843;"></span>Transformer</span>
+            <span><span class="swatch" style="background: #f2cb00; border: 1px solid #1f2937;"></span>Anchor corner</span>
+          </div>
+        </div>
+      </div>
+
+      <footer class="modal-footer">
+        <div class="info">Press <kbd style="background: var(--slate-1); padding: 1px 5px; border-radius: 3px; font-size: 11px; font-family: 'JetBrains Mono', monospace;">Esc</kbd> to cancel</div>
+        <div class="actions">
+          <button class="btn">Cancel</button>
+          <button class="btn primary">Apply group · 26 sources</button>
+        </div>
+      </footer>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- Scene 2: on-map view                                          -->
+  <!-- ============================================================ -->
+  <section class="scene">
+    <h2>Scene 2 · On-map view (placed group, selected)</h2>
+    <p class="scene-note">
+      Once applied, the group appears on the map as a translucent bounding
+      rectangle with the individual units inside. When the group is selected:
+      a rotation handle floats above the top edge, a translate handle sits in
+      the middle, and corner handles let you scale the row spacing
+      proportionally (alt-drag for free corners). Right-click anywhere on the
+      group opens the contextual menu shown. Double-clicking the group
+      re-opens the wizard from Scene 1 with the saved parameters.
+    </p>
+
+    <div class="top-bar">
+      <span class="label">Sources tab — top buttons</span>
+      <button class="btn small">+ Single BESS</button>
+      <button class="btn small primary">+ BESS group</button>
+      <button class="btn small">+ Auxiliary</button>
+      <button class="btn small">+ WTG</button>
+    </div>
+
+    <div class="map-frame">
+
+      <!-- Rendered group, selected -->
+      <svg viewBox="0 0 1200 540" width="100%" height="100%" style="position: absolute; inset: 0;">
+        <!-- bounding rect (selected = solid yellow stroke + drop shadow) -->
+        <g transform="translate(380 220) rotate(20)">
+          <rect x="-10" y="-10" width="430" height="100" rx="3"
+                fill="rgba(242, 203, 0, 0.10)" stroke="#1f2937" stroke-width="1" stroke-dasharray="0"/>
+
+          <!-- Row 1 -->
+          <g transform="translate(0 0)">
+            <rect x="0"   y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="52"  y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="104" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="156" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="208" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="260" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="312" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="364" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+          </g>
+          <!-- Row 2 -->
+          <g transform="translate(0 36)">
+            <rect x="0"   y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="52"  y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="104" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="156" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="208" y="0" width="24" height="28" rx="3" fill="#fed7aa" stroke="#7c2d12" stroke-width="1"/>
+            <rect x="244" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="296" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="348" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="400" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+          </g>
+          <!-- Row 3 (after gap) -->
+          <g transform="translate(0 96)">
+            <rect x="0"   y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="52"  y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="104" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="156" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="208" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="260" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="312" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+            <rect x="364" y="0" width="40" height="28" rx="3" fill="#dbeafe" stroke="#1e3a8a" stroke-width="1"/>
+          </g>
+
+          <!-- handles -->
+          <!-- corner handles (4) -->
+          <rect x="-13" y="-13" width="6" height="6" fill="#fff" stroke="#1f2937" stroke-width="1"/>
+          <rect x="417" y="-13" width="6" height="6" fill="#fff" stroke="#1f2937" stroke-width="1"/>
+          <rect x="-13" y="121" width="6" height="6" fill="#fff" stroke="#1f2937" stroke-width="1"/>
+          <rect x="417" y="121" width="6" height="6" fill="#fff" stroke="#1f2937" stroke-width="1"/>
+
+          <!-- rotation handle (above top edge, connected by stem) -->
+          <line x1="205" y1="-10" x2="205" y2="-44" stroke="#1f2937" stroke-width="1"/>
+          <circle cx="205" cy="-50" r="8" fill="#f2cb00" stroke="#1f2937" stroke-width="1.5"/>
+          <text x="205" y="-46" text-anchor="middle" font-size="9" font-family="Inter" fill="#1f2937">↻</text>
+
+          <!-- translate handle in middle -->
+          <g transform="translate(205 62)">
+            <circle r="11" fill="#fff" stroke="#1f2937" stroke-width="1.5"/>
+            <text x="0" y="3" text-anchor="middle" font-size="10" font-family="Inter" fill="#1f2937">✥</text>
+          </g>
+
+          <!-- anchor corner indicator -->
+          <circle cx="0" cy="0" r="4" fill="#f2cb00" stroke="#1f2937" stroke-width="1.5"/>
+        </g>
+      </svg>
+
+      <!-- Right-click context menu (positioned over the group) -->
+      <div class="ctx-menu" style="left: 720px; top: 200px;">
+        <div class="item">Edit group… <span class="kbd">⏎ / dblclick</span></div>
+        <div class="item">Duplicate group <span class="kbd">Ctrl+D</span></div>
+        <hr>
+        <div class="item">Bake to individual sources</div>
+        <div class="item">Add row above current selection</div>
+        <div class="item">Add row below current selection</div>
+        <hr>
+        <div class="item">Rotate 90° CW</div>
+        <div class="item">Reset rotation</div>
+        <hr>
+        <div class="item danger">Delete group <span class="kbd">Del</span></div>
+      </div>
+
+      <!-- Callouts -->
+      <div class="map-callout" style="left: 380px; top: 100px;">
+        <strong>Rotation handle</strong>
+        <div class="hint">Drag to rotate. Hold Shift for 15° snaps. Numeric value editable in the wizard's Rotation field.</div>
+      </div>
+
+      <div class="map-callout" style="left: 280px; top: 380px;">
+        <strong>Translate handle</strong>
+        <div class="hint">Drag the centre handle (or any non-handle area of the group) to move the whole array. Snaps to map / grid lines if enabled.</div>
+      </div>
+
+      <div class="map-callout" style="right: 30px; top: 50px;">
+        <strong>Corner handles</strong>
+        <div class="hint">Drag to proportionally scale row spacing. Alt-drag a corner for free scaling. Use the wizard for precise per-row numbers.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- Notes for review                                              -->
+  <!-- ============================================================ -->
+  <section class="scene">
+    <h2>Open design questions to flag</h2>
+    <ol style="line-height: 1.7; color: var(--ink-soft); font-size: 13px;">
+      <li>
+        Is the <strong>row sequence model</strong> (each row has its own pattern + repeat
+        + gap-after) flexible enough for what you've described, or do you
+        need a higher-level "block" abstraction (e.g. "BESS+INV block ×3,
+        then gap, then BESS+INV block ×2")?
+      </li>
+      <li>
+        Should the <strong>preview update live</strong> as the user edits the form, or
+        only on an explicit "Refresh preview" button? Live is friendlier but
+        means a recompute on every keystroke.
+      </li>
+      <li>
+        For <strong>parametric editing</strong> after Apply, when the user re-opens a
+        group and changes parameters: should per-unit edits made on the map
+        (e.g. dragged one BESS 3 m east for a fence clearance) be
+        <strong>preserved</strong> across regeneration (and rendered as a small "modified"
+        chip), or <strong>discarded</strong> with a warning?
+      </li>
+      <li>
+        <strong>Bake to individual sources</strong> (in the right-click menu) — should
+        this be exposed? It's a one-way decommit that converts the group's
+        sources to standalone, losing parametric editing. Useful escape hatch
+        for projects where the array layout becomes too irregular for the
+        parametric model.
+      </li>
+      <li>
+        For the <strong>auxiliary pattern</strong>, is "<em>insert 1 INV after every N BESS within
+        a row</em>" the right primitive, or do you want freer composition (e.g.
+        alternating BESS / TX / BESS / INV)? The current mockup uses the
+        freer "explicit unit list per pattern" approach, which subsumes the
+        N-per-block case.
+      </li>
+    </ol>
+  </section>
+
+</div>
+
+</body>
+</html>
