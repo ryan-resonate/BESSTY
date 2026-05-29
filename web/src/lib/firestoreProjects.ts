@@ -32,7 +32,6 @@ import {
   Timestamp,
   updateDoc,
   where,
-  writeBatch,
   type DocumentData,
   type DocumentSnapshot,
   type Query,
@@ -419,6 +418,3 @@ function defaultScenario() {
   };
 }
 
-// Suppress unused-import warning for writeBatch — kept ready for the
-// transactional moves we'll need when we add "transfer ownership" later.
-void writeBatch;

@@ -19,7 +19,7 @@
 //     hook then surfaces as a normal state update).
 //   - Snapshots are immutable; reverting never destroys history.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import {
@@ -585,6 +585,3 @@ function Banner({ kind, children }: { kind: 'error' | 'info'; children: React.Re
   );
 }
 
-// Suppress unused-import warnings for helpers we may reach for in
-// follow-up commits (e.g. version preview / diff).
-void useMemo;
