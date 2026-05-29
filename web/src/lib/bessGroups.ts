@@ -99,30 +99,43 @@ export function materialiseBessGroup(
   const rows = group.rows.map((r) => migrateLegacyRow(r));
 
   // ----- Step 1: walk the rows in local coords, recording placements -----
+  // Outer loop: stamp the entire row sequence `sequenceRepeat` times
+  // top-to-bottom, with `gapBetweenSequencesM` between copies. Each
+  // outer iteration is one "block" of all rows. seqIdx becomes part of
+  // the slot key so per-unit overrides survive sequence-count changes.
   const placed: PlacedUnit[] = [];
   let y = 0;
   const lastRowIdx = rows.length - 1;
   // Inter-row gaps: indexed by source-row-index. We auto-pad with the
   // default of 2 m so a freshly added row doesn't crash the walker.
   const interGaps = group.interRowGapsM ?? [];
-  for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
-    const row = rows[rowIdx];
-    if (row.rowRepeat < 1) continue;
-    for (let rowCopyIdx = 0; rowCopyIdx < row.rowRepeat; rowCopyIdx++) {
-      const placedThisCopy = placeRow(row, rowIdx, rowCopyIdx, y, lookup);
-      placed.push(...placedThisCopy.units);
-      // Advance y past this row's footprint length, then the
-      // appropriate gap. Between copies of the same template:
-      // gapBetweenCopiesM. After the last copy: the inter-template
-      // gap from interRowGapsM[rowIdx]. Final row's final copy: no
-      // gap (no rows follow).
-      y += placedThisCopy.rowLengthM;
-      const isLastCopyOfThisRow = rowCopyIdx === row.rowRepeat - 1;
-      const isLastRow = rowIdx === lastRowIdx;
-      if (!isLastCopyOfThisRow) {
-        y += row.gapBetweenCopiesM ?? 2;
-      } else if (!isLastRow) {
-        y += interGaps[rowIdx] ?? 2;
+  const seqReps = Math.max(1, group.sequenceRepeat ?? 1);
+  const seqGapM = group.gapBetweenSequencesM ?? 5;
+  for (let seqIdx = 0; seqIdx < seqReps; seqIdx++) {
+    for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+      const row = rows[rowIdx];
+      if (row.rowRepeat < 1) continue;
+      for (let rowCopyIdx = 0; rowCopyIdx < row.rowRepeat; rowCopyIdx++) {
+        const placedThisCopy = placeRow(row, rowIdx, rowCopyIdx, seqIdx, y, lookup);
+        placed.push(...placedThisCopy.units);
+        // Advance y past this row's footprint length, then the
+        // appropriate gap. Between copies of the same template:
+        // gapBetweenCopiesM. After the last copy of a row, before the
+        // next row in the same sequence: interRowGapsM[rowIdx].
+        // Final row's final copy of the final sequence: no gap. After
+        // the final row's final copy of a non-final sequence:
+        // gapBetweenSequencesM.
+        y += placedThisCopy.rowLengthM;
+        const isLastCopyOfThisRow = rowCopyIdx === row.rowRepeat - 1;
+        const isLastRow = rowIdx === lastRowIdx;
+        const isLastSeq = seqIdx === seqReps - 1;
+        if (!isLastCopyOfThisRow) {
+          y += row.gapBetweenCopiesM ?? 2;
+        } else if (!isLastRow) {
+          y += interGaps[rowIdx] ?? 2;
+        } else if (!isLastSeq) {
+          y += seqGapM;
+        }
       }
     }
   }
@@ -214,6 +227,7 @@ function placeRow(
   row: BessRow,
   rowIdx: number,
   rowCopyIdx: number,
+  seqIdx: number,
   y: number,
   lookup: CatalogLookup,
 ): { units: PlacedUnit[]; rowLengthM: number } {
@@ -238,7 +252,7 @@ function placeRow(
     if (orientedLengthM > maxLengthInRow) maxLengthInRow = orientedLengthM;
     for (let u = 0; u < count; u++) {
       units.push({
-        slotKey: `r${rowIdx}-c${rowCopyIdx}-s${seg.id}-u${u}`,
+        slotKey: `q${seqIdx}-r${rowIdx}-c${rowCopyIdx}-s${seg.id}-u${u}`,
         segRef: {
           catalogScope: seg.catalogScope,
           modelId: seg.modelId,

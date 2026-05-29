@@ -83,6 +83,10 @@ export function BessGroupWizard(props: Props) {
   const setName = (name: string) => setGroup((g) => ({ ...g, name }));
   const setRotation = (deg: number) =>
     setGroup((g) => ({ ...g, rotationDeg: Number.isFinite(deg) ? deg : 0 }));
+  const setSequenceRepeat = (n: number) =>
+    setGroup((g) => ({ ...g, sequenceRepeat: Math.max(1, Math.floor(n)) }));
+  const setSequenceGap = (m: number) =>
+    setGroup((g) => ({ ...g, gapBetweenSequencesM: Math.max(0, m) }));
 
   // ----- Row-level mutators -----
 
@@ -190,13 +194,23 @@ export function BessGroupWizard(props: Props) {
           modelId: def.modelId,
           count: 1,
           spacingWithinM: 1.5,
-          gapAfterM: 3,
+          gapAfterM: 0,   // last segment -- ignored anyway
           orientation: 'along',
         };
-        // The previously-last segment's gapAfterM is now meaningful
-        // (gap to the new segment). Leave it alone -- it was set
-        // explicitly when the user added the segment originally.
-        return { ...r, segments: [...r.segments, newSeg] };
+        // The previously-last segment was the last in the row, so its
+        // gapAfterM was ignored by the materialiser and quite possibly
+        // sat at 0 (the constructor default). It's NOW meaningful (gap
+        // to the new segment), so bump 0 to a sensible default --
+        // otherwise [BESS] + [INV] render edge-to-edge with no gap.
+        // Don't clobber an explicit non-zero value (could be a user
+        // tweak that's about to matter).
+        const prevSegs = r.segments.length > 0
+          ? r.segments.map((s, idx) =>
+              idx === r.segments.length - 1 && (s.gapAfterM === 0 || s.gapAfterM === undefined)
+                ? { ...s, gapAfterM: 3 }
+                : s)
+          : r.segments;
+        return { ...r, segments: [...prevSegs, newSeg] };
       }),
     }));
   const removeSegment = (rowIdx: number, segIdx: number) =>
@@ -245,6 +259,26 @@ export function BessGroupWizard(props: Props) {
                   {isEdit
                     ? 'Drag the on-map rotation handle for visual adjustment.'
                     : 'On Apply, the group drops in the centre of the map view — drag it into place.'}
+                </div>
+              </div>
+
+              {/* Sequence repeat: stamps the entire row sequence N times
+                  top-to-bottom. Distinct from per-row Repeat row × N. */}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <label style={{ ...fieldStyle, flex: '0 0 160px' }}>
+                  <span style={fieldLabelStyle}>Repeat row sequence × N</span>
+                  <NumberDraft value={group.sequenceRepeat ?? 1} min={1} step={1} integer
+                    onCommit={(v) => setSequenceRepeat(v)} />
+                </label>
+                <label style={{ ...fieldStyle, flex: '0 0 160px' }}>
+                  <span style={fieldLabelStyle}>Gap between sequences (m)</span>
+                  <NumberDraft value={group.gapBetweenSequencesM ?? 5} min={0} step={0.1}
+                    disabled={(group.sequenceRepeat ?? 1) <= 1}
+                    onCommit={(v) => setSequenceGap(v)} />
+                </label>
+                <div style={{ flex: 1, alignSelf: 'flex-end', paddingBottom: 8, fontSize: 11, color: 'var(--ink-soft)' }}>
+                  Stamps the WHOLE row sequence (every row + every inter-row gap) this many times,
+                  with the inter-sequence gap between copies.
                 </div>
               </div>
             </section>

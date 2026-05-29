@@ -92,6 +92,15 @@ export interface BessGroup {
   /// Auto-padded to the right length on read; trailing entries are
   /// dropped on save when rows are removed.
   interRowGapsM?: number[];
+  /// "Repeat row sequence × N" -- stamps the ENTIRE row sequence
+  /// (rows[] in order, with their interRowGapsM[] between them) N
+  /// times top-to-bottom. Different from the per-row rowRepeat:
+  /// that one stamps a single row template N times; this one stamps
+  /// the whole sequence. Defaults to 1 (no extra stamping).
+  sequenceRepeat?: number;
+  /// Edge-to-edge gap (m) between adjacent copies of the row
+  /// sequence when sequenceRepeat > 1. Defaults to 5 m.
+  gapBetweenSequencesM?: number;
   /// Per-slot user overrides preserved across re-materialisation
   /// (e.g. one BESS dragged 3 m east for fence clearance). Slot keys
   /// match the format on the materialised Source's `slotKey` field.

@@ -1042,22 +1042,53 @@ export function MapView({
       poly.addTo(layer);
 
       // Centre move handle ALWAYS visible -- this is the grab affordance
-      // the user uses to drag the whole group. Without it, moving a
-      // group requires selecting first, which the user shouldn't have
-      // to do (per fix #5). Rotation handle stays selected-only so the
-      // map isn't cluttered with stems above every group.
+      // the user uses to drag the whole group. zIndexOffset >> any
+      // source marker (default 0) so when zoomed out and BESS rects
+      // sit on top of the handle position, the handle still wins
+      // click/drag arbitration (per fix #13).
       const alwaysCentreHandle = L.marker(g.centerLatLng, {
         draggable: true,
         bubblingMouseEvents: false,
+        zIndexOffset: 1200,
         icon: L.divIcon({
           className: 'bessty-bess-centre-handle',
-          html: '<div style="width:18px;height:18px;border-radius:50%;background:#f2cb00;border:1.5px solid #1f2937;display:flex;align-items:center;justify-content:center;font-size:11px;color:#1f2937;cursor:move;box-shadow:0 1px 3px rgba(0,0,0,.35)">✥</div>',
-          iconSize: [18, 18], iconAnchor: [9, 9],
+          // Slightly bigger so it punches through dense BESS marker
+          // clusters at low zooms (fix #13 visual companion).
+          html: '<div style="width:22px;height:22px;border-radius:50%;background:#f2cb00;border:2px solid #1f2937;display:flex;align-items:center;justify-content:center;font-size:13px;color:#1f2937;cursor:move;box-shadow:0 1px 4px rgba(0,0,0,.4)">✥</div>',
+          iconSize: [22, 22], iconAnchor: [11, 11],
         }),
         title: `Drag to move "${g.name}"`,
       });
+      // Live drag: translate every member marker (and the bounding
+      // polygon + rotation handle stem) by the same delta as the
+      // handle moves, so the whole group visibly tracks the cursor
+      // instead of teleporting on dragend (fix #14). State (project
+      // doc) updates only on dragend to keep the snapshot recompute
+      // from firing on every mousemove.
+      let centreDragStart: L.LatLng | null = null;
+      const memberMarkerSnapshots = new Map<string, L.LatLng>();
+      alwaysCentreHandle.on('dragstart', () => {
+        centreDragStart = alwaysCentreHandle.getLatLng();
+        memberMarkerSnapshots.clear();
+        for (const m of members) {
+          const mk = markersByIdRef.current.get(m.id);
+          if (mk) memberMarkerSnapshots.set(m.id, mk.getLatLng());
+        }
+      });
+      alwaysCentreHandle.on('drag', () => {
+        if (!centreDragStart) return;
+        const here = alwaysCentreHandle.getLatLng();
+        const dLat = here.lat - centreDragStart.lat;
+        const dLng = here.lng - centreDragStart.lng;
+        for (const [id, orig] of memberMarkerSnapshots) {
+          const mk = markersByIdRef.current.get(id);
+          if (mk) mk.setLatLng([orig.lat + dLat, orig.lng + dLng]);
+        }
+      });
       alwaysCentreHandle.on('dragend', () => {
         const ll = alwaysCentreHandle.getLatLng();
+        centreDragStart = null;
+        memberMarkerSnapshots.clear();
         callbacksRef.current.onMoveBessGroup?.(g.id, [ll.lat, ll.lng]);
       });
       alwaysCentreHandle.addTo(layer);
@@ -1071,9 +1102,14 @@ export function MapView({
       // group. Acceptable -- there are rarely more than a handful of
       // groups on the map.
       //
-      // Rotation handle: 5 m above the top edge of the bounding box,
-      // in the group's LOCAL frame, then rotated to world.
-      const topMidLocal = { x: (minLX + maxLX) / 2, y: minLY - padY - 5 };
+      // Rotation handle: 20 m above the top edge of the bounding box,
+      // in the group's LOCAL frame, then rotated to world. The old
+      // 5 m offset was sub-pixel at typical site-overview zooms,
+      // making the handle visually overlap the bbox and effectively
+      // un-findable (per fix #15). 20 m + the bigger marker below
+      // give clear separation.
+      const ROT_OFFSET_M = 20;
+      const topMidLocal = { x: (minLX + maxLX) / 2, y: minLY - padY - ROT_OFFSET_M };
       const topMidWX = topMidLocal.x * cosR - topMidLocal.y * sinR;
       const topMidWY = topMidLocal.x * sinR + topMidLocal.y * cosR;
       const rotHandleLatLng: [number, number] = [
@@ -1089,15 +1125,21 @@ export function MapView({
         g.centerLatLng[1] + (topEdgeWX / (R * cosLat)) * (180 / Math.PI),
       ];
       L.polyline([topEdgeLatLng, rotHandleLatLng], {
-        color: '#1f2937', weight: 1, opacity: 0.7, interactive: false,
+        color: '#1f2937', weight: 1.5, opacity: 0.85, interactive: false,
       }).addTo(layer);
       const rotHandle = L.marker(rotHandleLatLng, {
         draggable: true,
         bubblingMouseEvents: false,
+        // Same zIndexOffset story as the centre handle (fix #13): make
+        // sure source markers can't sit on top of the rotation handle.
+        zIndexOffset: 1200,
         icon: L.divIcon({
           className: 'bessty-bess-rot-handle',
-          html: '<div style="width:16px;height:16px;border-radius:50%;background:#f2cb00;border:1.5px solid #1f2937;display:flex;align-items:center;justify-content:center;font-size:10px;color:#1f2937;cursor:grab;">↻</div>',
-          iconSize: [16, 16], iconAnchor: [8, 8],
+          // Bigger handle + stroke so it's findable at site-overview
+          // zooms (fix #15). The previous 16 px circle with a 1.5 px
+          // stroke was easy to miss next to the bounding rect.
+          html: '<div style="width:22px;height:22px;border-radius:50%;background:#f2cb00;border:2px solid #1f2937;display:flex;align-items:center;justify-content:center;font-size:13px;color:#1f2937;cursor:grab;box-shadow:0 1px 4px rgba(0,0,0,.4)">↻</div>',
+          iconSize: [22, 22], iconAnchor: [11, 11],
         }),
         title: 'Rotate group',
       });
