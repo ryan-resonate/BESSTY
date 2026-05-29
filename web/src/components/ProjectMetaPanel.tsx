@@ -23,10 +23,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import {
+  deleteVersion,
   loadVersionSnapshot,
   saveVersion,
   setProjectVisibility,
   subscribeToVersions,
+  updateVersionMeta,
   type VersionListItem,
 } from '../lib/firestoreProjects';
 import type { Project } from '../lib/types';
@@ -240,8 +242,10 @@ function VersionsBlock({
 }) {
   const [versions, setVersions] = useState<VersionListItem[] | null>(null);
   const [label, setLabel] = useState('');
+  const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = subscribeToVersions(
@@ -256,10 +260,13 @@ function VersionsBlock({
     if (!label.trim()) return;
     setBusy(true); setError(null);
     try {
-      await saveVersion(projectId, label.trim(), {
-        uid: currentUid, displayName: currentDisplayName,
-      });
-      setLabel('');
+      await saveVersion(
+        projectId,
+        label.trim(),
+        { uid: currentUid, displayName: currentDisplayName },
+        note,
+      );
+      setLabel(''); setNote('');
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -288,6 +295,32 @@ function VersionsBlock({
     }
   }
 
+  async function handleSaveEdit(v: VersionListItem, patch: { label: string; note: string }) {
+    setBusy(true); setError(null);
+    try {
+      await updateVersionMeta(projectId, v.id, patch);
+      setEditingId(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDelete(v: VersionListItem) {
+    if (!confirm(
+      `Delete version "${v.label}"?\n\nThis permanently removes the snapshot. Cannot be undone.`
+    )) return;
+    setBusy(true); setError(null);
+    try {
+      await deleteVersion(projectId, v.id);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section>
       <SectionTitle>Versions</SectionTitle>
@@ -297,21 +330,29 @@ function VersionsBlock({
         but the snapshot itself stays in the history.
       </div>
 
-      <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
         <input
           type="text"
           placeholder="Label (e.g. 'Pre-rezoning revision')"
           value={label}
           onChange={(e) => setLabel(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleSave(); } }}
-          style={{ ...inputStyle, flex: 1 }}
+          style={inputStyle}
+          disabled={busy}
+        />
+        <textarea
+          placeholder="Optional note — what changed, why this matters"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          rows={2}
+          style={{ ...inputStyle, resize: 'vertical', minHeight: 36, fontFamily: 'inherit' }}
           disabled={busy}
         />
         <button
           type="button"
           onClick={handleSave}
           disabled={busy || !label.trim()}
-          style={btnStyle}
+          style={{ ...btnStyle, alignSelf: 'flex-end' }}
         >Save version</button>
       </div>
 
@@ -328,29 +369,112 @@ function VersionsBlock({
       {versions && versions.length > 0 && (
         <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
           {versions.map((v) => (
-            <li key={v.id} style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              padding: '6px 8px', border: '1px solid var(--light, #e5e7eb)',
-              borderRadius: 4,
-            }}>
-              <div style={{ flex: 1, fontSize: 12 }}>
-                <div style={{ fontWeight: 600 }}>{v.label}</div>
-                <div style={{ color: 'var(--ink-soft, #475569)' }}>
-                  {v.createdByDisplayName} · {v.createdAt.toLocaleString()}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => handleRevert(v)}
-                disabled={busy}
-                style={btnTinyStyle}
-                title="Revert the live project to this snapshot"
-              >Revert</button>
-            </li>
+            <VersionRow
+              key={v.id}
+              v={v}
+              busy={busy}
+              editing={editingId === v.id}
+              onRevert={() => handleRevert(v)}
+              onStartEdit={() => setEditingId(v.id)}
+              onCancelEdit={() => setEditingId(null)}
+              onSaveEdit={(patch) => handleSaveEdit(v, patch)}
+              onDelete={() => handleDelete(v)}
+            />
           ))}
         </ul>
       )}
     </section>
+  );
+}
+
+function VersionRow({ v, busy, editing, onRevert, onStartEdit, onCancelEdit, onSaveEdit, onDelete }: {
+  v: VersionListItem;
+  busy: boolean;
+  editing: boolean;
+  onRevert: () => void;
+  onStartEdit: () => void;
+  onCancelEdit: () => void;
+  onSaveEdit: (patch: { label: string; note: string }) => void;
+  onDelete: () => void;
+}) {
+  const [draftLabel, setDraftLabel] = useState(v.label);
+  const [draftNote, setDraftNote] = useState(v.note ?? '');
+
+  // Refresh the draft from the live version when we enter edit mode (or
+  // when the version's stored values change while editing, e.g. a
+  // collaborator just renamed it under us).
+  useEffect(() => {
+    if (editing) {
+      setDraftLabel(v.label);
+      setDraftNote(v.note ?? '');
+    }
+  }, [editing, v.label, v.note]);
+
+  if (editing) {
+    return (
+      <li style={{
+        display: 'flex', flexDirection: 'column', gap: 6,
+        padding: '8px 8px', border: '1px solid var(--yellow, #F2CB00)',
+        borderRadius: 4, background: 'rgba(242, 203, 0, 0.04)',
+      }}>
+        <input
+          type="text"
+          value={draftLabel}
+          onChange={(e) => setDraftLabel(e.target.value)}
+          style={inputStyle}
+          disabled={busy}
+          autoFocus
+        />
+        <textarea
+          placeholder="Optional note"
+          value={draftNote}
+          onChange={(e) => setDraftNote(e.target.value)}
+          rows={2}
+          style={{ ...inputStyle, resize: 'vertical', minHeight: 36, fontFamily: 'inherit' }}
+          disabled={busy}
+        />
+        <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+          <button type="button" onClick={onCancelEdit} disabled={busy} style={btnTinyStyle}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => onSaveEdit({ label: draftLabel, note: draftNote })}
+            disabled={busy || !draftLabel.trim()}
+            style={{ ...btnTinyStyle, background: 'var(--ink, #1f2937)', color: '#fff', borderColor: 'var(--ink, #1f2937)' }}
+          >Save</button>
+        </div>
+      </li>
+    );
+  }
+
+  return (
+    <li style={{
+      display: 'flex', alignItems: 'flex-start', gap: 8,
+      padding: '6px 8px', border: '1px solid var(--light, #e5e7eb)',
+      borderRadius: 4,
+    }}>
+      <div style={{ flex: 1, fontSize: 12, minWidth: 0 }}>
+        <div style={{ fontWeight: 600 }}>{v.label}</div>
+        {v.note && (
+          <div style={{ color: 'var(--ink, #1f2937)', marginTop: 2, whiteSpace: 'pre-wrap' }}>
+            {v.note}
+          </div>
+        )}
+        <div style={{ color: 'var(--ink-soft, #475569)', marginTop: 2 }}>
+          {v.createdByDisplayName} · {v.createdAt.toLocaleString()}
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <button type="button" onClick={onRevert} disabled={busy} style={btnTinyStyle}
+          title="Revert the live project to this snapshot">Revert</button>
+        <button type="button" onClick={onStartEdit} disabled={busy} style={btnTinyStyle}
+          title="Rename / edit note">Edit</button>
+        <button type="button" onClick={onDelete} disabled={busy}
+          style={{ ...btnTinyStyle, color: 'var(--red, #dc2626)', borderColor: 'rgba(220, 38, 38, 0.4)' }}
+          title="Permanently delete this version">Delete</button>
+      </div>
+    </li>
   );
 }
 

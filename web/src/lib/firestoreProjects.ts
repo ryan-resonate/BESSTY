@@ -61,6 +61,10 @@ export interface ProjectListItem {
 export interface VersionListItem {
   id: string;
   label: string;
+  /// Free-text note. Useful when the label alone doesn't capture *why*
+  /// the snapshot exists ("after Q1 client review — they wanted the
+  /// north turbine moved 200 m south"). Optional.
+  note?: string;
   createdAt: Date;
   createdByUid: string;
   createdByDisplayName: string;
@@ -250,25 +254,31 @@ export function subscribeToAllAccessibleProjects(
 // ===== Versions =====
 
 /// Snapshot the current live project doc into a new immutable version.
-/// Returns the new version id.
+/// Returns the new version id. Label is required; note is optional and
+/// can be edited later via `updateVersionMeta` (the *snapshot* itself
+/// remains immutable -- you can only change the human-readable
+/// label / note around it).
 export async function saveVersion(
   projectId: string,
   label: string,
   by: { uid: string; displayName: string },
+  note?: string,
 ): Promise<string> {
   // Read the live doc as it exists right now, server-side, so the snapshot
   // reflects committed state — not whatever the client has in memory.
   const snap = await getDoc(doc(db(), 'projects', projectId));
   if (!snap.exists()) throw new Error(`Project ${projectId} not found`);
+  const payload: DocumentData = pruneUndefined({
+    label,
+    note: note?.trim() || undefined,
+    createdAt: serverTimestamp(),
+    createdByUid: by.uid,
+    createdByDisplayName: by.displayName,
+    snapshot: snap.data(),
+  });
   const ref = await addDoc(
     collection(db(), 'projects', projectId, 'versions'),
-    {
-      label,
-      createdAt: serverTimestamp(),
-      createdByUid: by.uid,
-      createdByDisplayName: by.displayName,
-      snapshot: snap.data(),
-    },
+    payload,
   );
   return ref.id;
 }
@@ -289,6 +299,7 @@ export function subscribeToVersions(
       return {
         id: d.id,
         label: x.label ?? '(unnamed)',
+        note: typeof x.note === 'string' && x.note.length > 0 ? x.note : undefined,
         createdAt: tsToDate(x.createdAt),
         createdByUid: x.createdByUid ?? '',
         createdByDisplayName: x.createdByDisplayName ?? 'Unknown',
@@ -296,6 +307,35 @@ export function subscribeToVersions(
     })),
     (err) => onError?.(err as Error),
   );
+}
+
+/// Update a version's label and/or note. The snapshot itself is
+/// immutable -- callers cannot rewrite the captured project state.
+export async function updateVersionMeta(
+  projectId: string,
+  versionId: string,
+  patch: { label?: string; note?: string },
+): Promise<void> {
+  // Strip undefined fields so we don't accidentally wipe values the
+  // caller didn't pass. An empty-string note is a valid "clear it" signal
+  // and gets turned into a delete by writing null via FieldValue.delete...
+  // ...actually, for simplicity we just store empty string and surface
+  // it as undefined in VersionListItem.
+  const update: DocumentData = pruneUndefined({
+    label: patch.label?.trim() || undefined,
+    note: patch.note !== undefined ? patch.note.trim() : undefined,
+  });
+  if (Object.keys(update).length === 0) return;
+  await updateDoc(doc(db(), 'projects', projectId, 'versions', versionId), update);
+}
+
+/// Permanently delete a version. The snapshot is gone -- callers can't
+/// undo this. UI should confirm before invoking.
+export async function deleteVersion(
+  projectId: string,
+  versionId: string,
+): Promise<void> {
+  await deleteDoc(doc(db(), 'projects', projectId, 'versions', versionId));
 }
 
 /// Read the embedded project payload from a saved snapshot.
