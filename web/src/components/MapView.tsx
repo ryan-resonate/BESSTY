@@ -163,14 +163,16 @@ const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max: number
   satellite: {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attribution: '© Esri',
-    // Esri World Imagery has z=23 in many populated areas (LiDAR /
-    // aerial); 19 was an over-conservative previous setting that left
-    // close-zoom site inspection looking blank when the actual server
-    // would have served sharper tiles. Where it doesn't have data,
-    // it returns a "Map data not yet available" placeholder PNG --
-    // we silence that with errorTileUrl below so we get clean
-    // up-sampling instead.
-    max: 22,
+    // Esri World Imagery is documented as serving global coverage up
+    // to z=19. Past that, it returns an HTTP 200 "Map data not yet
+    // available" placeholder PNG -- which means errorTileUrl
+    // (404-only) never fires, and the user sees the placeholder.
+    // We previously bumped this to 22 hoping for sharper tiles in
+    // populated areas; that just made the placeholder show MORE
+    // often. Capping at 19 and relying on Leaflet's CSS up-sampling
+    // (maxZoom: 24) for higher zooms is the correct trade-off:
+    // smooth pixelation instead of placeholders.
+    max: 19,
   },
   osm: {
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -1060,10 +1062,15 @@ export function MapView({
       });
       alwaysCentreHandle.addTo(layer);
 
-      if (!groupSelected) continue;
-
-      // ===== Selected-only handle (rotation) =====
-
+      // ===== Rotation handle (ALWAYS visible, per fix #9) =====
+      //
+      // Was previously selected-only -- but the user can't easily
+      // discover "click a member to reveal the rotate handle", so
+      // it's now drawn unconditionally next to the always-on centre
+      // move handle. Slight visual cost: an extra ↻ stem above each
+      // group. Acceptable -- there are rarely more than a handful of
+      // groups on the map.
+      //
       // Rotation handle: 5 m above the top edge of the bounding box,
       // in the group's LOCAL frame, then rotated to world.
       const topMidLocal = { x: (minLX + maxLX) / 2, y: minLY - padY - 5 };

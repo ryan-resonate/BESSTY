@@ -1002,7 +1002,49 @@ export function ProjectScreen() {
     });
   }
 
-  function handleMoveSource(id: string, latLng: [number, number]) { handleMoveObject(id, latLng); }
+  function handleMoveSource(id: string, latLng: [number, number]) {
+    // BESS-group members need extra bookkeeping: shifting the source's
+    // latLng alone is fine for the immediate render, but the next
+    // materialise call (wizard apply, rotation drag, parameter edit)
+    // would snap the unit back to its parametric position. We persist
+    // the drag by accumulating into group.unitOverrides[slotKey]
+    // .latLngDelta -- which the materialiser then re-applies on every
+    // subsequent regeneration. handleMoveObject still runs so the
+    // immediate UI / solver state updates without waiting for the
+    // next materialise.
+    if (!project) { handleMoveObject(id, latLng); return; }
+    const src = project.sources.find((s) => s.id === id);
+    if (!src?.groupId || !src.slotKey) {
+      handleMoveObject(id, latLng);
+      return;
+    }
+    const group = (project.bessGroups ?? []).find((g) => g.id === src.groupId);
+    if (!group) { handleMoveObject(id, latLng); return; }
+    // Delta from the CURRENT latLng (which already reflects any prior
+    // accumulated drag) to the NEW latLng -- this is the incremental
+    // shift to add on top of the existing override.
+    const incLat = latLng[0] - src.latLng[0];
+    const incLng = latLng[1] - src.latLng[1];
+    const prior = group.unitOverrides?.[src.slotKey]?.latLngDelta ?? [0, 0];
+    const nextDelta: [number, number] = [prior[0] + incLat, prior[1] + incLng];
+    const nextOverrides = {
+      ...(group.unitOverrides ?? {}),
+      [src.slotKey]: {
+        ...(group.unitOverrides?.[src.slotKey] ?? {}),
+        latLngDelta: nextDelta,
+      },
+    };
+    const nextGroups = (project.bessGroups ?? []).map((g) =>
+      g.id === group.id ? { ...g, unitOverrides: nextOverrides } : g,
+    );
+    // Apply the source latLng update AND the group override together
+    // in a single setProject so we don't race a snapshot recompute.
+    setProject({
+      ...project,
+      sources: project.sources.map((s) => (s.id === id ? { ...s, latLng } : s)),
+      bessGroups: nextGroups,
+    });
+  }
   function handleMoveReceiver(id: string, latLng: [number, number]) { handleMoveObject(id, latLng); }
 
   // ---------- Group operations ----------
