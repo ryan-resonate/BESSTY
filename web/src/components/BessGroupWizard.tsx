@@ -171,9 +171,8 @@ export function BessGroupWizard(props: Props) {
               <div style={{ display: 'flex', gap: 8 }}>
                 <label style={{ ...fieldStyle, flex: '0 0 160px' }}>
                   <span style={fieldLabelStyle}>Rotation (° from north)</span>
-                  <input type="number" step="1" value={group.rotationDeg}
-                    onChange={(e) => setRotation(+e.target.value)}
-                    style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} />
+                  <NumberDraft value={group.rotationDeg} step={1}
+                    onCommit={(v) => setRotation(v)} />
                 </label>
                 <div style={{ flex: 1, alignSelf: 'flex-end', paddingBottom: 8, fontSize: 11, color: 'var(--ink-soft)' }}>
                   {isEdit
@@ -347,28 +346,24 @@ function BessRowCard(p: RowCardProps) {
             </div>
             <label style={fieldStyleSm}>
               <span style={fieldLabelStyle}>Pattern repeat × N</span>
-              <input type="number" min={1} step={1} value={row.patternRepeat}
-                onChange={(e) => p.onChange({ patternRepeat: Math.max(1, Math.floor(+e.target.value)) })}
-                style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} />
+              <NumberDraft value={row.patternRepeat} min={1} step={1} integer
+                onCommit={(v) => p.onChange({ patternRepeat: v })} />
             </label>
             <label style={fieldStyleSm}>
               <span style={fieldLabelStyle}>Unit spacing — edge-to-edge (m)</span>
-              <input type="number" min={0} step={0.1} value={row.spacingWithinM}
-                onChange={(e) => p.onChange({ spacingWithinM: Math.max(0, +e.target.value) })}
-                style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} />
+              <NumberDraft value={row.spacingWithinM} min={0} step={0.1}
+                onCommit={(v) => p.onChange({ spacingWithinM: v })} />
             </label>
             <label style={fieldStyleSm}>
               <span style={fieldLabelStyle}>Repeat row × N</span>
-              <input type="number" min={1} step={1} value={row.rowRepeat}
-                onChange={(e) => p.onChange({ rowRepeat: Math.max(1, Math.floor(+e.target.value)) })}
-                style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} />
+              <NumberDraft value={row.rowRepeat} min={1} step={1} integer
+                onCommit={(v) => p.onChange({ rowRepeat: v })} />
             </label>
             <label style={fieldStyleSm}>
               <span style={fieldLabelStyle}>Gap to next row (m)</span>
-              <input type="number" min={0} step={0.1} value={row.gapToNextRowM}
-                onChange={(e) => p.onChange({ gapToNextRowM: Math.max(0, +e.target.value) })}
+              <NumberDraft value={row.gapToNextRowM} min={0} step={0.1}
                 disabled={isLast}
-                style={{ ...inputStyle, fontFamily: 'var(--font-mono)', opacity: isLast ? 0.4 : 1 }} />
+                onCommit={(v) => p.onChange({ gapToNextRowM: v })} />
             </label>
           </div>
           <div style={rowCardActionsStyle}>
@@ -547,6 +542,89 @@ function PreviewSvg({ materialised, rotationDeg, catalogLookup }: PreviewProps) 
           a global rotation around (0,0) later.) */}
       {void [rotRad, cosR, sinR]}
     </svg>
+  );
+}
+
+// ===== Backspace-tolerant number input =====
+//
+// The naive `<input type="number" value={n} onChange={(e) => set(+e.target.value)}>`
+// pattern has two problems when paired with a clamp like `Math.max(1, +'')`:
+//   1. Pressing backspace to clear the field immediately snaps the value
+//      back to 1 (or 0), so the user can't actually type a fresh number.
+//   2. Intermediate states like "" or "-" are invalid numbers, so the
+//      onChange would have to special-case them anyway.
+//
+// `NumberDraft` holds a local string draft while the input is focused,
+// only commits on Enter / blur, and reverts to the prior value if the
+// user leaves the field empty or invalid. Outside callers see only
+// validated commits via onCommit(value).
+
+function NumberDraft(props: {
+  value: number;
+  onCommit: (v: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  /// Round to an integer on commit. Used for counts / repeat fields.
+  integer?: boolean;
+  disabled?: boolean;
+  /// Optional override of the input element's inline style; merged
+  /// over the default monospace style.
+  style?: React.CSSProperties;
+}) {
+  const [draft, setDraft] = useState<string>(String(props.value));
+  const [focused, setFocused] = useState(false);
+
+  // Re-sync from props when the value changes externally AND we're not
+  // mid-edit (focused). Keeps live preview accurate when a sibling
+  // input mutates state through us indirectly.
+  useEffect(() => {
+    if (!focused) setDraft(String(props.value));
+  }, [props.value, focused]);
+
+  function commit() {
+    const trimmed = draft.trim();
+    if (trimmed === '') {
+      setDraft(String(props.value));
+      return;
+    }
+    const n = +trimmed;
+    if (!Number.isFinite(n)) {
+      setDraft(String(props.value));
+      return;
+    }
+    let v = props.integer ? Math.round(n) : n;
+    if (props.min !== undefined) v = Math.max(props.min, v);
+    if (props.max !== undefined) v = Math.min(props.max, v);
+    setDraft(String(v));
+    if (v !== props.value) props.onCommit(v);
+  }
+
+  return (
+    <input
+      type="number"
+      value={draft}
+      step={props.step}
+      min={props.min}
+      max={props.max}
+      disabled={props.disabled}
+      onFocus={() => setFocused(true)}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => { setFocused(false); commit(); }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); }
+        else if (e.key === 'Escape') {
+          setDraft(String(props.value));
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+      style={{
+        ...inputStyle,
+        fontFamily: 'var(--font-mono)',
+        opacity: props.disabled ? 0.4 : 1,
+        ...(props.style ?? {}),
+      }}
+    />
   );
 }
 

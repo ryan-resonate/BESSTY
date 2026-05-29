@@ -80,7 +80,16 @@ const SOURCE_KIND_COLOR: Record<string, string> = {
   transformer: '#c62828',
 };
 
-function sourceMarker(s: Source, selected: boolean, groupColor: string | undefined): L.DivIcon {
+function sourceMarker(
+  s: Source,
+  selected: boolean,
+  groupColor: string | undefined,
+  /// Rotation (clockwise from north) applied to the unit's footprint
+  /// rectangle for BESS / Auxiliary markers. Used by the BESS-group path
+  /// (fix #7) so each unit's rectangle rotates with the parent group
+  /// rather than staying axis-aligned. WTGs ignore this.
+  groupYawDeg?: number,
+): L.DivIcon {
   const colour = SOURCE_KIND_COLOR[s.kind] ?? '#2A2A2A';
   // Selection ring: bright yellow halo when selected.
   // Group ring: small coloured arc on the upper-left of the icon.
@@ -106,12 +115,18 @@ function sourceMarker(s: Source, selected: boolean, groupColor: string | undefin
       iconAnchor: [18, 18],
     });
   }
+  // Rotate the rect (and the group/selection rings stay axis-aligned so
+  // the selection halo still reads as a halo, not a tilted ellipse).
+  // groupYawDeg is in degrees clockwise from north == SVG-clockwise.
+  const rectTransform = (typeof groupYawDeg === 'number' && Number.isFinite(groupYawDeg))
+    ? ` transform="rotate(${groupYawDeg})"`
+    : '';
   return L.divIcon({
     className: 'eqpt-marker',
     html: `<svg width="28" height="28" viewBox="-14 -14 28 28" style="filter:drop-shadow(0 1px 1px rgba(0,0,0,.4))">
       ${selRing}
       ${groupRing}
-      <rect x="-9" y="-6" width="18" height="12" rx="1" fill="${colour}" stroke="#fff" stroke-width="1.4"/>
+      <rect${rectTransform} x="-9" y="-6" width="18" height="12" rx="1" fill="${colour}" stroke="#fff" stroke-width="1.4"/>
     </svg>`,
     iconSize: [28, 28],
     iconAnchor: [14, 14],
@@ -148,7 +163,14 @@ const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max: number
   satellite: {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attribution: '© Esri',
-    max: 19,
+    // Esri World Imagery has z=23 in many populated areas (LiDAR /
+    // aerial); 19 was an over-conservative previous setting that left
+    // close-zoom site inspection looking blank when the actual server
+    // would have served sharper tiles. Where it doesn't have data,
+    // it returns a "Map data not yet available" placeholder PNG --
+    // we silence that with errorTileUrl below so we get clean
+    // up-sampling instead.
+    max: 22,
   },
   osm: {
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -158,20 +180,34 @@ const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max: number
   },
 };
 
+// 1x1 transparent PNG. Returned in place of any tile that errors / 404s
+// so Leaflet keeps showing the prior good (up-sampled) tile rather than
+// rendering the provider's "Map data not yet available" placeholder.
+const TRANSPARENT_TILE =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+
 function tileLayerOpts(b: BaseMap): L.TileLayerOptions {
   const cfg = TILE_URLS[b];
   return {
     // Two separate caps: `maxNativeZoom` is the highest zoom the tile
-    // server actually has imagery for (Esri / OSM both top out at 19);
-    // `maxZoom` is how far Leaflet will let the user zoom regardless.
-    // Above maxNativeZoom Leaflet up-samples the deepest available tile,
-    // so the basemap stays visible (pixelated) instead of going blank
-    // when the user wants to inspect close-up geometry.
+    // server actually has imagery for; `maxZoom` is how far Leaflet
+    // will let the user zoom regardless. Above maxNativeZoom Leaflet
+    // up-samples the deepest available tile, so the basemap stays
+    // visible (pixelated) instead of going blank when the user wants
+    // to inspect close-up geometry.
     maxNativeZoom: cfg.max,
     maxZoom: 24,
     attribution: cfg.attribution,
     crossOrigin: true,
     subdomains: cfg.subdomains ?? 'abc',
+    // Silence the Esri / OSM error placeholders. When a tile 404s
+    // (out of coverage area or above native zoom), Leaflet falls back
+    // to up-sampling the parent tile -- exactly what we want for
+    // smooth pixelated zoom-in.
+    errorTileUrl: TRANSPARENT_TILE,
+    // Keep adjacent tiles around when panning so they don't pop out
+    // before the new ones arrive.
+    keepBuffer: 4,
   };
 }
 
@@ -219,6 +255,14 @@ export function MapView({
   for (const g of project.groups ?? []) {
     if (!g.color) continue;
     for (const id of g.memberIds) groupColorById.set(id, g.color);
+  }
+  // Map: BessGroup id → rotation in degrees, used by sourceMarker to
+  // rotate each unit's footprint rectangle so it stays oriented with
+  // the parent group (fix #7). Built once per render from the live
+  // bessGroups list -- cheap; usually a handful of groups.
+  const bessGroupRotById = new Map<string, number>();
+  for (const bg of project.bessGroups ?? []) {
+    bessGroupRotById.set(bg.id, bg.rotationDeg);
   }
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -722,7 +766,8 @@ export function MapView({
       if (!validLatLng(s.latLng)) continue;
       const sel = isSelected(s.id);
       const marker = L.marker(s.latLng, {
-        icon: sourceMarker(s, sel, groupColorById.get(s.id)),
+        icon: sourceMarker(s, sel, groupColorById.get(s.id),
+          s.groupId ? bessGroupRotById.get(s.groupId) : undefined),
         title: s.name,
         opacity: dimNonSelected(s.id),
         draggable: true,
@@ -971,11 +1016,16 @@ export function MapView({
       // handle visibility.
       const groupSelected = members.some((m) => selectedIds.has(m.id));
 
+      // Bounding rect is ALWAYS prominent (per fix #5 -- users need to see
+      // the group extent + grab handle without having to select first).
+      // Selected state just intensifies the highlight slightly.
       const poly = L.polygon(cornersLatLng, {
-        color: '#1f2937', weight: groupSelected ? 1.5 : 1,
-        opacity: groupSelected ? 0.9 : 0.4,
-        fillColor: '#f2cb00', fillOpacity: groupSelected ? 0.10 : 0.04,
-        dashArray: groupSelected ? undefined : '4 3',
+        color: '#1f2937',
+        weight: groupSelected ? 2 : 1.5,
+        opacity: groupSelected ? 1.0 : 0.85,
+        fillColor: '#f2cb00',
+        fillOpacity: groupSelected ? 0.14 : 0.08,
+        dashArray: groupSelected ? undefined : '6 3',
         // Clicking the rect (away from any member marker) selects the
         // first member as a proxy for "group selected".
         interactive: true,
@@ -989,9 +1039,30 @@ export function MapView({
       });
       poly.addTo(layer);
 
+      // Centre move handle ALWAYS visible -- this is the grab affordance
+      // the user uses to drag the whole group. Without it, moving a
+      // group requires selecting first, which the user shouldn't have
+      // to do (per fix #5). Rotation handle stays selected-only so the
+      // map isn't cluttered with stems above every group.
+      const alwaysCentreHandle = L.marker(g.centerLatLng, {
+        draggable: true,
+        bubblingMouseEvents: false,
+        icon: L.divIcon({
+          className: 'bessty-bess-centre-handle',
+          html: '<div style="width:18px;height:18px;border-radius:50%;background:#f2cb00;border:1.5px solid #1f2937;display:flex;align-items:center;justify-content:center;font-size:11px;color:#1f2937;cursor:move;box-shadow:0 1px 3px rgba(0,0,0,.35)">✥</div>',
+          iconSize: [18, 18], iconAnchor: [9, 9],
+        }),
+        title: `Drag to move "${g.name}"`,
+      });
+      alwaysCentreHandle.on('dragend', () => {
+        const ll = alwaysCentreHandle.getLatLng();
+        callbacksRef.current.onMoveBessGroup?.(g.id, [ll.lat, ll.lng]);
+      });
+      alwaysCentreHandle.addTo(layer);
+
       if (!groupSelected) continue;
 
-      // ===== Handles (only when selected) =====
+      // ===== Selected-only handle (rotation) =====
 
       // Rotation handle: 5 m above the top edge of the bounding box,
       // in the group's LOCAL frame, then rotated to world.
@@ -1064,23 +1135,8 @@ export function MapView({
         dragRefs.delete(g.id);
       });
       rotHandle.addTo(layer);
-
-      // Centre translate handle.
-      const centreHandle = L.marker(g.centerLatLng, {
-        draggable: true,
-        bubblingMouseEvents: false,
-        icon: L.divIcon({
-          className: 'bessty-bess-centre-handle',
-          html: '<div style="width:18px;height:18px;border-radius:50%;background:#f2cb00;border:1.5px solid #1f2937;display:flex;align-items:center;justify-content:center;font-size:11px;color:#1f2937;cursor:move;">✥</div>',
-          iconSize: [18, 18], iconAnchor: [9, 9],
-        }),
-        title: 'Drag to move the whole group',
-      });
-      centreHandle.on('dragend', () => {
-        const ll = centreHandle.getLatLng();
-        callbacksRef.current.onMoveBessGroup?.(g.id, [ll.lat, ll.lng]);
-      });
-      centreHandle.addTo(layer);
+      // (Centre translate handle is rendered above the `if (!groupSelected)`
+      // block so it's always visible, per fix #5.)
     }
   }, [project, selectedIds]);
 

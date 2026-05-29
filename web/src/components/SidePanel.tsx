@@ -590,20 +590,22 @@ function SourcesTab(props: Props) {
         <div className="add-row">
           <ModeBtn label="+ WTG"  mode="wtg"  current={addMode} onClick={setAddMode} />
           <ModeBtn label="+ BESS" mode="bess" current={addMode} onClick={setAddMode} />
+          {/* BESS group sits between BESS and Aux as a peer button. Not a
+              ModeBtn -- it opens the wizard immediately instead of toggling
+              a click-on-map placement mode. */}
+          {props.onOpenBessGroupWizard && (
+            <button
+              data-keep-add-mode
+              className="btn small"
+              type="button"
+              onClick={() => props.onOpenBessGroupWizard?.()}
+              title="Open the BESS-group / array wizard"
+            >+ BESS group</button>
+          )}
           <ModeBtn label="+ Aux"  mode="auxiliary" current={addMode} onClick={setAddMode} />
         </div>
         {addMode !== 'none' && addMode !== 'measure' && addMode !== 'receiver' && (
           <div className="hint">Click on the map to place a {addMode.toUpperCase()}.</div>
-        )}
-        {props.onOpenBessGroupWizard && (
-          <button
-            className="btn primary block"
-            type="button"
-            onClick={() => props.onOpenBessGroupWizard?.()}
-            style={{ marginTop: 8 }}
-          >
-            + BESS group / array…
-          </button>
         )}
       </Card>
 
