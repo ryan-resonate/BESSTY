@@ -84,6 +84,14 @@ export interface BessGroup {
   /// Clockwise from north, in degrees.
   rotationDeg: number;
   rows: BessRow[];
+  /// Inter-row-template gaps (m, edge-to-edge), rendered in the wizard
+  /// as editable controls between the row cards. Length is
+  /// `rows.length - 1` -- entry `i` is the gap from row `i` to row
+  /// `i+1`. (The gap between rowRepeat copies of the SAME template
+  /// lives on `BessRow.gapBetweenCopiesM`.)
+  /// Auto-padded to the right length on read; trailing entries are
+  /// dropped on save when rows are removed.
+  interRowGapsM?: number[];
   /// Per-slot user overrides preserved across re-materialisation
   /// (e.g. one BESS dragged 3 m east for fence clearance). Slot keys
   /// match the format on the materialised Source's `slotKey` field.
@@ -93,34 +101,66 @@ export interface BessGroup {
   unitOverrides?: Record<string, BessUnitOverride>;
 }
 
+/// A row template. Stamped `rowRepeat` times top-to-bottom, with
+/// `gapBetweenCopiesM` between copies. The gap to the NEXT row
+/// template is on `BessGroup.interRowGapsM` (so it's editable as a
+/// distinct UI element between cards rather than buried inside a row).
 export interface BessRow {
   id: string;
-  /// The unit pattern within ONE row. An empty pattern makes the row
-  /// act as a pure spacer (just consumes `gapToNextRowM`) -- useful
-  /// for "wide aisle between two halves of the farm" without inventing
-  /// a separate spacer type.
-  pattern: BessRowUnit[];
-  /// How many times the pattern repeats within one row.
-  /// `spacingWithinM` is also inserted between consecutive copies.
-  patternRepeat: number;
-  /// Edge-to-edge gap between adjacent units in the row (m). Units'
-  /// widths come from their CatalogEntry.footprintM (or kind default).
-  spacingWithinM: number;
-  /// Edge-to-edge gap between this row's footprint and the next
-  /// row's footprint (next copy of this template OR next template).
-  /// The final row's gapToNextRowM is ignored.
-  gapToNextRowM: number;
-  /// How many times this row template is stamped, top-to-bottom.
-  /// Each stamp is identical; `gapToNextRowM` applies between every
-  /// adjacent pair (and to the next row template that follows).
+  /// Ordered list of segments. A row of "8 BESS @1.5m then a 3 m
+  /// gap then 1 inverter" is two segments: BESS×8 with gapAfterM=3,
+  /// then Inverter×1 with gapAfterM=0. An empty `segments` array
+  /// makes the row a pure spacer.
+  segments: BessSegment[];
+  /// How many copies of this row template are stamped, top-to-bottom.
+  /// Copies are separated by `gapBetweenCopiesM`.
   rowRepeat: number;
+  /// Edge-to-edge gap between rowRepeat copies of THIS template.
+  /// (Distinct from the inter-template gap on the parent group.)
+  /// Ignored when rowRepeat <= 1.
+  gapBetweenCopiesM: number;
+
+  // ===== Legacy fields, kept for backward-compat read-side only =====
+  // Older projects stored a flat unit pattern + uniform spacing. We
+  // migrate to segments on load (see `migrateLegacyRow`). The legacy
+  // fields are typed optional here so old data parses cleanly; new
+  // code paths shouldn't write them.
+  pattern?: BessRowUnit[];
+  patternRepeat?: number;
+  spacingWithinM?: number;
+  gapToNextRowM?: number;
 }
 
+/// One contiguous run of the same unit type within a row.
+export interface BessSegment {
+  id: string;
+  /// Catalog reference (BESS or auxiliary -- WTGs aren't grouped).
+  catalogScope: CatalogScope;
+  modelId: string;
+  /// Optional per-segment mode override (e.g. "PO4500-low-noise" on
+  /// a row of BESS in night mode). Inherits the catalog entry's
+  /// `defaultMode` when undefined.
+  modeOverride?: string | null;
+  /// How many units in this segment.
+  count: number;
+  /// Edge-to-edge gap between consecutive units WITHIN this segment.
+  spacingWithinM: number;
+  /// Edge-to-edge gap between this segment's last unit and the next
+  /// segment's first unit. Ignored for the row's final segment.
+  gapAfterM: number;
+  /// Orientation of the unit's long axis within the row:
+  ///   - 'along'  : long axis parallel to the row direction.
+  ///   - 'across' : long axis perpendicular to the row direction
+  ///                (i.e. units "stand on end"). Useful for narrow
+  ///                BESS cabinets that pack tighter end-on.
+  /// Set per-segment so inverters can sit differently from the BESS
+  /// they punctuate.
+  orientation: 'along' | 'across';
+}
+
+// Legacy unit reference (pre-segment model). Kept so old projects
+// round-trip cleanly through migrateLegacyRow. New code uses BessSegment.
 export interface BessRowUnit {
-  /// Which catalog the unit comes from. BESS groups intentionally
-  /// don't reference 'local' (deprecated -- see task #23) -- but the
-  /// type union allows it for round-tripping legacy data on the
-  /// project doc.
   catalogScope: CatalogScope;
   modelId: string;
 }

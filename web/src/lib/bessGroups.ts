@@ -39,7 +39,7 @@ import { footprintFor } from './catalog';
 import type {
   BessGroup,
   BessRow,
-  BessRowUnit,
+  BessSegment,
   CatalogEntry,
   CatalogScope,
   Source,
@@ -72,11 +72,15 @@ export interface MaterialisedGroup {
 
 interface PlacedUnit {
   slotKey: string;
-  unit: BessRowUnit;
+  /// The segment ref this unit was generated from (post-migration,
+  /// every unit traces back to a segment). Carries the catalog
+  /// scope + modelId + optional mode override.
+  segRef: { catalogScope: CatalogScope; modelId: string; modeOverride?: string | null };
   /// Local-frame centre of the unit (m), before rotation + centring.
   centreX: number;
   centreY: number;
   /// Footprint -- used for bounding-box calc + downstream rendering.
+  /// These are already orientation-adjusted (swapped for 'across').
   widthM: number;
   lengthM: number;
 }
@@ -87,26 +91,38 @@ interface PlacedUnit {
 export function materialiseBessGroup(
   group: BessGroup,
   lookup: CatalogLookup,
-  opts: { existingOverrides?: Record<string, BessGroup['unitOverrides'] extends infer T ? T extends Record<string, infer U> ? U : never : never> } = {},
+  opts: { existingOverrides?: BessGroup['unitOverrides'] } = {},
 ): MaterialisedGroup {
+  // Normalise rows: migrate any legacy pattern-based rows to the
+  // segment model up front so the walker below only deals with one
+  // shape. This is pure (no mutation of the input group).
+  const rows = group.rows.map((r) => migrateLegacyRow(r));
+
   // ----- Step 1: walk the rows in local coords, recording placements -----
   const placed: PlacedUnit[] = [];
   let y = 0;
-  const lastRowIdx = group.rows.length - 1;
-  for (let rowIdx = 0; rowIdx < group.rows.length; rowIdx++) {
-    const row = group.rows[rowIdx];
+  const lastRowIdx = rows.length - 1;
+  // Inter-row gaps: indexed by source-row-index. We auto-pad with the
+  // default of 2 m so a freshly added row doesn't crash the walker.
+  const interGaps = group.interRowGapsM ?? [];
+  for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+    const row = rows[rowIdx];
     if (row.rowRepeat < 1) continue;
     for (let rowCopyIdx = 0; rowCopyIdx < row.rowRepeat; rowCopyIdx++) {
       const placedThisCopy = placeRow(row, rowIdx, rowCopyIdx, y, lookup);
       placed.push(...placedThisCopy.units);
-      // Advance y past this row's footprint length (the maximum unit
-      // length in the row) + the inter-row gap, unless this is the
-      // very last row + copy combination.
+      // Advance y past this row's footprint length, then the
+      // appropriate gap. Between copies of the same template:
+      // gapBetweenCopiesM. After the last copy: the inter-template
+      // gap from interRowGapsM[rowIdx]. Final row's final copy: no
+      // gap (no rows follow).
       y += placedThisCopy.rowLengthM;
-      const isLastCopyOfLastRow =
-        rowIdx === lastRowIdx && rowCopyIdx === row.rowRepeat - 1;
-      if (!isLastCopyOfLastRow) {
-        y += row.gapToNextRowM;
+      const isLastCopyOfThisRow = rowCopyIdx === row.rowRepeat - 1;
+      const isLastRow = rowIdx === lastRowIdx;
+      if (!isLastCopyOfThisRow) {
+        y += row.gapBetweenCopiesM ?? 2;
+      } else if (!isLastRow) {
+        y += interGaps[rowIdx] ?? 2;
       }
     }
   }
@@ -143,7 +159,7 @@ export function materialiseBessGroup(
         latLng[1] + override.latLngDelta[1],
       ];
     }
-    const ref = override?.modelOverride ?? p.unit;
+    const ref = override?.modelOverride ?? p.segRef;
     const entry = lookup(ref.catalogScope, ref.modelId);
     const kind: SourceKind = entry?.kind ?? 'bess';
     counts[kind]++;
@@ -159,8 +175,22 @@ export function materialiseBessGroup(
       catalogScope: ref.catalogScope,
       groupId: group.id,
       slotKey: p.slotKey,
+      // Stamp the group rotation onto the unit so the on-map renderer
+      // (sourceMarker, fix #7) can rotate the footprint rect. The
+      // 'across' orientation is already baked into the unit's
+      // width/length swap in placeRow, so we don't add another 90°
+      // here -- the rect at rotationDeg with already-swapped
+      // dimensions renders correctly.
+      yawDeg: group.rotationDeg,
     };
-    if (override?.modeOverride !== undefined) src.modeOverride = override.modeOverride;
+    // Mode override priority: per-slot override > segment-level
+    // modeOverride > catalog default. We surface the SEGMENT value
+    // on the materialised Source so the solver picks it up.
+    if (override?.modeOverride !== undefined) {
+      src.modeOverride = override.modeOverride;
+    } else if (p.segRef.modeOverride !== undefined) {
+      src.modeOverride = p.segRef.modeOverride;
+    }
     if (override?.elevationOffset !== undefined) src.elevationOffset = override.elevationOffset;
     sources.push(src);
   }
@@ -190,35 +220,107 @@ function placeRow(
   const units: PlacedUnit[] = [];
   let x = 0;
   let maxLengthInRow = 0;
-  const reps = Math.max(1, row.patternRepeat);
-  for (let patternCopyIdx = 0; patternCopyIdx < reps; patternCopyIdx++) {
-    for (let unitIdx = 0; unitIdx < row.pattern.length; unitIdx++) {
-      const unit = row.pattern[unitIdx];
-      const entry = lookup(unit.catalogScope, unit.modelId);
-      const { widthM, lengthM } = entry
-        ? footprintFor(entry)
-        // Missing entry: fall back to BESS default. The materialiser
-        // still emits the source; the UI surfaces the broken ref via
-        // its usual lookup chain.
-        : { widthM: 5.1, lengthM: 1.7 };
-      if (lengthM > maxLengthInRow) maxLengthInRow = lengthM;
+  const segments = row.segments ?? [];
+  for (let segIdx = 0; segIdx < segments.length; segIdx++) {
+    const seg = segments[segIdx];
+    const count = Math.max(0, Math.floor(seg.count));
+    if (count === 0) continue;
+    const entry = lookup(seg.catalogScope, seg.modelId);
+    // Catalog footprint = (widthM, lengthM) in the unit's NATIVE frame.
+    // For BESS / aux the convention is widthM = LONG axis, lengthM =
+    // SHORT axis (matches the marker rect drawn as 18×12 with the
+    // long side horizontal). "Along" orientation lays units with the
+    // long axis along the row direction (so we lay them widthM
+    // along x); "across" rotates 90° (lay lengthM along x).
+    const fp = entry ? footprintFor(entry) : { widthM: 5.1, lengthM: 1.7 };
+    const orientedWidthM = seg.orientation === 'across' ? fp.lengthM : fp.widthM;
+    const orientedLengthM = seg.orientation === 'across' ? fp.widthM : fp.lengthM;
+    if (orientedLengthM > maxLengthInRow) maxLengthInRow = orientedLengthM;
+    for (let u = 0; u < count; u++) {
       units.push({
-        slotKey: `r${rowIdx}-c${rowCopyIdx}-p${patternCopyIdx}-u${unitIdx}`,
-        unit,
-        centreX: x + widthM / 2,
-        centreY: y + lengthM / 2,
-        widthM,
-        lengthM,
+        slotKey: `r${rowIdx}-c${rowCopyIdx}-s${seg.id}-u${u}`,
+        segRef: {
+          catalogScope: seg.catalogScope,
+          modelId: seg.modelId,
+          modeOverride: seg.modeOverride,
+        },
+        centreX: x + orientedWidthM / 2,
+        centreY: y + orientedLengthM / 2,
+        widthM: orientedWidthM,
+        lengthM: orientedLengthM,
       });
-      x += widthM;
-      // spacing between consecutive units (within the pattern AND
-      // between pattern copies)
-      const isLastUnitOfLastCopy =
-        unitIdx === row.pattern.length - 1 && patternCopyIdx === reps - 1;
-      if (!isLastUnitOfLastCopy) x += row.spacingWithinM;
+      x += orientedWidthM;
+      // Intra-segment spacing applies between consecutive units in the
+      // same segment only. The LAST unit in the segment gets the
+      // segment's gapAfterM appended (handled below).
+      if (u < count - 1) x += seg.spacingWithinM;
     }
+    // Gap to next segment (skipped for the final segment in the row).
+    if (segIdx < segments.length - 1) x += seg.gapAfterM;
   }
   return { units, rowLengthM: maxLengthInRow };
+}
+
+/// Translate a legacy pattern-based row into the segment model. Pure;
+/// runs every time we materialise a group, so old projects keep
+/// working without a one-shot migration step. New rows already have
+/// `segments` and pass through unchanged.
+///
+/// Heuristic: the legacy `pattern` was a flat list of unit refs with
+/// uniform `spacingWithinM`. We collapse consecutive runs of the same
+/// (catalogScope, modelId) into one segment with the appropriate
+/// count, and set every segment's spacingWithinM + gapAfterM to the
+/// row's old uniform spacing -- preserves visual layout exactly.
+export function migrateLegacyRow(row: BessRow): BessRow {
+  if (row.segments && row.segments.length > 0) return row;
+  if (!row.pattern || row.pattern.length === 0) {
+    return {
+      ...row,
+      segments: [],
+      rowRepeat: row.rowRepeat ?? 1,
+      gapBetweenCopiesM: row.gapBetweenCopiesM ?? 2,
+    };
+  }
+  const spacing = row.spacingWithinM ?? 1.5;
+  const repeat = Math.max(1, row.patternRepeat ?? 1);
+  // Expand pattern × patternRepeat into a flat list, then collapse
+  // adjacent same-model runs.
+  const expanded: Array<{ catalogScope: CatalogScope; modelId: string }> = [];
+  for (let p = 0; p < repeat; p++) {
+    for (const u of row.pattern) {
+      expanded.push({ catalogScope: u.catalogScope, modelId: u.modelId });
+    }
+  }
+  const segments: BessSegment[] = [];
+  let i = 0;
+  let segCounter = 0;
+  while (i < expanded.length) {
+    const ref = expanded[i];
+    let count = 1;
+    while (i + count < expanded.length
+        && expanded[i + count].catalogScope === ref.catalogScope
+        && expanded[i + count].modelId === ref.modelId) {
+      count++;
+    }
+    segments.push({
+      id: `mig-${row.id}-${segCounter++}`,
+      catalogScope: ref.catalogScope,
+      modelId: ref.modelId,
+      count,
+      spacingWithinM: spacing,
+      // Legacy spacing was uniform across the entire row, so the
+      // gap-after between segments also matches.
+      gapAfterM: spacing,
+      orientation: 'along',
+    });
+    i += count;
+  }
+  return {
+    id: row.id,
+    segments,
+    rowRepeat: row.rowRepeat ?? 1,
+    gapBetweenCopiesM: row.gapBetweenCopiesM ?? (row.gapToNextRowM ?? 2),
+  };
 }
 
 function boundingBox(placed: PlacedUnit[]): {
@@ -272,13 +374,22 @@ export function newBessGroupTemplate(
     rows: [
       {
         id: `${id}-row1`,
-        pattern: defaultBessRef ? [defaultBessRef] : [],
-        patternRepeat: 8,
-        spacingWithinM: 1.5,
-        gapToNextRowM: 2,
+        segments: defaultBessRef
+          ? [{
+              id: `${id}-row1-seg1`,
+              catalogScope: defaultBessRef.catalogScope,
+              modelId: defaultBessRef.modelId,
+              count: 8,
+              spacingWithinM: 1.5,
+              gapAfterM: 0,
+              orientation: 'along',
+            }]
+          : [],
         rowRepeat: 1,
+        gapBetweenCopiesM: 2,
       },
     ],
+    interRowGapsM: [],
   };
 }
 

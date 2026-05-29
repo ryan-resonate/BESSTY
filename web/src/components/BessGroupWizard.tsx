@@ -8,7 +8,7 @@
 // it (preserving per-slot hand-edits via the existing
 // `unitOverrides` map on the group itself).
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   materialiseBessGroup,
   newBessGroupTemplate,
@@ -18,7 +18,7 @@ import { footprintFor, listEntriesByKind } from '../lib/catalog';
 import type {
   BessGroup,
   BessRow,
-  BessRowUnit,
+  BessSegment,
   CatalogScope,
   Project,
   SourceKind,
@@ -84,49 +84,99 @@ export function BessGroupWizard(props: Props) {
   const setRotation = (deg: number) =>
     setGroup((g) => ({ ...g, rotationDeg: Number.isFinite(deg) ? deg : 0 }));
 
+  // ----- Row-level mutators -----
+
   const updateRow = useCallback((idx: number, patch: Partial<BessRow>) => {
     setGroup((g) => ({
       ...g,
       rows: g.rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)),
     }));
   }, []);
-  const deleteRow = (idx: number) => setGroup((g) => ({
-    ...g, rows: g.rows.filter((_, i) => i !== idx),
-  }));
+  const deleteRow = (idx: number) => setGroup((g) => {
+    const rows = g.rows.filter((_, i) => i !== idx);
+    // Drop the corresponding inter-row gap (the gap AFTER the removed
+    // row, which becomes obsolete). If the removed row was the last
+    // one, the trailing gap was already unused -- safe to drop too.
+    const gaps = (g.interRowGapsM ?? []).filter((_, i) => i !== idx);
+    return { ...g, rows, interRowGapsM: gaps };
+  });
   const duplicateRow = (idx: number) => setGroup((g) => {
     const src = g.rows[idx];
-    const copy: BessRow = { ...src, id: `${g.id}-row-${Date.now().toString(36)}` };
-    return { ...g, rows: [...g.rows.slice(0, idx + 1), copy, ...g.rows.slice(idx + 1)] };
+    const cloned: BessRow = {
+      ...src,
+      id: `${g.id}-row-${Date.now().toString(36)}`,
+      // Also clone segment ids so the materialiser's slot keys stay
+      // unique across the original + the copy.
+      segments: src.segments.map((s, k) => ({
+        ...s,
+        id: `${g.id}-row-${Date.now().toString(36)}-seg${k}`,
+      })),
+    };
+    const rows = [...g.rows.slice(0, idx + 1), cloned, ...g.rows.slice(idx + 1)];
+    // Insert a 2 m default gap after the original (the new row sits
+    // right after it).
+    const gaps = [...(g.interRowGapsM ?? [])];
+    gaps.splice(idx, 0, 2);
+    return { ...g, rows, interRowGapsM: gaps };
   });
   const addRow = () => setGroup((g) => {
     const defaultBess = defaultBessRef(project);
     const newRow: BessRow = {
       id: `${g.id}-row-${Date.now().toString(36)}`,
-      pattern: defaultBess ? [defaultBess] : [],
-      patternRepeat: 8,
-      spacingWithinM: 1.5,
-      gapToNextRowM: 2,
+      segments: defaultBess
+        ? [{
+            id: `${g.id}-row-${Date.now().toString(36)}-seg1`,
+            catalogScope: defaultBess.catalogScope,
+            modelId: defaultBess.modelId,
+            count: 8,
+            spacingWithinM: 1.5,
+            gapAfterM: 0,
+            orientation: 'along' as const,
+          }]
+        : [],
       rowRepeat: 1,
+      gapBetweenCopiesM: 2,
     };
-    return { ...g, rows: [...g.rows, newRow] };
+    // New row appended -- need a new gap between the previous last
+    // row and this one (defaulted to 2 m).
+    const gaps = [...(g.interRowGapsM ?? [])];
+    if (g.rows.length > 0) gaps.push(2);
+    return { ...g, rows: [...g.rows, newRow], interRowGapsM: gaps };
   });
   const moveRow = (from: number, to: number) => setGroup((g) => {
     if (from === to || to < 0 || to >= g.rows.length) return g;
     const rows = [...g.rows];
     const [moved] = rows.splice(from, 1);
     rows.splice(to, 0, moved);
+    // Inter-row gaps belong to row PAIRS, so moving rows around
+    // shuffles which gaps live where. Cheapest correct behaviour:
+    // preserve the gap values in their original order rather than
+    // trying to track them per pair. Users can re-tune in the new
+    // position; matches how most CAD-style row-reorder works.
     return { ...g, rows };
   });
 
-  const updatePatternUnit = (rowIdx: number, unitIdx: number, ref: BessRowUnit) =>
+  // Inter-row gap mutator. gapIdx is between row gapIdx and gapIdx+1.
+  const setInterRowGap = (gapIdx: number, value: number) => setGroup((g) => {
+    const gaps = [...(g.interRowGapsM ?? [])];
+    // Ensure the array is long enough; freshly-loaded legacy groups
+    // may have a shorter or missing array.
+    while (gaps.length <= gapIdx) gaps.push(2);
+    gaps[gapIdx] = value;
+    return { ...g, interRowGapsM: gaps };
+  });
+
+  // ----- Segment-level mutators -----
+
+  const updateSegment = (rowIdx: number, segIdx: number, patch: Partial<BessSegment>) =>
     setGroup((g) => ({
       ...g,
       rows: g.rows.map((r, i) => i !== rowIdx ? r : ({
         ...r,
-        pattern: r.pattern.map((u, j) => j === unitIdx ? ref : u),
+        segments: r.segments.map((s, j) => j === segIdx ? { ...s, ...patch } : s),
       })),
     }));
-  const addPatternUnit = (rowIdx: number) =>
+  const addSegment = (rowIdx: number) =>
     setGroup((g) => ({
       ...g,
       rows: g.rows.map((r, i) => {
@@ -134,18 +184,35 @@ export function BessGroupWizard(props: Props) {
         const def = defaultBessRef(project)
           ?? defaultRefForKind(project, 'bess')
           ?? { catalogScope: 'global' as const, modelId: '' };
-        return { ...r, pattern: [...r.pattern, def] };
+        const newSeg: BessSegment = {
+          id: `${r.id}-seg-${Date.now().toString(36)}`,
+          catalogScope: def.catalogScope,
+          modelId: def.modelId,
+          count: 1,
+          spacingWithinM: 1.5,
+          gapAfterM: 3,
+          orientation: 'along',
+        };
+        // The previously-last segment's gapAfterM is now meaningful
+        // (gap to the new segment). Leave it alone -- it was set
+        // explicitly when the user added the segment originally.
+        return { ...r, segments: [...r.segments, newSeg] };
       }),
     }));
-  const removePatternUnit = (rowIdx: number, unitIdx: number) =>
+  const removeSegment = (rowIdx: number, segIdx: number) =>
     setGroup((g) => ({
       ...g,
       rows: g.rows.map((r, i) => i !== rowIdx ? r : ({
-        ...r, pattern: r.pattern.filter((_, j) => j !== unitIdx),
+        ...r,
+        segments: r.segments.filter((_, j) => j !== segIdx),
       })),
     }));
 
   const totalRows = group.rows.reduce((acc, r) => acc + r.rowRepeat, 0);
+  const totalUnits = group.rows.reduce(
+    (acc, r) => acc + r.rowRepeat * r.segments.reduce((s, sg) => s + Math.max(0, Math.floor(sg.count)), 0),
+    0,
+  );
   const droppedOverrideCount = materialised.droppedOverrideKeys.length;
 
   return (
@@ -188,39 +255,50 @@ export function BessGroupWizard(props: Props) {
                 <span style={badgeStyle}>
                   {group.rows.length} template{group.rows.length === 1 ? '' : 's'} ·
                   {' '}{totalRows} physical row{totalRows === 1 ? '' : 's'} ·
-                  {' '}{materialised.counts.bess + materialised.counts.auxiliary} unit{(materialised.counts.bess + materialised.counts.auxiliary) === 1 ? '' : 's'}
+                  {' '}{totalUnits} unit{totalUnits === 1 ? '' : 's'}
                 </span>
               </h4>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {group.rows.map((row, idx) => (
-                  <BessRowCard
-                    key={row.id}
-                    row={row}
-                    idx={idx}
-                    isLast={idx === group.rows.length - 1}
-                    isExpanded={expandedRowIdx === idx}
-                    project={project}
-                    editingChipKey={editingChipKey}
-                    setEditingChipKey={setEditingChipKey}
-                    onToggleExpand={() => setExpandedRowIdx(expandedRowIdx === idx ? -1 : idx)}
-                    onChange={(patch) => updateRow(idx, patch)}
-                    onAddPatternUnit={() => addPatternUnit(idx)}
-                    onUpdatePatternUnit={(u, ref) => updatePatternUnit(idx, u, ref)}
-                    onRemovePatternUnit={(u) => removePatternUnit(idx, u)}
-                    onDuplicate={() => duplicateRow(idx)}
-                    onDelete={() => deleteRow(idx)}
-                    onMoveUp={() => moveRow(idx, idx - 1)}
-                    onMoveDown={() => moveRow(idx, idx + 1)}
-                  />
+                  <Fragment key={row.id}>
+                    <BessRowCard
+                      row={row}
+                      idx={idx}
+                      isLast={idx === group.rows.length - 1}
+                      isExpanded={expandedRowIdx === idx}
+                      project={project}
+                      editingChipKey={editingChipKey}
+                      setEditingChipKey={setEditingChipKey}
+                      onToggleExpand={() => setExpandedRowIdx(expandedRowIdx === idx ? -1 : idx)}
+                      onChange={(patch) => updateRow(idx, patch)}
+                      onUpdateSegment={(sIdx, patch) => updateSegment(idx, sIdx, patch)}
+                      onAddSegment={() => addSegment(idx)}
+                      onRemoveSegment={(sIdx) => removeSegment(idx, sIdx)}
+                      onDuplicate={() => duplicateRow(idx)}
+                      onDelete={() => deleteRow(idx)}
+                      onMoveUp={() => moveRow(idx, idx - 1)}
+                      onMoveDown={() => moveRow(idx, idx + 1)}
+                    />
+                    {/* Inter-row gap control: appears BETWEEN cards, not on
+                        them. Renders for every gap (one less than the
+                        number of rows). Per fix #3 -- gap is a property
+                        of the space between rows, not of either row. */}
+                    {idx < group.rows.length - 1 && (
+                      <InterRowGap
+                        valueM={group.interRowGapsM?.[idx] ?? 2}
+                        onChange={(v) => setInterRowGap(idx, v)}
+                      />
+                    )}
+                  </Fragment>
                 ))}
                 <button type="button" onClick={addRow} style={addRowBtnStyle}>
                   + Add row template
                 </button>
                 <p style={hintStyle}>
                   Reuse: <em>duplicate template</em> clones a row inline for tweaking.
-                  For an exactly-identical row repeated N times, set <em>Repeat row × N</em>.
-                  An empty pattern makes the row act as a pure spacer.
+                  For an exactly-identical row repeated N times, set <em>Repeat row × N</em>
+                  on the row card. Empty rows act as pure spacers.
                 </p>
               </div>
             </section>
@@ -290,9 +368,9 @@ interface RowCardProps {
   setEditingChipKey: (k: string | null) => void;
   onToggleExpand: () => void;
   onChange: (patch: Partial<BessRow>) => void;
-  onAddPatternUnit: () => void;
-  onUpdatePatternUnit: (unitIdx: number, ref: BessRowUnit) => void;
-  onRemovePatternUnit: (unitIdx: number) => void;
+  onUpdateSegment: (segIdx: number, patch: Partial<BessSegment>) => void;
+  onAddSegment: () => void;
+  onRemoveSegment: (segIdx: number) => void;
   onDuplicate: () => void;
   onDelete: () => void;
   onMoveUp: () => void;
@@ -321,49 +399,39 @@ function BessRowCard(p: RowCardProps) {
         <>
           <div style={rowCardBodyStyle}>
             <div style={{ gridColumn: '1 / -1', fontSize: 11, color: 'var(--ink-soft)', fontWeight: 600 }}>
-              Pattern · repeats inside one row
+              Segments · click a segment to edit its model / count / spacing / orientation
             </div>
             <div style={patternRowStyle}>
-              {row.pattern.length === 0 && (
+              {row.segments.length === 0 && (
                 <span style={{ fontSize: 11, color: 'var(--ink-soft)', fontStyle: 'italic' }}>
-                  (empty pattern — this row is a pure spacer)
+                  (empty row — pure spacer)
                 </span>
               )}
-              {row.pattern.map((unit, uIdx) => (
-                <UnitChip
-                  key={uIdx}
-                  unit={unit}
+              {row.segments.map((seg, sIdx) => (
+                <SegmentChip
+                  key={seg.id}
+                  segment={seg}
+                  isLastInRow={sIdx === row.segments.length - 1}
                   project={p.project}
                   editingKey={p.editingChipKey}
                   setEditingKey={p.setEditingChipKey}
-                  chipKey={`${idx}-${uIdx}`}
-                  onChange={(ref) => p.onUpdatePatternUnit(uIdx, ref)}
-                  onRemove={() => p.onRemovePatternUnit(uIdx)}
+                  chipKey={`${idx}-${sIdx}`}
+                  onChange={(patch) => p.onUpdateSegment(sIdx, patch)}
+                  onRemove={() => p.onRemoveSegment(sIdx)}
                 />
               ))}
-              <span style={patternRepeatBadgeStyle}>× {row.patternRepeat}</span>
-              <button type="button" onClick={p.onAddPatternUnit} style={ghostBtnTinyStyle}>+ add unit</button>
+              <button type="button" onClick={p.onAddSegment} style={ghostBtnTinyStyle}>+ add segment</button>
             </div>
-            <label style={fieldStyleSm}>
-              <span style={fieldLabelStyle}>Pattern repeat × N</span>
-              <NumberDraft value={row.patternRepeat} min={1} step={1} integer
-                onCommit={(v) => p.onChange({ patternRepeat: v })} />
-            </label>
-            <label style={fieldStyleSm}>
-              <span style={fieldLabelStyle}>Unit spacing — edge-to-edge (m)</span>
-              <NumberDraft value={row.spacingWithinM} min={0} step={0.1}
-                onCommit={(v) => p.onChange({ spacingWithinM: v })} />
-            </label>
             <label style={fieldStyleSm}>
               <span style={fieldLabelStyle}>Repeat row × N</span>
               <NumberDraft value={row.rowRepeat} min={1} step={1} integer
                 onCommit={(v) => p.onChange({ rowRepeat: v })} />
             </label>
             <label style={fieldStyleSm}>
-              <span style={fieldLabelStyle}>Gap to next row (m)</span>
-              <NumberDraft value={row.gapToNextRowM} min={0} step={0.1}
-                disabled={isLast}
-                onCommit={(v) => p.onChange({ gapToNextRowM: v })} />
+              <span style={fieldLabelStyle}>Gap between row copies (m)</span>
+              <NumberDraft value={row.gapBetweenCopiesM} min={0} step={0.1}
+                disabled={row.rowRepeat <= 1}
+                onCommit={(v) => p.onChange({ gapBetweenCopiesM: v })} />
             </label>
           </div>
           <div style={rowCardActionsStyle}>
@@ -379,25 +447,49 @@ function BessRowCard(p: RowCardProps) {
 }
 
 function describeRow(row: BessRow): string {
-  if (row.pattern.length === 0) return `spacer · gap ${row.gapToNextRowM} m`;
-  const totalUnits = row.pattern.length * row.patternRepeat;
+  if (row.segments.length === 0) return 'spacer';
+  const totalUnits = row.segments.reduce((acc, s) => acc + Math.max(0, Math.floor(s.count)), 0);
   const repeatTxt = row.rowRepeat > 1 ? ` · row × ${row.rowRepeat}` : '';
-  return `${totalUnits} unit${totalUnits === 1 ? '' : 's'}${repeatTxt} · gap ${row.gapToNextRowM} m`;
+  const segDesc = row.segments.map((s) => `${s.count}×${s.catalogScope.charAt(0).toUpperCase()}`).join(' + ');
+  return `${segDesc} (${totalUnits} unit${totalUnits === 1 ? '' : 's'})${repeatTxt}`;
 }
 
-// ===== Unit chip with click-to-edit model picker =====
+// ===== Inter-row gap control (rendered between row cards) =====
 
-interface UnitChipProps {
-  unit: BessRowUnit;
+function InterRowGap(props: { valueM: number; onChange: (v: number) => void }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8,
+      padding: '4px 12px 4px 32px',
+      // Indented + with a left rail so it's visually clear this gap
+      // sits BETWEEN rows rather than being a row itself.
+      borderLeft: '2px dashed var(--light)',
+      marginLeft: 12,
+    }}>
+      <span style={{ fontSize: 11, color: 'var(--ink-soft)', fontWeight: 600 }}>↕ gap to next row (m)</span>
+      <NumberDraft
+        value={props.valueM} min={0} step={0.1}
+        onCommit={props.onChange}
+        style={{ width: 80 }}
+      />
+    </div>
+  );
+}
+
+// ===== Segment chip with click-to-edit popover =====
+
+interface SegmentChipProps {
+  segment: BessSegment;
+  isLastInRow: boolean;
   project: Project;
   chipKey: string;
   editingKey: string | null;
   setEditingKey: (k: string | null) => void;
-  onChange: (ref: BessRowUnit) => void;
+  onChange: (patch: Partial<BessSegment>) => void;
   onRemove: () => void;
 }
 
-function UnitChip(p: UnitChipProps) {
+function SegmentChip(p: SegmentChipProps) {
   // Pull all BESS + aux entries the user can reference. Personal +
   // global only -- 'local' is deprecated for new entries (task #23).
   const candidates = useMemo(() => [
@@ -405,48 +497,124 @@ function UnitChip(p: UnitChipProps) {
     ...listEntriesByKind(p.project, 'auxiliary'),
   ].filter((e) => e._scope !== 'local'), [p.project]);
 
-  const current = candidates.find((c) => c._scope === p.unit.catalogScope && c.id === p.unit.modelId);
+  const current = candidates.find((c) =>
+    c._scope === p.segment.catalogScope && c.id === p.segment.modelId);
   const isEditing = p.editingKey === p.chipKey;
   const isBess = current?.kind === 'bess';
   const isAux = current?.kind === 'auxiliary';
-  const chipClass = isBess ? unitChipBessStyle : isAux ? unitChipAuxStyle : unitChipMissingStyle;
+  const chipBase = isBess ? unitChipBessStyle : isAux ? unitChipAuxStyle : unitChipMissingStyle;
+  // Show count + name on the chip face.
+  const label = `${current?.displayName ?? '(missing)'} × ${p.segment.count}`;
+  // Available modes from the current entry; null if missing.
+  const modeOptions = current?.modes?.map((m) => m.name) ?? [];
 
   return (
     <span style={{ position: 'relative' }}>
-      <span
-        style={chipClass}
+      <button
+        type="button"
+        style={{ ...chipBase, padding: '4px 10px' }}
         onClick={() => p.setEditingKey(isEditing ? null : p.chipKey)}
-        title={current?.displayName ?? `Missing: ${p.unit.modelId}`}
+        title={current?.displayName ?? `Missing: ${p.segment.modelId}`}
       >
-        {isBess ? 'B · ' : isAux ? 'A · ' : '? '}
-        {current?.displayName ?? '(missing)'}
-      </span>
+        {isBess ? 'B · ' : isAux ? 'A · ' : '? '}{label}
+        {p.segment.orientation === 'across' && (
+          <span style={{ marginLeft: 4, fontSize: 9, opacity: 0.7 }}>↕</span>
+        )}
+      </button>
       {isEditing && (
-        <span style={chipMenuStyle}>
-          <select
-            value={`${p.unit.catalogScope}:${p.unit.modelId}`}
-            onChange={(e) => {
-              const [scope, ...rest] = e.target.value.split(':');
-              p.onChange({
-                catalogScope: scope as CatalogScope,
-                modelId: rest.join(':'),
-              });
-            }}
-            style={{ ...inputStyle, fontSize: 12 }}
-            autoFocus
-            onBlur={() => p.setEditingKey(null)}
-          >
-            {candidates.map((c) => (
-              <option key={`${c._scope}:${c.id}`} value={`${c._scope}:${c.id}`}>
-                {c.displayName} {c._scope === 'personal' ? '· personal' : ''}
-              </option>
-            ))}
-          </select>
-          <button type="button" onClick={() => { p.onRemove(); p.setEditingKey(null); }}
-            style={{ ...ghostBtnTinyStyle, color: 'var(--red)' }}>
-            ✕ remove unit
-          </button>
-        </span>
+        <div style={segmentMenuStyle} onClick={(e) => e.stopPropagation()}>
+          <div style={menuHeaderStyle}>Edit segment</div>
+
+          <label style={menuFieldStyle}>
+            <span style={fieldLabelStyle}>Model</span>
+            <select
+              value={`${p.segment.catalogScope}:${p.segment.modelId}`}
+              onChange={(e) => {
+                const [scope, ...rest] = e.target.value.split(':');
+                const newRef = { catalogScope: scope as CatalogScope, modelId: rest.join(':') };
+                // Reset modeOverride when changing models (the previous
+                // mode name likely doesn't exist on the new model).
+                p.onChange({ ...newRef, modeOverride: undefined });
+              }}
+              style={{ ...inputStyle, fontSize: 12 }}
+              autoFocus
+            >
+              <optgroup label="BESS">
+                {candidates.filter((c) => c.kind === 'bess').map((c) => (
+                  <option key={`${c._scope}:${c.id}`} value={`${c._scope}:${c.id}`}>
+                    {c.displayName} {c._scope === 'personal' ? '· personal' : ''}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="Auxiliary (inverter / transformer / other)">
+                {candidates.filter((c) => c.kind === 'auxiliary').map((c) => (
+                  <option key={`${c._scope}:${c.id}`} value={`${c._scope}:${c.id}`}>
+                    {c.displayName} {c._scope === 'personal' ? '· personal' : ''}
+                  </option>
+                ))}
+              </optgroup>
+            </select>
+          </label>
+
+          {modeOptions.length > 1 && (
+            <label style={menuFieldStyle}>
+              <span style={fieldLabelStyle}>Mode</span>
+              <select
+                value={p.segment.modeOverride ?? current?.defaultMode ?? ''}
+                onChange={(e) => p.onChange({ modeOverride: e.target.value })}
+                style={{ ...inputStyle, fontSize: 12 }}
+              >
+                {modeOptions.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+            <label style={menuFieldStyle}>
+              <span style={fieldLabelStyle}>Count</span>
+              <NumberDraft value={p.segment.count} min={0} step={1} integer
+                onCommit={(v) => p.onChange({ count: v })} />
+            </label>
+            <label style={menuFieldStyle}>
+              <span style={fieldLabelStyle}>Spacing within (m)</span>
+              <NumberDraft value={p.segment.spacingWithinM} min={0} step={0.1}
+                onCommit={(v) => p.onChange({ spacingWithinM: v })} />
+            </label>
+          </div>
+
+          {!p.isLastInRow && (
+            <label style={menuFieldStyle}>
+              <span style={fieldLabelStyle}>Gap to next segment (m)</span>
+              <NumberDraft value={p.segment.gapAfterM} min={0} step={0.1}
+                onCommit={(v) => p.onChange({ gapAfterM: v })} />
+            </label>
+          )}
+
+          <label style={menuFieldStyle}>
+            <span style={fieldLabelStyle}>Orientation within row</span>
+            <select
+              value={p.segment.orientation}
+              onChange={(e) => p.onChange({ orientation: e.target.value as 'along' | 'across' })}
+              style={{ ...inputStyle, fontSize: 12 }}
+            >
+              <option value="along">Lengthwise (long axis along the row)</option>
+              <option value="across">Widthwise (long axis across the row)</option>
+            </select>
+          </label>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
+            <button type="button" onClick={() => { p.onRemove(); p.setEditingKey(null); }}
+              style={{ ...ghostBtnTinyStyle, color: 'var(--red)' }}>
+              ✕ remove segment
+            </button>
+            <button type="button" onClick={() => p.setEditingKey(null)}
+              style={ghostBtnTinyStyle}>
+              Done
+            </button>
+          </div>
+        </div>
       )}
     </span>
   );
@@ -767,10 +935,6 @@ const patternRowStyle: React.CSSProperties = {
   padding: '6px 8px', background: 'var(--slate-1)', borderRadius: 4,
   alignItems: 'center', minHeight: 36,
 };
-const patternRepeatBadgeStyle: React.CSSProperties = {
-  marginLeft: 'auto', padding: '2px 8px', background: 'var(--yellow)', color: 'var(--ink)',
-  fontWeight: 600, borderRadius: 99, fontSize: 11, fontFamily: 'var(--font-mono)',
-};
 const unitChipBaseStyle: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', gap: 3,
   padding: '2px 8px', borderRadius: 3, fontSize: 11, fontWeight: 500, cursor: 'pointer',
@@ -784,11 +948,22 @@ const unitChipAuxStyle: React.CSSProperties = {
 const unitChipMissingStyle: React.CSSProperties = {
   ...unitChipBaseStyle, background: '#fee2e2', border: '1px dashed #dc2626', color: '#991b1b',
 };
-const chipMenuStyle: React.CSSProperties = {
-  position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 20,
-  background: 'var(--paper)', border: '1px solid var(--light)', borderRadius: 4,
-  padding: 6, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 240,
+// Segment-editor popover that opens when the user clicks a segment chip.
+// Taller than the old single-select chipMenu because the segment form has
+// model + mode + count + spacing + gap + orientation in one place.
+const segmentMenuStyle: React.CSSProperties = {
+  position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 30,
+  background: 'var(--paper)', border: '1px solid var(--light)', borderRadius: 6,
+  padding: 10, display: 'flex', flexDirection: 'column', gap: 8, minWidth: 280,
   boxShadow: 'var(--shadow-2)',
+};
+const menuHeaderStyle: React.CSSProperties = {
+  fontSize: 11, fontWeight: 700, color: 'var(--ink-soft)',
+  textTransform: 'uppercase', letterSpacing: '0.06em',
+  borderBottom: '1px solid var(--light)', paddingBottom: 6,
+};
+const menuFieldStyle: React.CSSProperties = {
+  display: 'flex', flexDirection: 'column', gap: 3,
 };
 const addRowBtnStyle: React.CSSProperties = {
   width: '100%', padding: 10, border: '1px dashed var(--light)', borderRadius: 6,
