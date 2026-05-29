@@ -205,7 +205,41 @@ export interface Project {
   description: string;
   createdAt: string;
   updatedAt: string;
+  /// Legacy owner field, kept for compatibility with v0.x projects that
+  /// predate Firebase auth. New projects set this to the email of the
+  /// owning user; the canonical machine-readable owner identifier is
+  /// `ownerUid` (Firebase UID). Either may be 'anonymous' on demo
+  /// projects loaded from a non-Firebase context.
   owner: string;
+
+  // --- Firestore-specific fields ---
+  // These are populated when the project lives in Firestore. On the
+  // local-storage code path (legacy / offline / unsigned-in) they may be
+  // absent — consumers must handle undefined defensively.
+
+  /// Firebase UID of the project owner. Always equal to the user who
+  /// originally created the project; never changes (use a separate
+  /// "transfer ownership" flow if/when that becomes needed).
+  ownerUid?: string;
+  /// Denormalised display name of the owner, used in the project list
+  /// "Owner" column to avoid an N+1 read across every list row.
+  /// Kept in sync best-effort when the owner edits their profile.
+  ownerDisplayName?: string;
+  /// 'public' — any signed-in user can read the project (write still
+  /// restricted to owner + allowedUserIds + admins).
+  /// 'private' — only owner + allowedUserIds + admins can even read.
+  /// Default 'public' on creation.
+  visibility?: 'public' | 'private';
+  /// Additional users beyond the owner who can read/edit the project.
+  /// Used both as the access list for private projects AND as the
+  /// collaborator list for public projects (collaborators can still edit
+  /// a public project; the public visibility only widens read access).
+  allowedUserIds?: string[];
+  /// Firebase UID of the last user to write the doc. Used by the
+  /// real-time collab path to suppress echo notifications for the
+  /// local user's own writes.
+  updatedByUid?: string;
+
   scenario: Scenario;
   sources: Source[];
   barriers: Barrier[];
