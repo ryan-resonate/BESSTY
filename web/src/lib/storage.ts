@@ -181,10 +181,13 @@ function makeEmptyProject(name: string): Project {
     },
     settings: {
       ground: { defaultG: 0.5 },
-      // +3 dB hemispherical / common-practice DΩ as the new default —
-      // matches the reference output of most Australian / European
-      // wind-farm tools the team benchmarks against.
-      dOmegaDb: 3,
+      // 0 dB DΩ — strict ISO 9613-2 / IEC 61400-11 convention. This
+      // assumes the source's LwA already encodes the hemispherical
+      // radiation pattern (which is how IEC 61400-11 reports it and
+      // how SoundPlan-style validation tools consume catalog data).
+      // Set to +3 in the Settings tab if you're comparing against a
+      // tool that adds the +3 dB ground-reflection boost on top.
+      dOmegaDb: 0,
       annexD: {
         barrierAbarCapDb: 3.0,
         useElevatedSourceForBarrier: true,

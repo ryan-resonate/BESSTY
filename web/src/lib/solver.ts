@@ -62,11 +62,14 @@ function solverEnv(project: Project): SolverEnv {
   return { tC, rh, pKpa, barConv, dzCap };
 }
 
-/// Project-wide DΩ correction (dB), with the new +3 dB hemispherical
-/// default applied when the project hasn't pinned a value. Centralised so
-/// every site that adds DΩ uses the same fallback.
+/// Project-wide DΩ correction (dB). Defaults to 0 dB (strict ISO 9613-2
+/// / IEC 61400-11), which matches SoundPlan-style validation tools.
+/// Override per-project to +3 dB when the source catalog reports
+/// un-weighted Lw and you want the +3 dB hemispherical ground-reflection
+/// boost added on top. Centralised so every site that adds DΩ uses
+/// the same fallback.
 export function projectDOmegaDb(project: Project): number {
-  return project.settings?.dOmegaDb ?? 3;
+  return project.settings?.dOmegaDb ?? 0;
 }
 
 /// Band count for the solver, given a scenario's band system.

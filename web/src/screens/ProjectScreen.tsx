@@ -139,6 +139,21 @@ function defaultModelFor(
   return { modelId: e.id, scope: e._scope };
 }
 
+/// Stable string fingerprint of a DemRaster, used in the structural keys
+/// that drive snapshot recomputation. Discriminates by:
+///   - `source` field (filename for uploads, "auto" for AWS tile-based).
+///   - bounds (rounded to 4 decimal places ≈ 11 m at the equator -- coarse
+///     enough that progressive auto-tile additions don't churn the key,
+///     fine enough that any meaningful DEM swap registers).
+/// Deliberately omits `tilesLoaded` so partial AWS tile loads don't
+/// trigger spurious re-snapshots.
+function demFingerprint(d: DemRaster | null): string {
+  if (!d) return 'none';
+  const src = (d as DemRaster & { source?: string }).source ?? 'auto';
+  const b = d.bounds;
+  return `${src}:${b.sw[0].toFixed(4)},${b.sw[1].toFixed(4)},${b.ne[0].toFixed(4)},${b.ne[1].toFixed(4)}`;
+}
+
 export function ProjectScreen() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -525,6 +540,15 @@ export function ProjectScreen() {
   //
   // Source-position changes don't enter either key — those are gradient-
   // extrapolated and handled by the sourcePosKey effect below.
+  //
+  // DEM fingerprinting note: a previous version of these keys included
+  // `hasDem: !!dem` (a boolean). That meant swapping from auto-loaded
+  // AWS Terrain Tiles to a user-uploaded GeoTIFF (or vice versa) didn't
+  // change the key, so the point snapshot never re-ran -- contours
+  // updated correctly because the user clicks "Run grid" which always
+  // re-snapshots, but the point receivers silently stayed on the
+  // previous DEM. `demFingerprint` discriminates by source + bounds so
+  // any real DEM swap forces a re-snapshot.
   const pointStructuralKey = useMemo(() => {
     if (!project) return '';
     return JSON.stringify({
@@ -538,7 +562,7 @@ export function ProjectScreen() {
       })),
       barriers: project.barriers,
       settings: project.settings,
-      hasDem: !!dem,
+      dem: demFingerprint(dem),
     });
   }, [project, dem]);
 
@@ -556,7 +580,7 @@ export function ProjectScreen() {
       gridReceiverHeight: project.settings?.general.defaultReceiverHeight,
       calc: project.calculationArea,
       gridSpacingM,
-      hasDem: !!dem,
+      dem: demFingerprint(dem),
     });
   }, [project, dem, gridSpacingM]);
 

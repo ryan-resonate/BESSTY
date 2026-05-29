@@ -1450,11 +1450,11 @@ function SettingsTab(props: Props) {
         <h3><span>Solid-angle correction (DΩ)</span></h3>
         <Field label="DΩ (dB)">
           <select
-            value={(settings.dOmegaDb ?? 3).toString()}
+            value={(settings.dOmegaDb ?? 0).toString()}
             onChange={(e) => update({ dOmegaDb: +e.target.value })}
           >
+            <option value="0">0 dB — strict ISO 9613-2 / IEC 61400-11 (default; matches SoundPlan)</option>
             <option value="3">+3 dB — hemispherical / common practice</option>
-            <option value="0">0 dB — strict ISO 9613-2 / IEC 61400-11</option>
           </select>
         </Field>
         <div className="hint">

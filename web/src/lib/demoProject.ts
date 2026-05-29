@@ -29,7 +29,7 @@ import type { Project, ProjectSettings, Source, Receiver } from './types';
 function commonSettings(): ProjectSettings {
   return {
     ground: { defaultG: 0.5 },
-    dOmegaDb: 3,
+    dOmegaDb: 0,
     annexD: {
       barrierAbarCapDb: 3.0,
       useElevatedSourceForBarrier: true,
