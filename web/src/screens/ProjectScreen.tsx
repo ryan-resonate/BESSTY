@@ -23,7 +23,8 @@ import {
   type PointSnapshot,
   type ReceiverResult,
 } from '../lib/solver';
-import { loadProject, saveProject } from '../lib/storage';
+import { useAuthState } from '../lib/auth';
+import { useProjectDoc } from '../lib/useProjectDoc';
 import type { Barrier, Project, Receiver, Source, SourceKind } from '../lib/types';
 
 let nextId = 1000;
@@ -136,6 +137,19 @@ function defaultModelFor(project: Project, kind: SourceKind): { modelId: string;
 export function ProjectScreen() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
+  // Persistence: Firestore-backed if the doc exists there, otherwise
+  // localStorage fallback. The hook handles debounced saves, real-time
+  // collaborator updates, and the "no project anywhere" case.
+  const authState = useAuthState();
+  const currentUid = authState.user?.uid ?? null;
+  const {
+    project: persistedProject,
+    loading: projectLoading,
+    source: projectSource,
+    setProject: persistProject,
+    remoteUpdate,
+    dismissRemoteUpdate,
+  } = useProjectDoc(projectId, currentUid);
   const [project, setProjectState] = useState<Project | null>(null);
   const [results, setResults] = useState<ReceiverResult[] | null>(null);
   const [grid, setGrid] = useState<GridResult | null>(null);
@@ -326,20 +340,31 @@ export function ProjectScreen() {
   // results-dependent UI re-renders against the new exact values.
   const [, setSnapshotVersion] = useState(0);
 
-  // Load project from storage on mount.
+  // Sync persisted project (from the hook) into the editor's working
+  // state. Fires on initial load and on remote collaborator updates that
+  // arrived while we had no unsaved local changes (the hook's banner
+  // path catches the conflict case). Resets undo history on every load
+  // so the user can't undo their way back to "the previous user's edit".
+  useEffect(() => {
+    if (persistedProject) {
+      // Sanitize on load: any NaN that was previously saved (from a botched
+      // import in an older build) gets repaired before it hits the UI.
+      setProjectState(sanitizeProject(persistedProject));
+      undoStackRef.current = [];
+      redoStackRef.current = [];
+    }
+  }, [persistedProject]);
+
+  // Redirect away if there's no project to load — either the id is
+  // garbage or (for a Firestore project) the current user doesn't have
+  // permission to read it.
   useEffect(() => {
     if (!projectId) return;
-    const loaded = loadProject(projectId);
-    if (!loaded) {
+    if (projectLoading) return;
+    if (projectSource === 'none') {
       navigate('/projects', { replace: true });
-      return;
     }
-    // Sanitize on load: any NaN that was previously saved (from a botched
-    // import in an older build) gets repaired before it hits the UI.
-    setProjectState(sanitizeProject(loaded));
-    undoStackRef.current = [];
-    redoStackRef.current = [];
-  }, [projectId, navigate]);
+  }, [projectId, projectLoading, projectSource, navigate]);
 
   // ---------- Undo / redo ----------
   // Push every project mutation onto a 50-deep history stack. Ctrl+Z pops
@@ -362,14 +387,14 @@ export function ProjectScreen() {
       redoStackRef.current = [];
     }
     setProjectState(clean);
-    if (projectId) saveProject(projectId, clean);
+    persistProject(clean);
   }
 
   /// Replace project state without recording it on the undo stack — used by
   /// undo/redo themselves, and by the project-load effect.
   function setProjectQuiet(p: Project) {
     setProjectState(p);
-    if (projectId) saveProject(projectId, p);
+    persistProject(p);
   }
 
   useEffect(() => {
@@ -965,6 +990,39 @@ export function ProjectScreen() {
 
   return (
     <div className="workspace">
+      {remoteUpdate && (
+        <div style={{
+          position: 'fixed', top: 56, left: '50%', transform: 'translateX(-50%)',
+          background: '#fef3c7', color: '#78350f', border: '1px solid #f59e0b',
+          padding: '8px 14px', borderRadius: 8, fontSize: 13, zIndex: 9999,
+          boxShadow: '0 4px 14px rgba(0,0,0,0.10)', display: 'flex',
+          alignItems: 'center', gap: 10,
+        }}>
+          <span>
+            Project was modified by{' '}
+            <strong>{remoteUpdate.byDisplayName ?? 'another user'}</strong>{' '}
+            at {remoteUpdate.at.toLocaleTimeString()}. Your next save will
+            overwrite their changes.
+          </span>
+          <button
+            type="button"
+            onClick={dismissRemoteUpdate}
+            style={{
+              background: 'transparent', border: '1px solid #78350f',
+              color: '#78350f', padding: '2px 8px', borderRadius: 4,
+              fontSize: 12, cursor: 'pointer',
+            }}
+          >Dismiss</button>
+          <button
+            type="button"
+            onClick={() => { dismissRemoteUpdate(); window.location.reload(); }}
+            style={{
+              background: '#78350f', color: '#fff', border: 'none',
+              padding: '2px 8px', borderRadius: 4, fontSize: 12, cursor: 'pointer',
+            }}
+          >Reload</button>
+        </div>
+      )}
       <ErrorBoundary region="Side panel">
       <SidePanel
         project={project}
