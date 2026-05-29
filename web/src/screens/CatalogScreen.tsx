@@ -7,12 +7,13 @@
 // Tabs at the top switch between the two. Add / edit / delete buttons hit
 // whichever scope is active.
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   deleteGlobalEntry,
   loadGlobalCatalog,
   localCatalogOf,
+  subscribeToCachedGlobalCatalog,
   upsertGlobalEntry,
   withLocalEntry,
   withoutLocalEntry,
@@ -53,8 +54,19 @@ export function CatalogScreen() {
   const [globalEntries, setGlobalEntries] = useState<CatalogEntry[]>(() => loadGlobalCatalog());
   const [editing, setEditing] = useState<{ entry: CatalogEntry; targetScope: Scope } | null>(null);
 
+  // Live subscription on the cached global catalog. Re-renders whenever a
+  // remote write lands (another user added/edited/deleted an entry) OR
+  // when we make a local write (our optimistic-update path also fires
+  // the listener). The initial subscribe call fires once immediately
+  // with the current cache contents -- no need to seed state separately.
+  useEffect(() => {
+    return subscribeToCachedGlobalCatalog(setGlobalEntries);
+  }, []);
+
   function refreshGlobal() {
-    setGlobalEntries(loadGlobalCatalog());
+    // No-op now -- the subscription keeps state fresh. Kept as a function
+    // call site for the legacy import flow below; can be removed once
+    // that flow is rewritten.
   }
 
   function persistProject(p: Project) {

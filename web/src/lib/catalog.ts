@@ -2,9 +2,11 @@
 //
 // Two databases of source models live alongside each other:
 //
-//   - **Global catalog** — stored in `localStorage['bessty.catalog.global']`,
-//     shared across every project on this device. Eventually backed by
-//     Firestore so multiple users share the same set of vendor models.
+//   - **Global catalog** — stored in Firestore (`catalogsGlobal/{id}`),
+//     shared across every signed-in user. Cached in module memory and
+//     kept fresh by a live Firestore subscription so the existing
+//     sync API (`loadGlobalCatalog`, `lookupEntry`, source pickers)
+//     can stay synchronous.
 //
 //   - **Local catalog** — stored on the project document itself
 //     (`project.localCatalog`). Per-project, isolated from anything else.
@@ -13,43 +15,128 @@
 // or just one, with no automatic syncing. UI affordances let users copy
 // global → local (and the catalog screen lets them edit either or both).
 // Sources reference an entry by `{ catalogScope, modelId }`.
+//
+// First-time seeding: when the Firestore collection is empty (first ever
+// load), `loadGlobalCatalog` writes the bundled SEED_CATALOG to Firestore.
+// Any signed-in user can do this since the security rule on
+// `catalogsGlobal` allows writes by any authenticated user. Idempotent
+// per doc id, so races between concurrent users are benign.
 
 import type { CatalogEntry, Project, Source, SourceKind } from './types';
 import { SEED_CATALOG } from './seedCatalog';
+import {
+  deleteGlobalEntryFs,
+  seedGlobalCatalog,
+  subscribeGlobalCatalog,
+  upsertGlobalEntryFs,
+} from './firestoreCatalog';
+import { auth as firebaseAuth } from './firebase';
 
-const GLOBAL_CATALOG_KEY = 'bessty.catalog.global';
+// ---------- Global catalog: cache + subscription ----------
 
-// ---------- Global catalog ----------
+let cachedGlobal: CatalogEntry[] = [];
+let cacheHasData = false;
+let subscriptionStarted = false;
+let seedAttempted = false;
 
-/// Read the global catalog. On first call (empty localStorage) seeds with
-/// the bundled `SEED_CATALOG`.
+/// External listeners (e.g. CatalogScreen) get notified whenever the
+/// cache changes. Plain Set-of-callbacks; cheap and synchronous.
+const listeners = new Set<(entries: CatalogEntry[]) => void>();
+
+function emit() {
+  for (const cb of listeners) cb(cachedGlobal);
+}
+
+function startSubscription() {
+  if (subscriptionStarted) return;
+  subscriptionStarted = true;
+  subscribeGlobalCatalog(
+    (entries) => {
+      cachedGlobal = entries;
+      cacheHasData = true;
+      emit();
+      // First snapshot is in. If empty, try seeding once (any signed-in
+      // user is allowed to). Per-doc-id writes are idempotent so races
+      // between users are harmless.
+      if (entries.length === 0 && !seedAttempted) {
+        seedAttempted = true;
+        const uid = firebaseAuth().currentUser?.uid;
+        if (uid) {
+          void seedGlobalCatalog(SEED_CATALOG, uid).catch((err) => {
+            // eslint-disable-next-line no-console
+            console.warn('[BESSTY] auto-seed global catalog failed:', err);
+          });
+        }
+      }
+    },
+    (err) => {
+      // eslint-disable-next-line no-console
+      console.warn('[BESSTY] global catalog subscription failed:', err);
+    },
+  );
+}
+
+/// Read the cached global catalog (synchronous). On first call, kicks off
+/// the Firestore subscription that keeps the cache fresh. Returns the
+/// bundled SEED_CATALOG until the first server snapshot lands -- avoids
+/// a "no entries available" flash on the first render after sign-in.
 export function loadGlobalCatalog(): CatalogEntry[] {
-  try {
-    const raw = localStorage.getItem(GLOBAL_CATALOG_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as CatalogEntry[];
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    }
-  } catch {
-    /* fallthrough to seed */
-  }
-  saveGlobalCatalog(SEED_CATALOG);
-  return SEED_CATALOG.slice();
+  startSubscription();
+  return cacheHasData ? cachedGlobal : SEED_CATALOG;
 }
 
-export function saveGlobalCatalog(entries: CatalogEntry[]) {
-  localStorage.setItem(GLOBAL_CATALOG_KEY, JSON.stringify(entries));
+/// Subscribe to cache changes. Returns an unsubscribe. Used by
+/// CatalogScreen to re-render when other users' writes land or our
+/// own writes round-trip back.
+export function subscribeToCachedGlobalCatalog(
+  cb: (entries: CatalogEntry[]) => void,
+): () => void {
+  startSubscription();
+  listeners.add(cb);
+  // Fire once immediately with current cache contents.
+  cb(loadGlobalCatalog());
+  return () => { listeners.delete(cb); };
 }
 
+/// Insert / overwrite an entry. Writes to Firestore (async) and
+/// optimistically updates the local cache so the UI doesn't flicker.
 export function upsertGlobalEntry(entry: CatalogEntry) {
-  const all = loadGlobalCatalog();
-  const idx = all.findIndex((e) => e.id === entry.id);
-  if (idx >= 0) all[idx] = entry; else all.push(entry);
-  saveGlobalCatalog(all);
+  // Optimistic local update.
+  const idx = cachedGlobal.findIndex((e) => e.id === entry.id);
+  cachedGlobal = idx >= 0
+    ? cachedGlobal.map((e, i) => (i === idx ? entry : e))
+    : [...cachedGlobal, entry];
+  cacheHasData = true;
+  emit();
+  // Async write -- onSnapshot will reconcile once the server confirms.
+  const uid = firebaseAuth().currentUser?.uid ?? 'unknown';
+  void upsertGlobalEntryFs(entry, uid).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error('[BESSTY] upsertGlobalEntry failed:', err);
+  });
 }
 
 export function deleteGlobalEntry(id: string) {
-  saveGlobalCatalog(loadGlobalCatalog().filter((e) => e.id !== id));
+  cachedGlobal = cachedGlobal.filter((e) => e.id !== id);
+  emit();
+  void deleteGlobalEntryFs(id).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error('[BESSTY] deleteGlobalEntry failed:', err);
+  });
+}
+
+/// Bulk replace the entire global catalog (legacy CatalogScreen import
+/// flow). Done as individual upserts so the per-doc-id idempotency
+/// covers re-imports cleanly.
+export function saveGlobalCatalog(entries: CatalogEntry[]) {
+  cachedGlobal = entries.slice();
+  cacheHasData = true;
+  emit();
+  const uid = firebaseAuth().currentUser?.uid ?? 'unknown';
+  void seedGlobalCatalog(entries, uid).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error('[BESSTY] saveGlobalCatalog failed:', err);
+  });
 }
 
 // ---------- Local catalog (lives on a project) ----------
