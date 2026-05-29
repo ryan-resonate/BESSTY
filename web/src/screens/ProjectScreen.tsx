@@ -128,8 +128,11 @@ function sanitizeProject(p: Project): Project {
 }
 
 // Pick a default model when adding a new source: first available entry
-// (local catalog first, then global) of that kind.
-function defaultModelFor(project: Project, kind: SourceKind): { modelId: string; scope: 'global' | 'local' } | null {
+// (local catalog first, then personal, then global) of that kind.
+function defaultModelFor(
+  project: Project,
+  kind: SourceKind,
+): { modelId: string; scope: 'global' | 'local' | 'personal' } | null {
   const candidates = listEntriesByKind(project, kind);
   if (candidates.length === 0) return null;
   const e = candidates[0];

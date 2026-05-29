@@ -11,13 +11,18 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   deleteGlobalEntry,
+  deletePersonalEntry,
   loadGlobalCatalog,
+  loadPersonalCatalog,
   localCatalogOf,
   subscribeToCachedGlobalCatalog,
+  subscribeToCachedPersonalCatalog,
   upsertGlobalEntry,
+  upsertPersonalEntry,
   withLocalEntry,
   withoutLocalEntry,
 } from '../lib/catalog';
+import { useAuthState } from '../lib/auth';
 import { loadProject, saveProject } from '../lib/storage';
 import { parseCatalogXlsx } from '../lib/xlsxImport';
 import { ModalBackdrop } from '../components/ModalBackdrop';
@@ -36,7 +41,7 @@ const KIND_LABEL: Record<SourceKind, string> = {
   auxiliary: 'Auxiliary',
 };
 
-type Scope = 'global' | 'local';
+type Scope = 'global' | 'local' | 'personal';
 
 export function CatalogScreen() {
   // Optional `?project=<id>` query selects a project for the Local tab.
@@ -46,12 +51,16 @@ export function CatalogScreen() {
     [location.search],
   );
 
+  const auth = useAuthState();
+  const isSignedIn = auth.status === 'allowed';
+
   const [project, setProject] = useState<Project | null>(() =>
     projectId ? loadProject(projectId) : null,
   );
   const [scope, setScope] = useState<Scope>(projectId ? 'local' : 'global');
 
   const [globalEntries, setGlobalEntries] = useState<CatalogEntry[]>(() => loadGlobalCatalog());
+  const [personalEntries, setPersonalEntries] = useState<CatalogEntry[]>(() => loadPersonalCatalog());
   const [editing, setEditing] = useState<{ entry: CatalogEntry; targetScope: Scope } | null>(null);
 
   // Live subscription on the cached global catalog. Re-renders whenever a
@@ -62,6 +71,12 @@ export function CatalogScreen() {
   useEffect(() => {
     return subscribeToCachedGlobalCatalog(setGlobalEntries);
   }, []);
+
+  // Same pattern for the personal library. Resubscribes when the signed-in
+  // user changes (the cache module observes the same and resets internally).
+  useEffect(() => {
+    return subscribeToCachedPersonalCatalog(setPersonalEntries);
+  }, [auth.user?.uid]);
 
   function refreshGlobal() {
     // No-op now -- the subscription keeps state fresh. Kept as a function
@@ -76,6 +91,7 @@ export function CatalogScreen() {
 
   function activeEntries(): CatalogEntry[] {
     if (scope === 'local') return project ? localCatalogOf(project) : [];
+    if (scope === 'personal') return personalEntries;
     return globalEntries;
   }
 
@@ -84,6 +100,8 @@ export function CatalogScreen() {
     if (scope === 'global') {
       deleteGlobalEntry(e.id);
       refreshGlobal();
+    } else if (scope === 'personal') {
+      deletePersonalEntry(e.id);
     } else if (project) {
       persistProject(withoutLocalEntry(project, e.id));
     }
@@ -92,17 +110,21 @@ export function CatalogScreen() {
     if (targetScope === 'global') {
       upsertGlobalEntry(updated);
       refreshGlobal();
+    } else if (targetScope === 'personal') {
+      upsertPersonalEntry(updated);
     } else if (project) {
       persistProject(withLocalEntry(project, updated));
     }
     setEditing(null);
   }
-  function copyToOtherScope(e: CatalogEntry) {
-    if (scope === 'global' && project) {
-      persistProject(withLocalEntry(project, { ...e, origin: 'user' }));
-    } else if (scope === 'local') {
+  function copyToOtherScope(e: CatalogEntry, targetScope: Scope) {
+    if (targetScope === 'global') {
       upsertGlobalEntry({ ...e, origin: 'user' });
       refreshGlobal();
+    } else if (targetScope === 'personal') {
+      upsertPersonalEntry({ ...e, origin: 'user' });
+    } else if (targetScope === 'local' && project) {
+      persistProject(withLocalEntry(project, { ...e, origin: 'user' }));
     }
   }
 
@@ -125,6 +147,7 @@ export function CatalogScreen() {
           </Link>
           <UploadButton onLoaded={(es) => {
             if (scope === 'global') { es.forEach(upsertGlobalEntry); refreshGlobal(); }
+            else if (scope === 'personal') { es.forEach(upsertPersonalEntry); }
             else if (project) {
               let next = project;
               for (const e of es) next = withLocalEntry(next, e);
@@ -141,6 +164,11 @@ export function CatalogScreen() {
         <button className={scope === 'global' ? 'on' : ''} onClick={() => setScope('global')}>
           Global ({globalEntries.length})
         </button>
+        {isSignedIn && (
+          <button className={scope === 'personal' ? 'on' : ''} onClick={() => setScope('personal')}>
+            My library ({personalEntries.length})
+          </button>
+        )}
         {project && (
           <button className={scope === 'local' ? 'on' : ''} onClick={() => setScope('local')}>
             {project.name} · Local ({localCatalogOf(project).length})
@@ -197,9 +225,19 @@ export function CatalogScreen() {
                       </td>
                       <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                         <button className="btn small" onClick={() => setEditing({ entry: e, targetScope: scope })}>Edit</button>
-                        {(scope === 'global' ? !!project : true) && (
-                          <button className="btn small" onClick={() => copyToOtherScope(e)} title={scope === 'global' ? 'Copy to project local' : 'Push to global'}>
-                            {scope === 'global' ? '→ Local' : '→ Global'}
+                        {scope !== 'global' && (
+                          <button className="btn small" onClick={() => copyToOtherScope(e, 'global')} title="Copy to the shared global library">
+                            → Global
+                          </button>
+                        )}
+                        {scope !== 'personal' && isSignedIn && (
+                          <button className="btn small" onClick={() => copyToOtherScope(e, 'personal')} title="Copy to your personal library">
+                            → My library
+                          </button>
+                        )}
+                        {scope !== 'local' && project && (
+                          <button className="btn small" onClick={() => copyToOtherScope(e, 'local')} title="Copy to this project's local catalog">
+                            → Local
                           </button>
                         )}
                         <button className="btn small" style={{ color: 'var(--red)' }} onClick={() => handleDelete(e)}>✕</button>

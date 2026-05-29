@@ -26,9 +26,12 @@ import type { CatalogEntry, Project, Source, SourceKind } from './types';
 import { SEED_CATALOG } from './seedCatalog';
 import {
   deleteGlobalEntryFs,
+  deletePersonalEntryFs,
   seedGlobalCatalog,
   subscribeGlobalCatalog,
+  subscribePersonalCatalog,
   upsertGlobalEntryFs,
+  upsertPersonalEntryFs,
 } from './firestoreCatalog';
 import { auth as firebaseAuth } from './firebase';
 
@@ -139,6 +142,88 @@ export function saveGlobalCatalog(entries: CatalogEntry[]) {
   });
 }
 
+// ---------- Personal catalog: cache + subscription ----------
+//
+// Per-user library at `users/{uid}/catalogs/{id}`. Same cache + listener
+// pattern as the global catalog. The cache is scoped to the currently
+// signed-in user; on sign-out / sign-in-as-different-user we tear down
+// the old subscription and start fresh.
+
+let cachedPersonal: CatalogEntry[] = [];
+let personalCacheUid: string | null = null;
+let personalUnsub: (() => void) | null = null;
+const personalListeners = new Set<(entries: CatalogEntry[]) => void>();
+
+function emitPersonal() {
+  for (const cb of personalListeners) cb(cachedPersonal);
+}
+
+function ensurePersonalSubscription() {
+  const uid = firebaseAuth().currentUser?.uid ?? null;
+  if (uid === personalCacheUid) return;       // already subscribed for this user
+  // User changed (or signed out). Reset and re-subscribe if signed in.
+  if (personalUnsub) { personalUnsub(); personalUnsub = null; }
+  cachedPersonal = [];
+  personalCacheUid = uid;
+  emitPersonal();
+  if (!uid) return;
+  personalUnsub = subscribePersonalCatalog(
+    uid,
+    (entries) => { cachedPersonal = entries; emitPersonal(); },
+    (err) => {
+      // eslint-disable-next-line no-console
+      console.warn('[BESSTY] personal catalog subscription failed:', err);
+    },
+  );
+}
+
+/// Read the cached personal catalog (synchronous). On first call, or
+/// after a user change, kicks off the Firestore subscription that
+/// keeps the cache fresh.
+export function loadPersonalCatalog(): CatalogEntry[] {
+  ensurePersonalSubscription();
+  return cachedPersonal;
+}
+
+export function subscribeToCachedPersonalCatalog(
+  cb: (entries: CatalogEntry[]) => void,
+): () => void {
+  ensurePersonalSubscription();
+  personalListeners.add(cb);
+  cb(loadPersonalCatalog());
+  return () => { personalListeners.delete(cb); };
+}
+
+/// Optimistic upsert (cache first, async write to Firestore).
+export function upsertPersonalEntry(entry: CatalogEntry) {
+  const uid = firebaseAuth().currentUser?.uid;
+  if (!uid) {
+    // eslint-disable-next-line no-console
+    console.warn('[BESSTY] upsertPersonalEntry called while signed out');
+    return;
+  }
+  const idx = cachedPersonal.findIndex((e) => e.id === entry.id);
+  cachedPersonal = idx >= 0
+    ? cachedPersonal.map((e, i) => (i === idx ? entry : e))
+    : [...cachedPersonal, entry];
+  emitPersonal();
+  void upsertPersonalEntryFs(uid, entry).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error('[BESSTY] upsertPersonalEntry failed:', err);
+  });
+}
+
+export function deletePersonalEntry(id: string) {
+  const uid = firebaseAuth().currentUser?.uid;
+  if (!uid) return;
+  cachedPersonal = cachedPersonal.filter((e) => e.id !== id);
+  emitPersonal();
+  void deletePersonalEntryFs(uid, id).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error('[BESSTY] deletePersonalEntry failed:', err);
+  });
+}
+
 // ---------- Local catalog (lives on a project) ----------
 
 export function localCatalogOf(project: Project): CatalogEntry[] {
@@ -161,29 +246,43 @@ export function withoutLocalEntry(project: Project, id: string): Project {
 // ---------- Cross-scope lookup ----------
 
 /// Resolve a source's catalog entry by scope + id. Returns null if the
-/// referenced entry has been deleted.
+/// referenced entry has been deleted -- OR for a `personal`-scoped source
+/// referenced by a user other than its owner (personal libraries are
+/// per-user; cross-user reads are blocked by security rules).
 export function lookupEntry(project: Project, source: Source): CatalogEntry | null {
   if (source.catalogScope === 'local') {
     return localCatalogOf(project).find((e) => e.id === source.modelId) ?? null;
   }
+  if (source.catalogScope === 'personal') {
+    return loadPersonalCatalog().find((e) => e.id === source.modelId) ?? null;
+  }
   return loadGlobalCatalog().find((e) => e.id === source.modelId) ?? null;
 }
 
-/// All catalog entries available to a project (local first, then global,
-/// dedup'd by id with local winning).
-export function allEntriesFor(project: Project): Array<CatalogEntry & { _scope: 'local' | 'global' }> {
+/// All catalog entries available to a project. Order is local → personal
+/// → global, dedup'd by id with earlier scopes winning. (A `local`
+/// override of a `global` entry e.g. "tweaked V163 for this site" still
+/// shows as local; a `personal` entry of the same id wins over the
+/// matching global.)
+export function allEntriesFor(
+  project: Project,
+): Array<CatalogEntry & { _scope: 'local' | 'global' | 'personal' }> {
   const local = localCatalogOf(project).map((e) => ({ ...e, _scope: 'local' as const }));
   const localIds = new Set(local.map((e) => e.id));
-  const global = loadGlobalCatalog()
+  const personal = loadPersonalCatalog()
     .filter((e) => !localIds.has(e.id))
+    .map((e) => ({ ...e, _scope: 'personal' as const }));
+  const personalIds = new Set(personal.map((e) => e.id));
+  const global = loadGlobalCatalog()
+    .filter((e) => !localIds.has(e.id) && !personalIds.has(e.id))
     .map((e) => ({ ...e, _scope: 'global' as const }));
-  return [...local, ...global];
+  return [...local, ...personal, ...global];
 }
 
 export function listEntriesByKind(
   project: Project,
   kind: SourceKind,
-): Array<CatalogEntry & { _scope: 'local' | 'global' }> {
+): Array<CatalogEntry & { _scope: 'local' | 'global' | 'personal' }> {
   return allEntriesFor(project).filter((e) => e.kind === kind);
 }
 

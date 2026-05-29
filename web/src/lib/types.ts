@@ -5,7 +5,18 @@ export type BandSystem = 'octave' | 'oneThirdOctave';
 export type SourceKind = 'wtg' | 'bess' | 'auxiliary';
 
 /// Where the source's catalog entry lives.
-export type CatalogScope = 'global' | 'local';
+///   - 'global'   — shared library at `catalogsGlobal/{id}`, any signed-in
+///                  user can read/write.
+///   - 'local'    — embedded on the project doc (`project.localCatalog`),
+///                  scoped to this project; visible to all collaborators.
+///   - 'personal' — per-user library at `users/{uid}/catalogs/{id}`,
+///                  only the owning user can read. Sources that reference
+///                  a personal entry will resolve for the owner; for other
+///                  users opening the same project the lookup returns null
+///                  and the UI surfaces a "missing entry" warning. Useful
+///                  for solo projects or as a staging area before
+///                  promoting an entry to global/local.
+export type CatalogScope = 'global' | 'local' | 'personal';
 
 export interface ProjectSummary {
   id: string;

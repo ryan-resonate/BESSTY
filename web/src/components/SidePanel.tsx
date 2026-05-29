@@ -40,6 +40,16 @@ const GROUP_PALETTE = [
   '#14b8a6', '#ef4444', '#6366f1', '#84cc16', '#06b6d4',
 ];
 
+/// Small badge appended to a catalog entry's display name in the source
+/// picker dropdowns. Empty for global entries (the common case) so they
+/// stay tidy; explicit for the scoped ones so the user knows where the
+/// model lives and who can see it.
+function scopeSuffix(scope: 'global' | 'local' | 'personal'): string {
+  if (scope === 'local')    return ' · local';
+  if (scope === 'personal') return ' · personal';
+  return '';
+}
+
 export type AddMode = 'none' | 'wtg' | 'bess' | 'auxiliary' | 'receiver' | 'measure' | 'barrier';
 
 export type Tab = 'sources' | 'area' | 'receivers' | 'barriers' | 'import' | 'settings' | 'results' | 'layers' | 'project';
@@ -426,7 +436,7 @@ function BulkEditPanel(props: {
               const [scope, ...rest] = e.target.value.split(':');
               const modelId = rest.join(':');
               const picked = modelChoices.find((c) => c._scope === scope && c.id === modelId);
-              setSrc('catalogScope', scope as 'global' | 'local');
+              setSrc('catalogScope', scope as 'global' | 'local' | 'personal');
               setSrc('modelId', modelId);
               setSrc('modeOverride', picked?.defaultMode ?? null);
             }}
@@ -434,7 +444,7 @@ function BulkEditPanel(props: {
             <option value="" disabled>Choose model…</option>
             {modelChoices.map((m) => (
               <option key={`${m._scope}:${m.id}`} value={`${m._scope}:${m.id}`}>
-                {m.displayName}{m._scope === 'local' ? ' · local' : ''}
+                {m.displayName}{scopeSuffix(m._scope)}
               </option>
             ))}
           </select>
@@ -1949,7 +1959,7 @@ function SourceItem(props: {
             const modelId = rest.join(':');
             const picked = candidates.find((c) => c._scope === scope && c.id === modelId);
             onChange({
-              catalogScope: scope as 'global' | 'local',
+              catalogScope: scope as 'global' | 'local' | 'personal',
               modelId,
               modeOverride: picked?.defaultMode ?? null,
             });
@@ -1957,7 +1967,7 @@ function SourceItem(props: {
         >
           {candidates.map((m) => (
             <option key={`${m._scope}:${m.id}`} value={`${m._scope}:${m.id}`}>
-              {m.displayName}{m._scope === 'local' ? ' · local' : ''}
+              {m.displayName}{scopeSuffix(m._scope)}
             </option>
           ))}
         </select>
