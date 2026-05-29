@@ -52,6 +52,88 @@ export interface Source {
   elevationOffset?: number;    // BESS / Auxiliary
   yawDeg?: number;
   modeOverride?: string | null;
+  /// When this source belongs to a BessGroup, the group's id. Lets the
+  /// editor select the whole group on click, route drag events through
+  /// the group's centre handle, and recolour group members on the map.
+  /// Standalone (non-grouped) sources omit this.
+  groupId?: string;
+  /// Stable slot identifier within the parent group, of the form
+  /// `r<rowIdx>-c<rowCopyIdx>-p<patternCopyIdx>-u<unitIdx>`. The
+  /// materialiser uses this to map hand-edits back to the right unit
+  /// when the user changes a group's parameters and we regenerate.
+  /// Set together with `groupId`; meaningless otherwise.
+  slotKey?: string;
+}
+
+// =================== BESS groups (parametric arrays) ===================
+
+/// A parametric BESS / auxiliary array. Stores the layout RECIPE; the
+/// individual units are materialised into the project's flat `sources`
+/// list (tagged with `groupId` + `slotKey`) so the solver / drag /
+/// selection code can treat them as ordinary sources.
+///
+/// Editing flow: user opens the wizard, tweaks parameters, hits Apply.
+/// `materialiseBessGroup` regenerates the slot table; per-slot
+/// `unitOverrides` are re-applied so hand-edits survive.
+export interface BessGroup {
+  id: string;
+  name: string;
+  /// Geographic centre of the unrotated group's bounding box.
+  /// The on-map centre handle drags this; everything else is derived.
+  centerLatLng: [number, number];
+  /// Clockwise from north, in degrees.
+  rotationDeg: number;
+  rows: BessRow[];
+  /// Per-slot user overrides preserved across re-materialisation
+  /// (e.g. one BESS dragged 3 m east for fence clearance). Slot keys
+  /// match the format on the materialised Source's `slotKey` field.
+  /// Slots that no longer exist after a parameter change are dropped
+  /// silently -- the wizard surfaces a "N overrides discarded" notice
+  /// before Apply so the user can review.
+  unitOverrides?: Record<string, BessUnitOverride>;
+}
+
+export interface BessRow {
+  id: string;
+  /// The unit pattern within ONE row. An empty pattern makes the row
+  /// act as a pure spacer (just consumes `gapToNextRowM`) -- useful
+  /// for "wide aisle between two halves of the farm" without inventing
+  /// a separate spacer type.
+  pattern: BessRowUnit[];
+  /// How many times the pattern repeats within one row.
+  /// `spacingWithinM` is also inserted between consecutive copies.
+  patternRepeat: number;
+  /// Edge-to-edge gap between adjacent units in the row (m). Units'
+  /// widths come from their CatalogEntry.footprintM (or kind default).
+  spacingWithinM: number;
+  /// Edge-to-edge gap between this row's footprint and the next
+  /// row's footprint (next copy of this template OR next template).
+  /// The final row's gapToNextRowM is ignored.
+  gapToNextRowM: number;
+  /// How many times this row template is stamped, top-to-bottom.
+  /// Each stamp is identical; `gapToNextRowM` applies between every
+  /// adjacent pair (and to the next row template that follows).
+  rowRepeat: number;
+}
+
+export interface BessRowUnit {
+  /// Which catalog the unit comes from. BESS groups intentionally
+  /// don't reference 'local' (deprecated -- see task #23) -- but the
+  /// type union allows it for round-tripping legacy data on the
+  /// project doc.
+  catalogScope: CatalogScope;
+  modelId: string;
+}
+
+export interface BessUnitOverride {
+  /// dLat / dLng offset from the materialised position (degrees).
+  latLngDelta?: [number, number];
+  /// Per-unit model swap (e.g. one slot has a different BESS model).
+  modelOverride?: { catalogScope: CatalogScope; modelId: string };
+  /// Per-unit mode override.
+  modeOverride?: string | null;
+  /// Per-unit height-above-ground override.
+  elevationOffset?: number;
 }
 
 export interface Barrier {
@@ -256,6 +338,13 @@ export interface Project {
   barriers: Barrier[];
   receivers: Receiver[];
   groups?: Group[];
+  /// Parametric BESS / aux arrays. Their materialised individual units
+  /// also live in `sources` (flat list), tagged with `groupId` +
+  /// `slotKey` so the solver, drag handlers, and selection code don't
+  /// need to know about groups at all. Editing a group calls
+  /// `materialiseBessGroup` which diffs against the current sources,
+  /// preserving per-unit hand-edits (`unitOverrides`).
+  bessGroups?: BessGroup[];
   calculationArea?: CalculationArea;
   settings?: ProjectSettings;
   /// Project-local catalog of source models. Independent of the global
