@@ -148,3 +148,28 @@ Quick sanity-check pass:
 - `firestore.rules` — references `flags.admin` (already deployed)
 - `web/src/lib/auth.ts` — client-side `isResonateEmail` check that
   pairs with the server-side enforcement
+
+## Other Blaze-only things on the wishlist
+
+Beyond the two functions above, a couple of nice-to-haves that
+become possible only once we're on Blaze:
+
+- **Project-delete Storage cleanup function.** Currently `ProjectListScreen.handleDelete`
+  best-effort deletes the project's DEM from Firebase Storage before
+  deleting the project doc. If the user has the tab open while
+  offline, or the storage delete fails for any reason, the storage
+  object is orphaned. On Blaze we can add a `functions/v2/firestore`
+  trigger on `projects/{id}` onDelete that scans
+  `projects/{id}/dem/*` and deletes anything left. Pairs neatly with
+  the rules' "writer can delete" path so the cleanup is authorised
+  even after the project doc is gone.
+
+- **Periodic orphan-storage sweep.** A scheduled function that lists
+  the `projects/` prefix in Storage and deletes anything whose
+  parent doc doesn't exist in Firestore. Insurance for the case
+  above.
+
+- **Admin allowlist editor UI.** Pairs with `adminSetUserFlag` to give
+  admins a real screen for promoting / demoting users and adding
+  external collaborators to `authAllowlist`. Right now those flows
+  are Console-only.
