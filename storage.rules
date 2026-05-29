@@ -1,5 +1,17 @@
 rules_version = '2';
 
+// !! NOT DEPLOYED -- see docs/blaze-upgrade.md.
+// Google's late-2024 policy change requires Blaze to enable Firebase
+// Storage on newly-created projects. rc-beesty is one of those, so
+// the bucket can't be set up yet. `firebase deploy --only storage`
+// fails with "Firebase Storage has not been set up on project". The
+// client falls back gracefully: SidePanel surfaces a yellow
+// "DEM loaded for this session but cloud save failed" warning and
+// the GeoTIFF still works for the session, just doesn't persist.
+//
+// These rules are ready to deploy as soon as the Blaze upgrade
+// happens and Storage gets enabled in the Console.
+//
 // BESSTY (rc-beesty) Firebase Storage rules.
 //
 // Currently only used for per-project DEM uploads at

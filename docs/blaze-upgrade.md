@@ -1,16 +1,38 @@
 # Upgrading rc-beesty to the Blaze plan (deferred)
 
 The BESSTY Firebase project (`rc-beesty`) is currently on the **Spark
-(free) plan**. Everything in the deployed app works on Spark, but the
-Cloud Functions in `functions/src/index.ts` cannot be deployed —
-Functions Gen 1 and Gen 2 both require Blaze because they need Cloud
-Build, Artifact Registry, and Cloud Run, none of which are available
-on Spark.
+(free) plan**. Most of the app works on Spark, but two whole areas are
+gated behind a Blaze upgrade for newly-created projects:
+
+1. **Cloud Functions** (`functions/src/index.ts`) — Functions Gen 1
+   and Gen 2 both need Cloud Build, Artifact Registry, and Cloud Run,
+   which Spark doesn't include.
+2. **Firebase Storage** (DEM persistence, `storage.rules` +
+   `web/src/lib/firestoreStorage.ts`) — as of late 2024, Google
+   started requiring Blaze for Storage on newly-created projects
+   (existing projects with Storage already enabled were grandfathered
+   in). `rc-beesty` was created after the change, so its Storage
+   bucket can't be set up without upgrading.
 
 This document records the state, the workarounds we've adopted, and
 the steps to upgrade if/when we move to Blaze.
 
+## Current deploy command (Spark)
+
+While on Spark, deploy only the Firestore pieces:
+
+```powershell
+firebase deploy --only firestore:rules,firestore:indexes
+```
+
+**Do NOT** include `storage` or `functions` in the `--only` list — both
+will fail their pre-flight API enablement on Spark. The rules / indexes
+file in the repo will quietly diverge from production until the upgrade
+day, which is fine: the source of truth stays in git either way.
+
 ## What's deferred while on Spark
+
+### Cloud Functions
 
 The two functions in `functions/src/index.ts` are written, type-checked,
 and ready to deploy, but **not running in production**:
@@ -27,6 +49,26 @@ and ready to deploy, but **not running in production**:
 - **`adminSetUserFlag`** — Gen 2 callable. Would let an existing
   admin promote / demote other users (toggle `flags.admin` etc.)
   from an in-app admin UI without touching the Firebase Console.
+
+### Firebase Storage — DEM persistence
+
+The DEM-persistence feature (`web/src/lib/firestoreStorage.ts` +
+`storage.rules`) writes uploaded GeoTIFFs to
+`projects/{projectId}/dem/...` in the Firebase Storage bucket. On Spark
+the bucket can't be enabled at all (`firebasestorage.googleapis.com`
+won't enable; `firebase deploy --only storage` fails with
+"Firebase Storage has not been set up on project").
+
+**User-visible impact on Spark**: a user can still upload a DEM in the
+Import tab and use it for the session. The parse succeeds, the
+DemRaster lives in browser memory, both the point and grid solvers see
+it, and the DEM survives normal editor activity. What fails is the
+upload-to-cloud step — SidePanel surfaces a yellow warning
+("DEM loaded for this session but cloud save failed: ..."). Reloading
+the page or opening the project on another machine loses the DEM and
+falls back to AWS Terrain Tiles.
+
+Workaround: re-upload the DEM each session. Annoying but not blocking.
 
 ## Workarounds in place (Spark-mode behaviour)
 
@@ -70,6 +112,10 @@ follow-up if you decide you want it.
 
 Consider upgrading if any of these become true:
 
+- You want **persistent DEMs** — the bigger of the two papercuts in
+  daily use. Without Blaze, every session loses the uploaded GeoTIFF
+  and falls back to AWS Terrain Tiles. With Blaze, uploads land in
+  Firebase Storage and auto-download on project open.
 - You want to extend BESSTY access to non-Resonate collaborators
   (i.e. you want the `authAllowlist` flow to work).
 - You want server-side enforcement of the domain rule (closes the
@@ -93,23 +139,33 @@ alert at AUD $10/month in the Firebase Console as insurance.
    Blaze (Pay as you go)**.
 2. Add a billing card. Set a budget alert (AUD $10/month
    recommended).
-3. Back at a PowerShell prompt in the repo root:
+3. **Enable Firebase Storage**: Console → Build → Storage → Get
+   started → Production mode → Location: `australia-southeast1`
+   (matches Firestore). Now possible because Blaze unblocks it.
+4. Back at a PowerShell prompt in the repo root:
 
    ```powershell
-   firebase deploy --only functions
+   firebase deploy --only functions,storage
    ```
 
    The first run will:
    - prompt to enable Cloud Build, Artifact Registry, and Cloud Run
      (say yes to all),
    - install the functions' dependencies on the server,
+   - push the `storage.rules` file from the repo to the new bucket,
    - take ~3–5 minutes total.
 
-4. Verify the deploy in **Firebase Console → Functions** — you
+5. Verify the deploy in **Firebase Console → Functions** — you
    should see `onAuthUserCreate` and `adminSetUserFlag` listed.
+   Verify Storage rules in **Console → Storage → Rules**.
 
 ## What changes after upgrading
 
+- **DEMs persist** — uploads land in Firebase Storage, auto-download
+  on project open. The "Loaded for this session but cloud save
+  failed" warning in SidePanel disappears; new users opening a
+  project with a saved DEM see "Loading saved DEM…" and then the
+  raster materialises automatically.
 - **Self-signup tightens** — the `onAuthUserCreate` trigger runs on
   every new account; non-allowed accounts are immediately disabled.
   The client-side form check stays as a UX courtesy.
@@ -139,15 +195,34 @@ Quick sanity-check pass:
    should be allowed through.
 4. Verify your admin flag still works (Project tab → ability to
    delete others' projects via admin override etc.).
+5. **DEM round-trip**: open a project, upload a GeoTIFF in the
+   Import tab → progress bar reaches 100% → "Cloud-saved · X MB"
+   appears. Reload the page → "Loading saved DEM…" → DEM
+   re-appears without re-prompting. Open the same project from
+   another browser / signed-in account that can read it → same
+   auto-load behaviour.
 
 ## Files involved
 
+Cloud Functions:
 - `functions/src/index.ts` — the function code itself
 - `functions/package.json` / `tsconfig.json` — function build setup
 - `firebase.json` — Functions codebase declaration
 - `firestore.rules` — references `flags.admin` (already deployed)
 - `web/src/lib/auth.ts` — client-side `isResonateEmail` check that
   pairs with the server-side enforcement
+
+Firebase Storage (DEM persistence):
+- `storage.rules` — read/write gating per project access rules,
+  200 MB cap. Ready to deploy; held back until Blaze enables the
+  Storage bucket.
+- `firebase.json` — `storage` block already references the rules
+  file. Safe to leave in place; deploy commands just have to
+  exclude it via `--only firestore:rules,firestore:indexes`.
+- `web/src/lib/firestoreStorage.ts` — uploadProjectDem /
+  downloadProjectDem / deleteProjectDem. On Spark the upload call
+  fails at the SDK level (no bucket) and SidePanel falls through
+  to the "loaded for session only" warning path.
 
 ## Other Blaze-only things on the wishlist
 
