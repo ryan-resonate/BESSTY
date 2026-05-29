@@ -1071,6 +1071,26 @@ export function ProjectScreen() {
         currentUid={currentUid ?? undefined}
         currentDisplayName={authState.profile?.displayName ?? authState.user?.email ?? undefined}
         projectSource={projectSource}
+        onApplyVersion={(snap) => {
+          // Revert flow: restore the snapshot's *content* but keep the
+          // current project's ownership and privacy fields, plus the
+          // schema-versioning bookkeeping. Anything else would let an
+          // old snapshot resurrect the wrong ownerUid / visibility /
+          // allowlist, which would be surprising at best and a
+          // privacy regression at worst.
+          if (!project) return;
+          const merged: Project = {
+            ...snap,
+            schemaVersion: project.schemaVersion,
+            ownerUid: project.ownerUid,
+            ownerDisplayName: project.ownerDisplayName,
+            visibility: project.visibility,
+            allowedUserIds: project.allowedUserIds,
+            createdAt: project.createdAt,
+            // updatedAt / updatedByUid get set by the Firestore write path.
+          };
+          setProject(merged);
+        }}
       />
       </ErrorBoundary>
 

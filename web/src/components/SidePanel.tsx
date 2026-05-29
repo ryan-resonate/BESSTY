@@ -80,6 +80,10 @@ interface Props {
   /// version + privacy controls; anything else shows a "local project"
   /// note instead.
   projectSource?: 'firestore' | 'local' | 'none';
+  /// Called when the user reverts to a saved version. The handler should
+  /// merge the snapshot's content into the live project while preserving
+  /// current ownership + privacy metadata. Wired up in ProjectScreen.
+  onApplyVersion?: (snapshot: Project) => void;
 
   // Layer/contour settings, plumbed for the Layers tab.
   baseMap: BaseMap;
@@ -203,6 +207,7 @@ export function SidePanel(props: Props) {
             currentUid={props.currentUid}
             currentDisplayName={props.currentDisplayName ?? ''}
             source={props.projectSource ?? 'none'}
+            onApplyVersion={(snap) => props.onApplyVersion?.(snap)}
           />
         )}
         {tab === 'results' && <ResultsTab {...props} />}

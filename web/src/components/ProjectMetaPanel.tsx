@@ -23,7 +23,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import {
-  revertToVersion,
+  loadVersionSnapshot,
   saveVersion,
   setProjectVisibility,
   subscribeToVersions,
@@ -39,10 +39,16 @@ interface Props {
   /// 'firestore' = features below are usable. 'local' = legacy
   /// localStorage project; privacy/versions don't apply yet.
   source: 'firestore' | 'local' | 'none';
+  /// Apply a loaded version snapshot to the live editor. Implemented in
+  /// ProjectScreen so the revert goes through the same setProject path
+  /// every other mutation uses -- gets undo support, correct echo
+  /// suppression on the Firestore round-trip, and ownership/privacy
+  /// preservation (snapshot content overlaid on top of current metadata).
+  onApplyVersion: (snapshot: Project) => void;
 }
 
 export function ProjectMetaPanel({
-  projectId, project, currentUid, currentDisplayName, source,
+  projectId, project, currentUid, currentDisplayName, source, onApplyVersion,
 }: Props) {
   if (source !== 'firestore') {
     return (
@@ -67,6 +73,7 @@ export function ProjectMetaPanel({
         projectId={projectId}
         currentUid={currentUid}
         currentDisplayName={currentDisplayName}
+        onApplyVersion={onApplyVersion}
       />
     </div>
   );
@@ -223,8 +230,13 @@ function PrivacyBlock({ projectId, project, currentUid, canEdit }: {
 
 // ===== Versions =====
 
-function VersionsBlock({ projectId, currentUid, currentDisplayName }: {
-  projectId: string; currentUid: string; currentDisplayName: string;
+function VersionsBlock({
+  projectId, currentUid, currentDisplayName, onApplyVersion,
+}: {
+  projectId: string;
+  currentUid: string;
+  currentDisplayName: string;
+  onApplyVersion: (snapshot: Project) => void;
 }) {
   const [versions, setVersions] = useState<VersionListItem[] | null>(null);
   const [label, setLabel] = useState('');
@@ -262,7 +274,13 @@ function VersionsBlock({ projectId, currentUid, currentDisplayName }: {
     )) return;
     setBusy(true); setError(null);
     try {
-      await revertToVersion(projectId, v.id, currentUid);
+      // Load the snapshot and hand it to the editor. ProjectScreen routes
+      // it through the normal setProject path -- the local state updates
+      // immediately (no echo-suppression dance), undo records the
+      // pre-revert state, and the debounced Firestore write follows.
+      const snap = await loadVersionSnapshot(projectId, v.id);
+      if (!snap) throw new Error('Snapshot not found.');
+      onApplyVersion(snap);
     } catch (err) {
       setError((err as Error).message);
     } finally {
