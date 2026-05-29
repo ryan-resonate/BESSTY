@@ -23,6 +23,7 @@ import {
   subscribeToMyProjects,
   type ProjectListItem,
 } from '../lib/firestoreProjects';
+import { seedExampleProjects } from '../lib/firestoreSeed';
 
 type Tab = 'all' | 'mine';
 
@@ -47,6 +48,9 @@ export function ProjectListScreen() {
   const [tab, setTab] = useState<Tab>('all');
   const [projects, setProjects] = useState<ProjectListItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [seeding, setSeeding] = useState(false);
+
+  const isAdmin = auth.profile?.flags?.admin === true;
 
   // Live subscription. Re-runs when the tab or signed-in user changes.
   useEffect(() => {
@@ -87,6 +91,28 @@ export function ProjectListScreen() {
     }
   }
 
+  async function handleSeed() {
+    if (!auth.user || !auth.profile) return;
+    if (!confirm(
+      'Add the example projects (GP BESS + Tarong WF) to the cloud?\n\n' +
+      'They will be created as public projects owned by you, visible to ' +
+      'every signed-in BESSTY user.'
+    )) return;
+    setSeeding(true); setError(null);
+    try {
+      await seedExampleProjects({
+        uid: auth.user.uid,
+        displayName: auth.profile.displayName || auth.user.email || 'Unknown',
+        email: auth.user.email ?? '',
+      });
+      // Live subscription will pick up the new docs automatically.
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSeeding(false);
+    }
+  }
+
   return (
     <div className="project-list-screen">
       <div className="page-header">
@@ -117,9 +143,27 @@ export function ProjectListScreen() {
 
       {projects && projects.length === 0 && !error && (
         <div className="empty-state">
-          {tab === 'mine'
-            ? "You haven't created any projects yet."
-            : 'No projects you can see yet — create one to get started.'}
+          <div>
+            {tab === 'mine'
+              ? "You haven't created any projects yet."
+              : 'No projects you can see yet — create one to get started.'}
+          </div>
+          {isAdmin && tab === 'all' && (
+            <div style={{ marginTop: 12 }}>
+              <button
+                className="btn"
+                type="button"
+                onClick={handleSeed}
+                disabled={seeding}
+              >
+                {seeding ? 'Seeding…' : 'Seed example projects (admin)'}
+              </button>
+              <div style={{ fontSize: 12, color: 'var(--ink-soft, #475569)', marginTop: 6 }}>
+                Adds GP BESS + Tarong WF as public projects owned by you.
+                One-time setup; every user will see them in "All projects".
+              </div>
+            </div>
+          )}
         </div>
       )}
 
