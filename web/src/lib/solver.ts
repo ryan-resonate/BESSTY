@@ -1095,14 +1095,33 @@ export async function evaluateGridViaWorker(
     // with a small margin, so the worker's region DEM never reads outside its
     // coverage (which would return 0 / sea level). Resolution is scaled to keep
     // roughly the source-tile density across the (possibly larger) extent.
-    const region = dem ? captureDemRegion(
-      dem, ...sourcePaddedBounds(job),
-    ) : null;
+    //
+    // Cached by (DEM identity + region bounds + resolution): a recompute that
+    // doesn't move geometry (e.g. wind speed / G / atmosphere change, or a
+    // re-run of the same area) reuses the sampled terrain instead of
+    // re-sampling ~10⁶ DEM points on the main thread each time.
+    const region = dem ? captureDemRegionCached(dem, sourcePaddedBounds(job)) : null;
     return await runGridJobOnWorker(job, region);
   } catch (e) {
     console.warn('[BESSTY] grid worker unavailable, running inline:', e);
     return runBatchedGrid(job, dem);
   }
+}
+
+/// One-entry DEM-region cache. The region is structure-cloned (not transferred)
+/// to the worker, so the cached copy stays valid across runs.
+let demRegionCache: { key: string; region: DemRegion } | null = null;
+
+function captureDemRegionCached(
+  dem: DemRaster,
+  bounds: [[number, number], [number, number], number, number],
+): DemRegion {
+  const [sw, ne, nx, ny] = bounds;
+  const key = `${dem.bounds.sw}|${dem.bounds.ne}|${dem.tilesLoaded}|${sw}|${ne}|${nx}|${ny}`;
+  if (demRegionCache && demRegionCache.key === key) return demRegionCache.region;
+  const region = captureDemRegion(dem, sw, ne, nx, ny);
+  demRegionCache = { key, region };
+  return region;
 }
 
 /// SW/NE/nx/ny for a DEM region covering the grid bounds + all sources, sized

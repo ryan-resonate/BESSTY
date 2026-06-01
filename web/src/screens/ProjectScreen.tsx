@@ -162,6 +162,15 @@ function demFingerprint(d: DemRaster | null): string {
   return `${src}:${b.sw[0].toFixed(4)},${b.sw[1].toFixed(4)},${b.ne[0].toFixed(4)},${b.ne[1].toFixed(4)}`;
 }
 
+/// Master switch for the gradient (AD) grid path. When false (default), the
+/// contour grid ALWAYS uses the primal per-tile worker path —
+/// `evaluateGridViaWorker` — which is adaptively clustered, runs off the main
+/// thread, and builds no gradient tensor. The AD path (`snapshotGrid` +
+/// `extrapolateGrid`, kept intact below) only enabled live grid-drag
+/// extrapolation but ignored per-tile clustering and ran on the main thread,
+/// so it was the slow path for moderate grids. Flip to true to compare.
+const USE_GRID_GRADIENT_AD = false;
+
 export function ProjectScreen() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -853,21 +862,14 @@ export function ProjectScreen() {
     // back to a fresh re-run instead of an instantaneous pure-JS update).
     const est = estimateGridMemoryBytes(project, gridSpacingM);
     const heightAbove = project.settings?.general.defaultReceiverHeight ?? 1.5;
+    // Default path: primal, per-tile clustered, on the worker. Only take the
+    // AD/gradient path when explicitly enabled AND it fits the memory budget.
+    const useGradient = USE_GRID_GRADIENT_AD && est.snapshotBytes <= GRID_SNAPSHOT_BUDGET_BYTES;
     setTimeout(() => {
       const gen = ++gridGenRef.current;
-      // Free the previous gradient pack before allocating the new one —
-      // reduces peak memory during the transition (the GC otherwise can
-      // hold onto the old buffer while the new one is being built).
       gridSnapRef.current = null;
 
-      if (est.snapshotBytes > GRID_SNAPSHOT_BUDGET_BYTES) {
-        const sizeMb = (est.snapshotBytes / 1024 / 1024).toFixed(0);
-        console.info(
-          `[BESSTY] grid would need ${sizeMb} MB for the gradient pack ` +
-          `(${est.cells.toLocaleString()} cells × ${est.effectiveSources} sources). ` +
-          `Falling back to evaluate-only mode — drag still works but re-evaluates ` +
-          `instead of fast-extrapolating.`,
-        );
+      if (!useGradient) {
         evaluateGridViaWorker(project, dem, gridSpacingM, heightAbove)
           .then((g) => {
             if (gen !== gridGenRef.current) return;

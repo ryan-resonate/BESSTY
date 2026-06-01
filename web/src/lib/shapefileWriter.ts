@@ -118,32 +118,42 @@ export function buildPolylineShapefile(
     }
   }
 
-  // ---- 3. DBF file ----
-  // Header: 32 bytes + 32 per field + 1-byte terminator (0x0D).
-  // Records: 1 deletion-flag byte + each field padded to its declared width.
+  // ---- 3 + 4. DBF + PRJ (shared) ----
+  const dbf = buildDbf(features.map((f) => f.properties), fields);
+  return { shp: shpFile, shx: shxFile, dbf, prj: WGS84_PRJ };
+}
+
+/// WGS84 (EPSG:4326) projection string for the .prj sidecar.
+const WGS84_PRJ =
+  'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],' +
+  'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]';
+
+/// Build a dBase III (.dbf) attribute table from one row of properties per
+/// feature. Field names are truncated to 10 chars (DBF limit); numeric values
+/// are right-justified, character values left-justified and clipped to width.
+function buildDbf(
+  rows: Array<Record<string, number | string>>,
+  fields: DbfField[],
+): ArrayBuffer {
   const recordLen = 1 + fields.reduce((s, f) => s + f.width, 0);
   const headerLen = 32 + 32 * fields.length + 1;
-  const dbfFile = new ArrayBuffer(headerLen + recordLen * features.length + 1);   // +1 for EOF marker
+  const dbfFile = new ArrayBuffer(headerLen + recordLen * rows.length + 1);   // +1 for EOF marker
   const dbfBytes = new Uint8Array(dbfFile);
   const dbfView = new DataView(dbfFile);
 
   dbfBytes[0] = 0x03;    // dBase III, no DBT
-  // Date written: YY-1900, MM, DD
   const now = new Date();
   dbfBytes[1] = now.getFullYear() - 1900;
   dbfBytes[2] = now.getMonth() + 1;
   dbfBytes[3] = now.getDate();
-  dbfView.setUint32(4, features.length, true);
+  dbfView.setUint32(4, rows.length, true);
   dbfView.setUint16(8, headerLen, true);
   dbfView.setUint16(10, recordLen, true);
-  // Bytes 12..31 reserved/zero.
 
-  // Field descriptors.
   let p = 32;
   for (const fld of fields) {
     const name = fld.name.slice(0, 10);
     for (let j = 0; j < name.length; j++) dbfBytes[p + j] = name.charCodeAt(j);
-    // Bytes p+10 = field type ASCII
     dbfBytes[p + 11] = fld.type.charCodeAt(0);
     dbfBytes[p + 16] = fld.width;
     if (fld.type === 'N') dbfBytes[p + 17] = (fld as NumericField).decimals;
@@ -151,11 +161,10 @@ export function buildPolylineShapefile(
   }
   dbfBytes[p++] = 0x0D;       // header terminator
 
-  // Records.
-  for (const f of features) {
+  for (const props of rows) {
     dbfBytes[p++] = 0x20;     // deletion flag = ' ' (not deleted)
     for (const fld of fields) {
-      const raw = f.properties[fld.name];
+      const raw = props[fld.name];
       let str: string;
       if (fld.type === 'N') {
         const n = typeof raw === 'number' ? raw : Number(raw);
@@ -166,11 +175,12 @@ export function buildPolylineShapefile(
             ? n.toFixed((fld as NumericField).decimals)
             : Math.round(n).toString();
         }
-        // Numeric fields are right-padded with leading spaces to fill the width.
         if (str.length > fld.width) str = '*'.repeat(fld.width);     // overflow marker
         str = str.padStart(fld.width, ' ');
       } else {
         str = raw == null ? '' : String(raw);
+        // Replace non-ASCII so DBF byte writing stays 1:1.
+        str = str.replace(/[^\x20-\x7E]/g, '_');
         if (str.length > fld.width) str = str.slice(0, fld.width);
         str = str.padEnd(fld.width, ' ');
       }
@@ -179,13 +189,54 @@ export function buildPolylineShapefile(
     }
   }
   dbfBytes[p] = 0x1A;     // EOF marker
+  return dbfFile;
+}
 
-  // ---- 4. PRJ ----
-  const prj =
-    'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],' +
-    'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]';
+interface PointFeature {
+  /// WGS84 (lng, lat) order — shapefile convention.
+  coord: [number, number];
+  properties: Record<string, number | string>;
+}
 
-  return { shp: shpFile, shx: shxFile, dbf: dbfFile, prj };
+/// Build the four shapefile sidecars for a list of Point features (shape
+/// type 1). Mirrors `buildPolylineShapefile` but with point geometry.
+export function buildPointShapefile(
+  features: PointFeature[],
+  fields: DbfField[],
+): ShapefileBundle {
+  let xMin = Infinity, yMin = Infinity, xMax = -Infinity, yMax = -Infinity;
+  for (const f of features) {
+    const [x, y] = f.coord;
+    if (x < xMin) xMin = x; if (x > xMax) xMax = x;
+    if (y < yMin) yMin = y; if (y > yMax) yMax = y;
+  }
+  if (!Number.isFinite(xMin)) { xMin = yMin = xMax = yMax = 0; }
+
+  // Point record content: shape type LE int32 (1) + X + Y = 20 bytes = 10 words.
+  const contentBytes = 4 + 8 + 8;
+  const contentW = contentBytes / 2;
+  const shpFile = new ArrayBuffer(100 + features.length * (8 + contentBytes));
+  const shpView = new DataView(shpFile);
+  writeShpHeader(shpView, shpFile.byteLength, xMin, yMin, xMax, yMax, 1);
+  const shxFile = new ArrayBuffer(100 + features.length * 8);
+  const shxView = new DataView(shxFile);
+  writeShpHeader(shxView, shxFile.byteLength, xMin, yMin, xMax, yMax, 1);
+
+  let shpCursor = 100;
+  let shxCursor = 100;
+  for (let i = 0; i < features.length; i++) {
+    const [x, y] = features[i].coord;
+    shxView.setInt32(shxCursor, shpCursor / 2, false); shxCursor += 4;
+    shxView.setInt32(shxCursor, contentW, false); shxCursor += 4;
+    shpView.setInt32(shpCursor, i + 1, false); shpCursor += 4;     // record # (1-based, BE)
+    shpView.setInt32(shpCursor, contentW, false); shpCursor += 4;
+    shpView.setInt32(shpCursor, 1, true); shpCursor += 4;          // shape type = Point
+    shpView.setFloat64(shpCursor, x, true); shpCursor += 8;
+    shpView.setFloat64(shpCursor, y, true); shpCursor += 8;
+  }
+
+  const dbf = buildDbf(features.map((f) => f.properties), fields);
+  return { shp: shpFile, shx: shxFile, dbf, prj: WGS84_PRJ };
 }
 
 function writeShpHeader(

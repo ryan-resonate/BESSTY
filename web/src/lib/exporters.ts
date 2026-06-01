@@ -15,7 +15,7 @@
 //     package we pull in is read-only. WGS84 lat/lng coords (EPSG:4326).
 
 import * as XLSX from 'xlsx';
-import { buildPolylineShapefile, buildZip } from './shapefileWriter';
+import { buildPolylineShapefile, buildPointShapefile, buildZip } from './shapefileWriter';
 import type { Project } from './types';
 import { projectDOmegaDb, type GridResult, type ReceiverResult } from './solver';
 import type { ContourLineSet } from './contourLines';
@@ -319,6 +319,62 @@ export function exportContoursShp(_project: Project, contours: ContourLineSet[])
     { name: 'noise_contours.shx', bytes: new Uint8Array(bundle.shx) },
     { name: 'noise_contours.dbf', bytes: new Uint8Array(bundle.dbf) },
     { name: 'noise_contours.prj', bytes: new TextEncoder().encode(bundle.prj) },
+  ]);
+}
+
+// ---------- 4b. Source locations as a point shapefile ----------
+
+/// Export EVERY source object as a point in an Esri shapefile (WGS84),
+/// capturing its location, name, and properties. BESS-group members are
+/// materialised into `project.sources` as individual objects (each with its
+/// own `groupId`/`slotKey`), so iterating `project.sources` already yields the
+/// individual units — the group as a whole is intentionally NOT a feature.
+export function exportSourcesShp(project: Project): Blob {
+  const features: { coord: [number, number]; properties: Record<string, number | string> }[] = [];
+  for (const s of project.sources) {
+    if (!Number.isFinite(s.latLng[0]) || !Number.isFinite(s.latLng[1])) continue;
+    features.push({
+      // Shapefile points are (lng, lat).
+      coord: [s.latLng[1], s.latLng[0]],
+      properties: {
+        SRC_ID: s.id,
+        NAME: s.name ?? '',
+        KIND: s.kind,
+        MODEL_ID: s.modelId ?? '',
+        SCOPE: s.catalogScope ?? '',
+        HUB_HT_M: s.hubHeight ?? NaN,        // NaN → blank in the .dbf
+        ROTOR_M: s.rotorDiameterM ?? NaN,
+        ELEV_OFF: s.elevationOffset ?? NaN,
+        YAW_DEG: s.yawDeg ?? NaN,
+        MODE: s.modeOverride ?? '',
+        GROUP_ID: s.groupId ?? '',          // empty for standalone sources
+        SLOT_KEY: s.slotKey ?? '',
+        LAT: s.latLng[0],
+        LNG: s.latLng[1],
+      },
+    });
+  }
+  const bundle = buildPointShapefile(features, [
+    { name: 'SRC_ID', type: 'C', width: 36 },
+    { name: 'NAME', type: 'C', width: 80 },
+    { name: 'KIND', type: 'C', width: 12 },
+    { name: 'MODEL_ID', type: 'C', width: 40 },
+    { name: 'SCOPE', type: 'C', width: 10 },
+    { name: 'HUB_HT_M', type: 'N', width: 8, decimals: 1 },
+    { name: 'ROTOR_M', type: 'N', width: 8, decimals: 1 },
+    { name: 'ELEV_OFF', type: 'N', width: 8, decimals: 1 },
+    { name: 'YAW_DEG', type: 'N', width: 7, decimals: 1 },
+    { name: 'MODE', type: 'C', width: 40 },
+    { name: 'GROUP_ID', type: 'C', width: 36 },
+    { name: 'SLOT_KEY', type: 'C', width: 44 },
+    { name: 'LAT', type: 'N', width: 13, decimals: 8 },
+    { name: 'LNG', type: 'N', width: 13, decimals: 8 },
+  ]);
+  return buildZip([
+    { name: 'sources.shp', bytes: new Uint8Array(bundle.shp) },
+    { name: 'sources.shx', bytes: new Uint8Array(bundle.shx) },
+    { name: 'sources.dbf', bytes: new Uint8Array(bundle.dbf) },
+    { name: 'sources.prj', bytes: new TextEncoder().encode(bundle.prj) },
   ]);
 }
 

@@ -25,6 +25,7 @@ import {
   exportPerSourceContribXlsx,
   exportReceiversCsv,
   exportReceiversXlsx,
+  exportSourcesShp,
   exportSpectraCsv,
   exportSpectraXlsx,
   triggerDownload,
@@ -1207,6 +1208,20 @@ function ResultsTab(props: Props) {
           </button>
           <button className="btn small" disabled={!hasResults} onClick={() => download(exportSpectraXlsx(project, results), 'spectra', 'xlsx')}>
             ↓ XLSX
+          </button>
+        </div>
+
+        <div className="meta-line" style={{ marginTop: 8 }}>
+          <b>Source locations</b>{' '}
+          <span className="muted">({project.sources.length} objects, incl. group members)</span>
+        </div>
+        <div className="add-row">
+          <button
+            className="btn small"
+            disabled={project.sources.length === 0}
+            onClick={() => download(exportSourcesShp(project), 'sources', 'zip')}
+          >
+            ↓ Shapefile
           </button>
         </div>
 
