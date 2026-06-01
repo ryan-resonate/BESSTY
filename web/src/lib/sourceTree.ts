@@ -272,3 +272,64 @@ export function walkSourceTree(
   visit(root);
   return out;
 }
+
+/// A lat/lng rectangle (a grid tile's footprint).
+export interface LatLngBbox {
+  minLat: number; maxLat: number; minLng: number; maxLng: number;
+}
+
+/// Distance (m) from a lat/lng rectangle to a point — 0 if the point is inside.
+function distBboxToPointM(bbox: LatLngBbox, lat: number, lng: number): number {
+  const cLat = Math.max(bbox.minLat, Math.min(bbox.maxLat, lat));
+  const cLng = Math.max(bbox.minLng, Math.min(bbox.maxLng, lng));
+  return approxDistanceM([cLat, cLng], [lat, lng]);
+}
+
+/// Like `walkSourceTree`, but the "receiver" is a whole grid TILE rather than a
+/// single point. The Barnes-Hut acceptance test uses the distance from the
+/// nearest part of the tile to a node, so a cluster is only collapsed when it
+/// is far from the ENTIRE tile (never over-clustered for cells near a source).
+/// This is what makes grid clustering genuinely adaptive: far tiles collapse a
+/// group of sources to one virtual source, near tiles keep them all.
+export function walkSourceTreeForRegion(
+  root: TreeNode,
+  region: LatLngBbox,
+  theta: number,
+  cutoffM: number,
+): EffectiveSource[] {
+  const out: EffectiveSource[] = [];
+  let clusterId = 0;
+  function visit(node: TreeNode) {
+    const d = distBboxToPointM(region, node.centroidLat, node.centroidLng);
+    if (cutoffM > 0 && d - node.bounds.diagM / 2 > cutoffM) return;
+    const accept = (theta > 0)
+      ? (node.bounds.diagM / Math.max(d, 1) < theta)
+      : (node.leaves != null);
+    if (accept) {
+      if (node.leaves && node.leaves.length === 1) {
+        const s = node.leaves[0];
+        out.push({ id: s.id, kind: 'real', source: s, latLng: s.latLng, memberCount: 1 });
+      } else {
+        out.push({
+          id: `cluster-${clusterId++}`,
+          kind: 'cluster',
+          latLng: [node.centroidLat, node.centroidLng],
+          lwOverride: node.combinedLw,
+          zAboveGround: node.zAboveGround,
+          memberCount: node.memberCount,
+        });
+      }
+      return;
+    }
+    if (node.children) {
+      for (const c of node.children) visit(c);
+    } else if (node.leaves) {
+      for (const s of node.leaves) {
+        if (cutoffM > 0 && distBboxToPointM(region, s.latLng[0], s.latLng[1]) > cutoffM) continue;
+        out.push({ id: s.id, kind: 'real', source: s, latLng: s.latLng, memberCount: 1 });
+      }
+    }
+  }
+  visit(root);
+  return out;
+}

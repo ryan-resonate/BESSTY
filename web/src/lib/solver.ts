@@ -32,12 +32,14 @@ import {
   propagationSettings,
   type EffectiveSource,
 } from './propagation';
+import { buildSourceTree, walkSourceTreeForRegion } from './sourceTree';
 import {
   approxDistanceM,
   latLngToLocalMetres,
   topographyBarriers,
   runBatchedGrid,
   type GridJob,
+  type GridTile,
   type GridResult,
   type SolverEnv,
 } from './gridCore';
@@ -962,20 +964,63 @@ function buildGridJob(
     sw: [origin[0] - dLat, origin[1] - dLng] as [number, number],
     ne: [origin[0] + dLat, origin[1] + dLng] as [number, number],
   };
-  const pack = buildGridSourcePack(project, dem, origin, effectiveSourcesForGrid(project, ca));
+  const cfg = propagationSettings(project);
+  const cutoffM = cfg.maxContributionDistanceM;
+  const theta = cfg.treeAcceptanceTheta;
+
+  // Adaptive per-tile clustering. The Barnes-Hut tree is built once; each
+  // tile then decides its OWN clustering from the tile footprint (via
+  // `walkSourceTreeForRegion`). Tiles far from a group of sources collapse it
+  // to a single virtual source; tiles near it keep every source. (The old code
+  // walked the tree once at the grid centre and reused that verdict for every
+  // cell, so far cells never got to cluster — `θ` had no effect when the grid
+  // sat on top of the sources.)
+  const tree = buildSourceTree(project, project.scenario.bandSystem, project.scenario.windSpeed);
+  const TILE = 16; // cells per tile edge
+  const cellLat = (row: number) =>
+    origin[0] + (((row - (rows - 1) / 2) * dyM) / R) * (180 / Math.PI);
+  const cellLng = (col: number) =>
+    origin[1] + (((col - (cols - 1) / 2) * dxM) / (R * Math.cos(lat0))) * (180 / Math.PI);
+  const marginLat = ((dyM / 2) / R) * (180 / Math.PI);
+  const marginLng = ((dxM / 2) / (R * Math.cos(lat0))) * (180 / Math.PI);
+
+  const tiles: GridTile[] = [];
+  for (let row0 = 0; row0 < rows; row0 += TILE) {
+    const trows = Math.min(TILE, rows - row0);
+    const latLo = cellLat(row0);
+    const latHi = cellLat(row0 + trows - 1);
+    for (let col0 = 0; col0 < cols; col0 += TILE) {
+      const tcols = Math.min(TILE, cols - col0);
+      const lngLo = cellLng(col0);
+      const lngHi = cellLng(col0 + tcols - 1);
+      const region = {
+        minLat: Math.min(latLo, latHi) - marginLat,
+        maxLat: Math.max(latLo, latHi) + marginLat,
+        minLng: Math.min(lngLo, lngHi) - marginLng,
+        maxLng: Math.max(lngLo, lngHi) + marginLng,
+      };
+      const tileEff = tree ? walkSourceTreeForRegion(tree, region, theta, cutoffM) : [];
+      const pack = buildGridSourcePack(project, dem, origin, tileEff);
+      tiles.push({
+        col0, row0, cols: tcols, rows: trows,
+        sourcesFlat: pack.sourcesFlat,
+        srcLatLng: pack.eff.map((es) => es.latLng),
+        srcIsReal: pack.eff.map((es) => es.kind === 'real'),
+      });
+    }
+  }
+
   return {
     cols, rows, dxM, dyM, origin, bounds,
-    nBands: pack.nBands,
+    nBands: bandCount(project.scenario.bandSystem),
     g: project.settings?.ground.defaultG ?? 0.5,
-    cutoffM: propagationSettings(project).maxContributionDistanceM,
+    cutoffM,
     dOmegaDb: projectDOmegaDb(project),
     env: solverEnv(project),
     rxHeightAboveGround,
     userBarriers: packBarriers(project.barriers, origin, dem),
-    sourcesFlat: pack.sourcesFlat,
-    srcLatLng: pack.eff.map((es) => es.latLng),
-    srcIsReal: pack.eff.map((es) => es.kind === 'real'),
     topo: project.settings?.topography,
+    tiles,
   };
 }
 
@@ -1034,11 +1079,13 @@ function sourcePaddedBounds(job: GridJob): [[number, number], [number, number], 
   let maxLat = Math.max(job.bounds.sw[0], job.bounds.ne[0]);
   let minLng = Math.min(job.bounds.sw[1], job.bounds.ne[1]);
   let maxLng = Math.max(job.bounds.sw[1], job.bounds.ne[1]);
-  for (let i = 0; i < job.srcLatLng.length; i++) {
-    if (!job.srcIsReal[i]) continue; // clusters skip topo, so don't widen for them
-    const [la, ln] = job.srcLatLng[i];
-    if (la < minLat) minLat = la; if (la > maxLat) maxLat = la;
-    if (ln < minLng) minLng = ln; if (ln > maxLng) maxLng = ln;
+  for (const tile of job.tiles) {
+    for (let i = 0; i < tile.srcLatLng.length; i++) {
+      if (!tile.srcIsReal[i]) continue; // clusters skip topo, so don't widen for them
+      const [la, ln] = tile.srcLatLng[i];
+      if (la < minLat) minLat = la; if (la > maxLat) maxLat = la;
+      if (ln < minLng) minLng = ln; if (ln > maxLng) maxLng = ln;
+    }
   }
   const mLat = (maxLat - minLat) * 0.05 + 0.002;
   const mLng = (maxLng - minLng) * 0.05 + 0.002;

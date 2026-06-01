@@ -106,6 +106,20 @@ export interface GridResult {
   computedMs: number;
 }
 
+/// A rectangular block of grid cells with its OWN clustered source set. Each
+/// tile's clustering is decided adaptively from the tile's footprint (see
+/// `walkSourceTreeForRegion`), so far tiles collapse a group of sources to a
+/// single virtual source while near tiles keep them all. `srcLatLng` and
+/// `srcIsReal` accompany the pack because topography sampling needs lat/lng and
+/// the real/cluster split (positions in metres + z come from `sourcesFlat`).
+export interface GridTile {
+  col0: number; row0: number;   // top-left cell (inclusive)
+  cols: number; rows: number;   // tile size in cells
+  sourcesFlat: Float64Array;    // GridEvaluator source pack for this tile
+  srcLatLng: Array<[number, number]>;
+  srcIsReal: boolean[];
+}
+
 /// Fully-resolved, serializable description of a grid computation — produced on
 /// the main thread (catalog + DEM resolution) and runnable either inline or in
 /// a Web Worker. Everything here is a typed array or plain data.
@@ -118,10 +132,10 @@ export interface GridJob {
   env: SolverEnv;
   rxHeightAboveGround: number;
   userBarriers: Float64Array;
-  sourcesFlat: Float64Array;       // GridEvaluator source pack
-  srcLatLng: Array<[number, number]>;
-  srcIsReal: boolean[];
   topo: TopoSettings | undefined;
+  /// The grid partitioned into tiles, each with its own adaptively-clustered
+  /// source set. Union of tiles covers the whole grid exactly once.
+  tiles: GridTile[];
 }
 
 /// Build the per-source topography-barrier offsets + flattened pack for one
@@ -171,43 +185,50 @@ function cellTopoPack(
 export function runBatchedGrid(job: GridJob, dem: DemRaster | null): GridResult {
   const t0 = performance.now();
   const { cols, rows, dxM, dyM, origin, nBands, g, cutoffM, dOmegaDb, env,
-    rxHeightAboveGround, userBarriers, sourcesFlat, srcLatLng, srcIsReal, topo, bounds } = job;
+    rxHeightAboveGround, userBarriers, topo, bounds, tiles } = job;
   const stride = 6 + nBands;
-  const nS = srcLatLng.length;
-  const srcLocal: Array<[number, number]> = [];
-  const srcZAbs: number[] = [];
-  for (let i = 0; i < nS; i++) {
-    srcLocal.push([sourcesFlat[i * stride + 1], sourcesFlat[i * stride + 2]]);
-    srcZAbs.push(sourcesFlat[i * stride + 3]);
-  }
   const R = 6371008.8;
   const lat0 = (origin[0] * Math.PI) / 180;
-  const evaluator = new GridEvaluator(
-    sourcesFlat, nBands, g, userBarriers,
-    env.tC, env.rh, env.pKpa, env.barConv, env.dzCap,
-  );
   const dbA = new Float32Array(cols * rows);
-  try {
-    for (let row = 0; row < rows; row++) {
-      const n = (row - (rows - 1) / 2) * dyM;
-      const lat = origin[0] + (n / R) * (180 / Math.PI);
-      for (let col = 0; col < cols; col++) {
-        const e = (col - (cols - 1) / 2) * dxM;
-        const lng = origin[1] + (e / (R * Math.cos(lat0))) * (180 / Math.PI);
-        const groundZRaw = dem ? dem.elevation(lat, lng) : 0;
-        const groundZ = Number.isFinite(groundZRaw) ? groundZRaw : 0;
-        const rxZ = rxHeightAboveGround;
-        const rxZAbs = groundZ + rxZ;
-        const { offsets, barriers } = cellTopoPack(
-          srcLatLng, srcIsReal, srcLocal, srcZAbs, topo, origin, dem,
-          lat, lng, e, n, rxZAbs, cutoffM,
-        );
-        const total = evaluator.eval_cell_dba(e, n, rxZAbs, rxZ, cutoffM, offsets, barriers);
-        dbA[row * cols + col] = total > -119.9 ? total + dOmegaDb : -120;
-      }
+
+  for (const tile of tiles) {
+    const { srcLatLng, srcIsReal } = tile;
+    const nS = srcLatLng.length;
+    // Derive metre positions + absolute z from this tile's source pack.
+    const srcLocal: Array<[number, number]> = [];
+    const srcZAbs: number[] = [];
+    for (let i = 0; i < nS; i++) {
+      srcLocal.push([tile.sourcesFlat[i * stride + 1], tile.sourcesFlat[i * stride + 2]]);
+      srcZAbs.push(tile.sourcesFlat[i * stride + 3]);
     }
-  } finally {
-    evaluator.free();
+    const evaluator = new GridEvaluator(
+      tile.sourcesFlat, nBands, g, userBarriers,
+      env.tC, env.rh, env.pKpa, env.barConv, env.dzCap,
+    );
+    try {
+      const rowEnd = Math.min(tile.row0 + tile.rows, rows);
+      const colEnd = Math.min(tile.col0 + tile.cols, cols);
+      for (let row = tile.row0; row < rowEnd; row++) {
+        const n = (row - (rows - 1) / 2) * dyM;
+        const lat = origin[0] + (n / R) * (180 / Math.PI);
+        for (let col = tile.col0; col < colEnd; col++) {
+          const e = (col - (cols - 1) / 2) * dxM;
+          const lng = origin[1] + (e / (R * Math.cos(lat0))) * (180 / Math.PI);
+          const groundZRaw = dem ? dem.elevation(lat, lng) : 0;
+          const groundZ = Number.isFinite(groundZRaw) ? groundZRaw : 0;
+          const rxZ = rxHeightAboveGround;
+          const rxZAbs = groundZ + rxZ;
+          const { offsets, barriers } = cellTopoPack(
+            srcLatLng, srcIsReal, srcLocal, srcZAbs, topo, origin, dem,
+            lat, lng, e, n, rxZAbs, cutoffM,
+          );
+          const total = evaluator.eval_cell_dba(e, n, rxZAbs, rxZ, cutoffM, offsets, barriers);
+          dbA[row * cols + col] = total > -119.9 ? total + dOmegaDb : -120;
+        }
+      }
+    } finally {
+      evaluator.free();
+    }
   }
   return { cols, rows, bounds, dbA, computedMs: performance.now() - t0 };
 }
