@@ -39,7 +39,7 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 import { db } from './firebase';
-import type { Project } from './types';
+import type { Barrier, Project } from './types';
 
 // ===== Public-facing types =====
 
@@ -105,8 +105,9 @@ export async function createProject(
   docData.updatedAt = serverTimestamp();
   // Firestore rejects `undefined` values at write time, so strip them out.
   // Common offenders for a brand-new project: calculationArea, settings,
-  // localCatalog (all optional fields on the Project interface).
-  const payload = pruneUndefined(docData as DocumentData);
+  // localCatalog (all optional fields on the Project interface). Also encode
+  // wall polylines (nested arrays Firestore can't store).
+  const payload = pruneUndefined(encodeBarriersIn(docData as DocumentData));
   const ref = await addDoc(collection(db(), 'projects'), payload);
   return ref.id;
 }
@@ -140,12 +141,13 @@ export async function saveProject(
   project: Project,
   updatedByUid: string,
 ): Promise<void> {
-  // Strip undefineds — Firestore rejects them at write time.
-  const payload: DocumentData = pruneUndefined({
+  // Strip undefineds — Firestore rejects them at write time — and encode
+  // wall polylines (nested arrays Firestore can't store).
+  const payload: DocumentData = pruneUndefined(encodeBarriersIn({
     ...project,
     updatedAt: serverTimestamp(),
     updatedByUid,
-  });
+  }));
   await setDoc(doc(db(), 'projects', id), payload, { merge: false });
 }
 
@@ -345,7 +347,10 @@ export async function loadVersionSnapshot(
   const snap = await getDoc(doc(db(), 'projects', projectId, 'versions', versionId));
   if (!snap.exists()) return null;
   const data = snap.data();
-  return data.snapshot as Project;
+  if (!data.snapshot) return null;
+  // The snapshot was stored as the (already-encoded) live doc, so decode the
+  // wall polylines back to [lat, lng] tuples before handing it to the app.
+  return decodeBarriersIn(data.snapshot as DocumentData) as unknown as Project;
 }
 
 /// Clone a saved snapshot back into the live project doc. The snapshot
@@ -363,7 +368,7 @@ export async function revertToVersion(
 // ===== Helpers =====
 
 function hydrateProject(snap: DocumentSnapshot): Project {
-  const d = snap.data() ?? {};
+  const d = decodeBarriersIn(snap.data() ?? {});
   return {
     ...(d as Project),
     // Ensure id-correlated fields are populated even when the doc was
@@ -454,6 +459,55 @@ function deepPruneUndefined<T>(value: T): T {
 /// usages compiling and behaviourally equivalent (deep is a superset).
 function pruneUndefined<T extends Record<string, unknown>>(obj: T): T {
   return deepPruneUndefined(obj);
+}
+
+/// Firestore CANNOT store a nested array — an array whose elements are
+/// themselves arrays. `Barrier.polylineLatLng` is `Array<[number, number]>`
+/// (a list of [lat, lng] tuples) — the ONLY field of that shape in the whole
+/// project model. Writing it raw makes every save throw
+///   "Function setDoc() called with invalid data. Nested arrays are not
+///    supported (found in field barriers.0.polylineLatLng)"
+/// which fails the entire write, so the wall never persists and version
+/// snapshots come back wall-less. Encode each vertex to a {lat,lng} object
+/// on write; restore the tuple on read. (Sources / receivers / calc-area use
+/// single tuples wrapped in an object, so Firestore accepts them as-is —
+/// that's why only walls were affected.)
+///
+/// No data migration is needed: before this fix a wall could never be saved,
+/// so no stored doc or version contains an encoded — or raw — wall vertex.
+function encodeBarriersIn<T extends DocumentData>(data: T): T {
+  const barriers = (data as { barriers?: unknown }).barriers;
+  if (!Array.isArray(barriers) || barriers.length === 0) return data;
+  return {
+    ...data,
+    barriers: barriers.map((b) => {
+      const poly = (b as Barrier)?.polylineLatLng;
+      if (!Array.isArray(poly)) return b;
+      return { ...(b as Barrier), polylineLatLng: poly.map(([lat, lng]) => ({ lat, lng })) };
+    }),
+  };
+}
+
+/// Inverse of `encodeBarriersIn`. Defensive: a vertex already in tuple form
+/// (legacy / hand-edited data) passes through unchanged.
+function decodeBarriersIn<T extends DocumentData>(data: T): T {
+  const barriers = (data as { barriers?: unknown }).barriers;
+  if (!Array.isArray(barriers) || barriers.length === 0) return data;
+  return {
+    ...data,
+    barriers: barriers.map((b) => {
+      const poly = (b as { polylineLatLng?: unknown })?.polylineLatLng;
+      if (!Array.isArray(poly)) return b;
+      return {
+        ...(b as object),
+        polylineLatLng: poly.map((p) =>
+          Array.isArray(p)
+            ? p
+            : [(p as { lat: number }).lat, (p as { lng: number }).lng],
+        ),
+      };
+    }),
+  };
 }
 
 // Default scenario when creating a brand-new project. Kept here rather
