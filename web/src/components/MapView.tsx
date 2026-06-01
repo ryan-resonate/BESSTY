@@ -1236,14 +1236,16 @@ export function MapView({
       poly.addTo(layer);
 
       // Centre move handle ALWAYS visible -- this is the grab affordance
-      // the user uses to drag the whole group. zIndexOffset >> any
-      // source marker (default 0) so when zoomed out and BESS rects
-      // sit on top of the handle position, the handle still wins
-      // click/drag arbitration (per fix #13).
+      // the user uses to drag the whole group. zIndexOffset 1300 puts
+      // it above source markers (default 0) AND above the rotation
+      // handle (1100, set below) so when both handles overlap visually
+      // at low zoom the MOVE handle wins click/drag arbitration -- per
+      // user feedback "I should be able to drag, rotate is less
+      // important" (fix #22, replacing fix #13's symmetric 1200/1200).
       const alwaysCentreHandle = L.marker(g.centerLatLng, {
         draggable: true,
         bubblingMouseEvents: false,
-        zIndexOffset: 1200,
+        zIndexOffset: 1300,
         icon: L.divIcon({
           className: 'bessty-bess-centre-handle',
           // Slightly bigger so it punches through dense BESS marker
@@ -1253,38 +1255,10 @@ export function MapView({
         }),
         title: `Drag to move "${g.name}"`,
       });
-      // Live drag: translate every member marker (and the bounding
-      // polygon + rotation handle stem) by the same delta as the
-      // handle moves, so the whole group visibly tracks the cursor
-      // instead of teleporting on dragend (fix #14). State (project
-      // doc) updates only on dragend to keep the snapshot recompute
-      // from firing on every mousemove.
-      let centreDragStart: L.LatLng | null = null;
-      const memberMarkerSnapshots = new Map<string, L.LatLng>();
-      alwaysCentreHandle.on('dragstart', () => {
-        centreDragStart = alwaysCentreHandle.getLatLng();
-        memberMarkerSnapshots.clear();
-        for (const m of members) {
-          const mk = markersByIdRef.current.get(m.id);
-          if (mk) memberMarkerSnapshots.set(m.id, mk.getLatLng());
-        }
-      });
-      alwaysCentreHandle.on('drag', () => {
-        if (!centreDragStart) return;
-        const here = alwaysCentreHandle.getLatLng();
-        const dLat = here.lat - centreDragStart.lat;
-        const dLng = here.lng - centreDragStart.lng;
-        for (const [id, orig] of memberMarkerSnapshots) {
-          const mk = markersByIdRef.current.get(id);
-          if (mk) mk.setLatLng([orig.lat + dLat, orig.lng + dLng]);
-        }
-      });
-      alwaysCentreHandle.on('dragend', () => {
-        const ll = alwaysCentreHandle.getLatLng();
-        centreDragStart = null;
-        memberMarkerSnapshots.clear();
-        callbacksRef.current.onMoveBessGroup?.(g.id, [ll.lat, ll.lng]);
-      });
+      // Centre handle's drag handlers are wired up further below, after
+      // the rotation stem + handle are created -- the centre drag also
+      // translates the rotation overlay so the whole group visibly
+      // moves together (fix #21).
       alwaysCentreHandle.addTo(layer);
 
       // ===== Rotation handle (ALWAYS visible, per fix #9) =====
@@ -1325,9 +1299,12 @@ export function MapView({
       const rotHandle = L.marker(rotHandleLatLng, {
         draggable: true,
         bubblingMouseEvents: false,
-        // Same zIndexOffset story as the centre handle (fix #13): make
-        // sure source markers can't sit on top of the rotation handle.
-        zIndexOffset: 1200,
+        // zIndexOffset 1100 keeps the rotation handle above source
+        // markers (default 0) but BELOW the centre move handle (1300)
+        // so when the two handles visually overlap at low zoom, MOVE
+        // wins click arbitration. Per user feedback "I should be able
+        // to drag, rotate is less important" (fix #22).
+        zIndexOffset: 1100,
         icon: L.divIcon({
           className: 'bessty-bess-rot-handle',
           // Bigger handle + stroke so it's findable at site-overview
@@ -1441,6 +1418,60 @@ export function MapView({
         dragRefs.delete(g.id);
       });
       rotHandle.addTo(layer);
+
+      // ===== Centre-handle drag handlers (fix #14 + fix #21) =====
+      //
+      // Wired up here -- AFTER rotHandle / rotStem / poly all exist --
+      // because the centre drag also translates the rotation overlay
+      // (handle + stem) and the bounding poly. Previously (fix #14)
+      // only member markers tracked the cursor, so the rotation handle
+      // appeared to "stay behind" while everything else moved. State
+      // (project doc) updates only on dragend so the snapshot
+      // recompute doesn't fire on every mousemove.
+      let centreDragStart: L.LatLng | null = null;
+      const memberMarkerSnapshots = new Map<string, L.LatLng>();
+      let rotHandleSnap: L.LatLng | null = null;
+      let rotStemSnap: L.LatLng[] | null = null;
+      let polySnap: L.LatLng[] | null = null;
+      alwaysCentreHandle.on('dragstart', () => {
+        centreDragStart = alwaysCentreHandle.getLatLng();
+        memberMarkerSnapshots.clear();
+        for (const m of members) {
+          const mk = markersByIdRef.current.get(m.id);
+          if (mk) memberMarkerSnapshots.set(m.id, mk.getLatLng());
+        }
+        rotHandleSnap = rotHandle.getLatLng();
+        rotStemSnap = (rotStem.getLatLngs() as L.LatLng[]).map((p) => L.latLng(p.lat, p.lng));
+        polySnap = (poly.getLatLngs()[0] as L.LatLng[]).map((p) => L.latLng(p.lat, p.lng));
+      });
+      alwaysCentreHandle.on('drag', () => {
+        if (!centreDragStart) return;
+        const here = alwaysCentreHandle.getLatLng();
+        const dLat = here.lat - centreDragStart.lat;
+        const dLng = here.lng - centreDragStart.lng;
+        for (const [id, orig] of memberMarkerSnapshots) {
+          const mk = markersByIdRef.current.get(id);
+          if (mk) mk.setLatLng([orig.lat + dLat, orig.lng + dLng]);
+        }
+        if (rotHandleSnap) {
+          rotHandle.setLatLng([rotHandleSnap.lat + dLat, rotHandleSnap.lng + dLng]);
+        }
+        if (rotStemSnap) {
+          rotStem.setLatLngs(rotStemSnap.map((p) => L.latLng(p.lat + dLat, p.lng + dLng)));
+        }
+        if (polySnap) {
+          poly.setLatLngs(polySnap.map((p) => L.latLng(p.lat + dLat, p.lng + dLng)));
+        }
+      });
+      alwaysCentreHandle.on('dragend', () => {
+        const ll = alwaysCentreHandle.getLatLng();
+        centreDragStart = null;
+        memberMarkerSnapshots.clear();
+        rotHandleSnap = null;
+        rotStemSnap = null;
+        polySnap = null;
+        callbacksRef.current.onMoveBessGroup?.(g.id, [ll.lat, ll.lng]);
+      });
       // (Centre translate handle is rendered above the `if (!groupSelected)`
       // block so it's always visible, per fix #5.)
     }

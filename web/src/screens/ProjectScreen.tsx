@@ -465,7 +465,29 @@ export function ProjectScreen() {
     if (persistedProject) {
       // Sanitize on load: any NaN that was previously saved (from a botched
       // import in an older build) gets repaired before it hits the UI.
-      setProjectState(sanitizeProject(persistedProject));
+      const sanitised = sanitizeProject(persistedProject);
+      // Backfill: re-materialise every BESS group so source names that
+      // were saved under the pre-fa0ef09 convention (which leaked the
+      // internal slotKey, e.g. "New BESS group q0-r0-c0-k0-s...") are
+      // refreshed in-place with the current "<group> — <KIND> <n>"
+      // display name. Cheap — materialiseBessGroup is pure and runs in
+      // sub-ms for realistic group sizes; per-unit overrides
+      // (latLngDelta, mode/elevation) are preserved because the
+      // materialiser reads them from group.unitOverrides on every run.
+      // The refreshed names appear immediately in the UI and persist on
+      // the user's next save (no extra write here so we don't spam
+      // Firestore on every project open).
+      const loadLookup: CatalogLookup = (scope, modelId) =>
+        listEntriesByKind(sanitised, 'bess').find((e) => e._scope === scope && e.id === modelId)
+          ?? listEntriesByKind(sanitised, 'auxiliary').find((e) => e._scope === scope && e.id === modelId)
+          ?? listEntriesByKind(sanitised, 'wtg').find((e) => e._scope === scope && e.id === modelId)
+          ?? null;
+      let nextSources = sanitised.sources;
+      for (const g of sanitised.bessGroups ?? []) {
+        const mat = materialiseBessGroup(g, loadLookup);
+        nextSources = withGroupSources(nextSources, g.id, mat.sources);
+      }
+      setProjectState({ ...sanitised, sources: nextSources });
       undoStackRef.current = [];
       redoStackRef.current = [];
     }
