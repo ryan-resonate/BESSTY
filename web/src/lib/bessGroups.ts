@@ -83,6 +83,9 @@ interface PlacedUnit {
   /// These are already orientation-adjusted (swapped for 'across').
   widthM: number;
   lengthM: number;
+  /// Source-of-truth for the unit's segment orientation, so the
+  /// materialiser can fold it into yawDeg when stamping the Source.
+  orientation: 'along' | 'across';
 }
 
 /// Convert a BessGroup into Sources. Pure function -- the caller
@@ -196,13 +199,17 @@ export function materialiseBessGroup(
       catalogScope: ref.catalogScope,
       groupId: group.id,
       slotKey: p.slotKey,
-      // Stamp the group rotation onto the unit so the on-map renderer
-      // (sourceMarker, fix #7) can rotate the footprint rect. The
-      // 'across' orientation is already baked into the unit's
-      // width/length swap in placeRow, so we don't add another 90°
-      // here -- the rect at rotationDeg with already-swapped
-      // dimensions renders correctly.
-      yawDeg: group.rotationDeg,
+      // Stamp the effective on-screen rotation: group rotation +
+      // 90° for 'across' segments. This is mathematically equivalent
+      // to swapping the rect's width/length (which the placement step
+      // already does), so the renderer can always draw the catalog
+      // footprint (widthM × lengthM) rotated by yawDeg without needing
+      // to know the segment's orientation. Previously yawDeg held only
+      // the group rotation, which made 'across' units render with
+      // their long axis along the row direction (wrong) -- only
+      // invisible at the old pixel-icon scale because the icon was
+      // fixed 18x12 px.
+      yawDeg: group.rotationDeg + (p.orientation === 'across' ? 90 : 0),
     };
     // Mode override priority: per-slot override > segment-level
     // modeOverride > catalog default. We surface the SEGMENT value
@@ -285,6 +292,7 @@ function placeRow(
           centreY: y + orientedLengthM / 2,
           widthM: orientedWidthM,
           lengthM: orientedLengthM,
+          orientation: seg.orientation,
         });
         x += orientedWidthM;
         // Intra-segment spacing applies between consecutive units in the

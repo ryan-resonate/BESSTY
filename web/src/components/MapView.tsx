@@ -6,6 +6,7 @@ import { limitForPeriod } from '../lib/types';
 import type { ReceiverResult, GridResult } from '../lib/solver';
 import { paletteRgb, paletteCss, type Palette, tForDb, makeBandsForRange } from '../lib/colormap';
 import { buildContourLines } from '../lib/contourLines';
+import { footprintFor, lookupEntry } from '../lib/catalog';
 
 export type ContourMode = 'filled' | 'lines' | 'both';
 
@@ -464,6 +465,12 @@ export function MapView({
   const mapRef = useRef<L.Map | null>(null);
   const baseLayerRef = useRef<L.TileLayer | null>(null);
   const markersGroupRef = useRef<L.LayerGroup | null>(null);
+  /// Footprint polygons for BESS / Auxiliary sources — metre-true
+  /// rectangles sized from the catalog entry's `footprintM`, rotated
+  /// by source.yawDeg. Drawn UNDER the marker icons so the pixel-icon
+  /// stays the click affordance + selection feedback while the polygon
+  /// shows the real footprint at high zoom.
+  const footprintsGroupRef = useRef<L.LayerGroup | null>(null);
   const overlayGroupRef = useRef<L.LayerGroup | null>(null);
   const measureGroupRef = useRef<L.LayerGroup | null>(null);
   const measurePointsRef = useRef<L.LatLng[]>([]);
@@ -536,6 +543,13 @@ export function MapView({
     // handles draw on top of the bounding rect, and unit markers stay
     // clickable). Add to map BEFORE the markers layer.
     bessGroupsLayerRef.current = L.layerGroup().addTo(map);
+    // Footprint polygons render UNDER the marker icons so the pixel
+    // icon (selection halo, group ring, drag affordance) stays on
+    // top -- the polygon just adds an accurate metre-true rectangle
+    // around the source position so the user sees the real footprint
+    // at high zoom. WTG sources don't use this layer (they're point
+    // sources acoustically; the existing rotor SVG icon is fine).
+    footprintsGroupRef.current = L.layerGroup().addTo(map);
     markersGroupRef.current = L.layerGroup().addTo(map);
 
     // ---- Middle-mouse pan (Leaflet's left-mouse drag is disabled above) ----
@@ -745,6 +759,7 @@ export function MapView({
       mapRef.current = null;
       baseLayerRef.current = null;
       markersGroupRef.current = null;
+      footprintsGroupRef.current = null;
       overlayGroupRef.current = null;
       measureGroupRef.current = null;
       barriersGroupRef.current = null;
@@ -763,6 +778,7 @@ export function MapView({
     if (overlayGroupRef.current) { overlayGroupRef.current.remove(); overlayGroupRef.current.addTo(map); }
     if (barriersGroupRef.current) { barriersGroupRef.current.remove(); barriersGroupRef.current.addTo(map); }
     if (measureGroupRef.current) { measureGroupRef.current.remove(); measureGroupRef.current.addTo(map); }
+    if (footprintsGroupRef.current) { footprintsGroupRef.current.remove(); footprintsGroupRef.current.addTo(map); }
     if (markersGroupRef.current) { markersGroupRef.current.remove(); markersGroupRef.current.addTo(map); }
   }, [baseMap]);
 
@@ -938,8 +954,10 @@ export function MapView({
   useEffect(() => {
     const map = mapRef.current;
     const group = markersGroupRef.current;
+    const footprints = footprintsGroupRef.current;
     if (!map || !group) return;
     group.clearLayers();
+    if (footprints) footprints.clearLayers();
     markersByIdRef.current.clear();
 
     /// Track group-drag state. When a selected marker starts dragging, we
@@ -961,6 +979,78 @@ export function MapView({
       // them at NaN (which silently breaks every subsequent group op).
       if (!validLatLng(s.latLng)) continue;
       const sel = isSelected(s.id);
+
+      // ===== Metre-true footprint polygon for BESS / Auxiliary =====
+      //
+      // Sized from the catalog entry's `footprintM` (falling back to
+      // the kind default via footprintFor()), rotated by source.yawDeg
+      // (which already folds in segment 'across' orientation, set by
+      // the materialiser). Drawn UNDER the marker icon -- the pixel
+      // icon stays as the click/drag/selection affordance at all
+      // zooms; this polygon just shows the real footprint so the user
+      // can SEE the actual unit dimensions at high zoom (e.g. that 8
+      // Megapacks in a row span 41 m, not whatever 8 × 18 px happens
+      // to project to). WTGs skip this: they're acoustically a point
+      // source, and the rotor SVG icon already communicates the
+      // visual scale via rotorDiameterM.
+      if (footprints && (s.kind === 'bess' || s.kind === 'auxiliary')) {
+        const entry = lookupEntry(projectRef.current, s);
+        const fp = entry
+          ? footprintFor(entry)
+          : (s.kind === 'bess'
+              ? { widthM: 5.1, lengthM: 1.7 }
+              : { widthM: 2.0, lengthM: 1.5 });
+        // 4 corners in a local metre frame centred on the source,
+        // rotated by yawDeg (clockwise from north == screen-clockwise
+        // with y pointing south, same convention as the materialiser).
+        const yawRad = ((s.yawDeg ?? 0) * Math.PI) / 180;
+        const cosY = Math.cos(yawRad);
+        const sinY = Math.sin(yawRad);
+        const halfW = fp.widthM / 2;
+        const halfL = fp.lengthM / 2;
+        const corners4 = [
+          { x: -halfW, y: -halfL },
+          { x:  halfW, y: -halfL },
+          { x:  halfW, y:  halfL },
+          { x: -halfW, y:  halfL },
+        ];
+        const R = 6371008.8;
+        const cosLat = Math.cos((s.latLng[0] * Math.PI) / 180);
+        const polyLatLngs: Array<[number, number]> = corners4.map((c) => {
+          const wx = c.x * cosY - c.y * sinY;
+          const wy = c.x * sinY + c.y * cosY;
+          return [
+            s.latLng[0] + (-wy / R) * (180 / Math.PI),
+            s.latLng[1] + (wx / (R * cosLat)) * (180 / Math.PI),
+          ];
+        });
+        const kindColor = s.kind === 'bess' ? '#5e35b1' : '#1565c0';
+        const fpPoly = L.polygon(polyLatLngs, {
+          color: sel ? '#F2CB00' : kindColor,
+          weight: sel ? 2.5 : 1.2,
+          opacity: 0.95,
+          fillColor: kindColor,
+          // Mild fill so the polygon is visible at high zoom without
+          // visually drowning the centred marker icon.
+          fillOpacity: 0.35,
+          // Click + select; clicks pass through the marker icon as
+          // well, so either target selects the source.
+          interactive: true,
+          bubblingMouseEvents: false,
+        });
+        fpPoly.on('click', (e: L.LeafletMouseEvent) => {
+          const shift = !!e.originalEvent?.shiftKey;
+          callbacksRef.current.onSelect(s.id, { shift });
+        });
+        if (s.groupId) {
+          fpPoly.on('dblclick', () => {
+            const g = (projectRef.current.bessGroups ?? []).find((x) => x.id === s.groupId);
+            if (g) callbacksRef.current.onOpenBessGroupWizard?.(g);
+          });
+        }
+        fpPoly.addTo(footprints);
+      }
+
       const marker = L.marker(s.latLng, {
         icon: sourceMarker(s, sel, groupColorById.get(s.id),
           s.groupId ? bessGroupRotById.get(s.groupId) : undefined),

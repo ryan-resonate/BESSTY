@@ -24,7 +24,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Project } from '../lib/types';
 import type { GridResult } from '../lib/solver';
 import type { DemRaster } from '../lib/dem';
-import { lookupEntry, sourceHeightFor } from '../lib/catalog';
+import { footprintFor, lookupEntry, sourceHeightFor } from '../lib/catalog';
 import { makeBandsForRange, paletteCss, tForDb, type Palette } from '../lib/colormap';
 import { buildContourPolygons } from '../lib/contourLines';
 
@@ -391,24 +391,38 @@ function installObjectsLayer(
         },
       });
     } else if (s.kind === 'bess') {
+      // Cuboid footprint comes from the catalog (footprintM, falling
+      // back to the kind default). Height = library source height
+      // (sourceHeightM, falling back to 1.5 m). elevationOffset shifts
+      // the base up; height is added on top.
+      const fp = entry ? footprintFor(entry) : { widthM: 5.1, lengthM: 1.7 };
+      const heightM = sourceHeightFor(entry);
       const base = Math.max(0, s.elevationOffset ?? 0) * exaggeration;
       features.push({
         type: 'Feature',
         properties: {
           kind: 'source', sub: 'bess', name: s.name,
-          base, top: base + 3 * exaggeration,
+          base, top: base + heightM * exaggeration,
         },
-        geometry: { type: 'Polygon', coordinates: [rectRing(s.latLng[0], s.latLng[1], 12, 4, yaw)] },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [rectRing(s.latLng[0], s.latLng[1], fp.widthM, fp.lengthM, yaw)],
+        },
       });
     } else {
+      const fp = entry ? footprintFor(entry) : { widthM: 2.0, lengthM: 1.5 };
+      const heightM = sourceHeightFor(entry);
       const base = Math.max(0, s.elevationOffset ?? 0) * exaggeration;
       features.push({
         type: 'Feature',
         properties: {
           kind: 'source', sub: 'auxiliary', name: s.name,
-          base, top: base + 2.5 * exaggeration,
+          base, top: base + heightM * exaggeration,
         },
-        geometry: { type: 'Polygon', coordinates: [rectRing(s.latLng[0], s.latLng[1], 5, 3, yaw)] },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [rectRing(s.latLng[0], s.latLng[1], fp.widthM, fp.lengthM, yaw)],
+        },
       });
     }
   }
