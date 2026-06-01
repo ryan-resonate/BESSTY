@@ -95,6 +95,36 @@ export function topographyBarriers(
   return new Float64Array(out);
 }
 
+/// Annex D.5 concave-ground criterion (A3): apply the −3 dB ground-reflection
+/// correction when the mean height of the straight source→receiver line above
+/// the terrain is ≥ 1.5·(hS+hR)/2 — i.e. the ground dips away under the path
+/// (concave), enhancing the reflection. `srcZAbs`/`rxZAbs` are absolute z;
+/// `hS`/`hR` are heights above ground. Returns false without a DEM.
+export function concaveCorrectionMet(
+  srcLatLng: [number, number], srcZAbs: number,
+  rxLatLng: [number, number], rxZAbs: number,
+  hS: number, hR: number,
+  dem: DemRaster | null,
+  samples = 12,
+): boolean {
+  if (!dem) return false;
+  let sum = 0;
+  let count = 0;
+  for (let k = 1; k < samples; k++) {
+    const t = k / samples;
+    const lat = srcLatLng[0] + (rxLatLng[0] - srcLatLng[0]) * t;
+    const lng = srcLatLng[1] + (rxLatLng[1] - srcLatLng[1]) * t;
+    const ground = dem.elevation(lat, lng);
+    if (!Number.isFinite(ground)) continue;
+    const lineZ = srcZAbs + (rxZAbs - srcZAbs) * t;
+    sum += lineZ - ground;
+    count++;
+  }
+  if (count === 0) return false;
+  const hm = sum / count;
+  return hm >= 1.5 * (hS + hR) / 2;
+}
+
 /// Atmosphere + barrier-convention parameters threaded to every WASM call.
 export interface SolverEnv { tC: number; rh: number; pKpa: number; barConv: number; dzCap: number; }
 
@@ -191,15 +221,23 @@ export function runBatchedGrid(job: GridJob, dem: DemRaster | null): GridResult 
   const lat0 = (origin[0] * Math.PI) / 180;
   const dbA = new Float32Array(cols * rows);
 
+  const NO_CONCAVE = new Uint8Array(0);
   for (const tile of tiles) {
     const { srcLatLng, srcIsReal } = tile;
     const nS = srcLatLng.length;
-    // Derive metre positions + absolute z from this tile's source pack.
+    // Derive metre positions + absolute z + WTG flag + HAG from the pack.
     const srcLocal: Array<[number, number]> = [];
     const srcZAbs: number[] = [];
+    const srcIsWtg: boolean[] = [];
+    const srcHagl: number[] = [];
+    let tileHasWtg = false;
     for (let i = 0; i < nS; i++) {
       srcLocal.push([tile.sourcesFlat[i * stride + 1], tile.sourcesFlat[i * stride + 2]]);
       srcZAbs.push(tile.sourcesFlat[i * stride + 3]);
+      srcHagl.push(tile.sourcesFlat[i * stride + 4]);
+      const wtg = tile.sourcesFlat[i * stride] !== 0;
+      srcIsWtg.push(wtg);
+      if (wtg) tileHasWtg = true;
     }
     const evaluator = new GridEvaluator(
       tile.sourcesFlat, nBands, g, userBarriers,
@@ -222,7 +260,18 @@ export function runBatchedGrid(job: GridJob, dem: DemRaster | null): GridResult 
             srcLatLng, srcIsReal, srcLocal, srcZAbs, topo, origin, dem,
             lat, lng, e, n, rxZAbs, cutoffM,
           );
-          const total = evaluator.eval_cell_dba(e, n, rxZAbs, rxZ, cutoffM, offsets, barriers);
+          // Annex D.5 concave flags per WTG source (A3). Skipped entirely for
+          // tiles with no turbines (the common BESS case → zero overhead).
+          let concaveFlags = NO_CONCAVE;
+          if (tileHasWtg && dem) {
+            concaveFlags = new Uint8Array(nS);
+            for (let i = 0; i < nS; i++) {
+              if (srcIsWtg[i] && concaveCorrectionMet(
+                srcLatLng[i], srcZAbs[i], [lat, lng], rxZAbs, srcHagl[i], rxZ, dem,
+              )) concaveFlags[i] = 1;
+            }
+          }
+          const total = evaluator.eval_cell_dba(e, n, rxZAbs, rxZ, cutoffM, offsets, barriers, concaveFlags);
           dbA[row * cols + col] = total > -119.9 ? total + dOmegaDb : -120;
         }
       }

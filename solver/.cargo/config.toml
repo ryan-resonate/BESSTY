@@ -1,0 +1,6 @@
+# Enable WebAssembly SIMD (128-bit) codegen for the wasm32 build (S7). All
+# current browsers support wasm SIMD; it lets LLVM pack two f64 lanes in the
+# band/energy loops. Native builds (cargo test) use a different target and are
+# unaffected.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

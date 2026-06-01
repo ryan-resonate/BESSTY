@@ -37,6 +37,7 @@ import {
   approxDistanceM,
   latLngToLocalMetres,
   topographyBarriers,
+  concaveCorrectionMet,
   runBatchedGrid,
   type GridJob,
   type GridTile,
@@ -139,33 +140,60 @@ export interface ReceiverResult {
   perSource: Array<{ sourceId: string; perBandLp: Float64Array }>;
 }
 
+/// Longest barrier sub-segment (m). A drawn barrier polyline is broken into
+/// pieces no longer than this so each piece follows the terrain (its base is
+/// the DEM ground under its own short span) instead of a single linear
+/// interpolation across the whole length. Each piece is a terrain-following
+/// `WallBarrier`: it carries the absolute ground elevation under each endpoint
+/// plus the height-above-ground; the solver interpolates the top at the
+/// diffraction crossing. No DEM → ground 0 → top = height (flat-ground
+/// behaviour unchanged).
+const MAX_BARRIER_SEGMENT_M = 10;
+
 function packBarriers(
   barriers: Barrier[],
   originLatLng: [number, number],
   dem: DemRaster | null,
 ): Float64Array {
   const out: number[] = [];
+  const groundAt = (lat: number, lng: number): number => {
+    if (!dem) return 0;
+    const g = dem.elevation(lat, lng);
+    return Number.isFinite(g) ? g : 0;
+  };
   for (const b of barriers) {
-    if (b.polylineLatLng.length < 2) continue;
-    const [a, c] = b.polylineLatLng;
-    const aXY = latLngToLocalMetres(a, originLatLng);
-    const cXY = latLngToLocalMetres(c, originLatLng);
-    // The solver wall is terrain-following: it carries the ABSOLUTE ground
-    // elevation under each endpoint plus the height-above-ground, and
-    // interpolates the top at the diffraction crossing (top = ground + height
-    // along its length). This matches the terrain-aligned 3D view and removes
-    // the off-centre asymmetry of a single flat top. No DEM → ground 0 at both
-    // ends → top = height (unchanged flat-ground behaviour).
-    const heightAg = b.topHeightsM[0] ?? 0;
-    let groundA = 0;
-    let groundB = 0;
-    if (dem) {
-      const ga = dem.elevation(a[0], a[1]);
-      const gc = dem.elevation(c[0], c[1]);
-      groundA = Number.isFinite(ga) ? ga : 0;
-      groundB = Number.isFinite(gc) ? gc : 0;
+    const poly = b.polylineLatLng;
+    if (poly.length < 2) continue;
+    const h0 = b.topHeightsM[0] ?? 0;
+    // Walk every polyline edge (not just the first), subdividing each into
+    // ≤ MAX_BARRIER_SEGMENT_M pieces.
+    for (let v = 0; v + 1 < poly.length; v++) {
+      const p0 = poly[v];
+      const p1 = poly[v + 1];
+      const hStart = b.topHeightsM[v] ?? h0;
+      const hEnd = b.topHeightsM[v + 1] ?? h0;
+      const segLen = approxDistanceM(p0, p1);
+      const nSub = Math.max(1, Math.ceil(segLen / MAX_BARRIER_SEGMENT_M));
+      for (let k = 0; k < nSub; k++) {
+        const t0 = k / nSub;
+        const t1 = (k + 1) / nSub;
+        const lat0 = p0[0] + (p1[0] - p0[0]) * t0;
+        const lng0 = p0[1] + (p1[1] - p0[1]) * t0;
+        const lat1 = p0[0] + (p1[0] - p0[0]) * t1;
+        const lng1 = p0[1] + (p1[1] - p0[1]) * t1;
+        const aXY = latLngToLocalMetres([lat0, lng0], originLatLng);
+        const cXY = latLngToLocalMetres([lat1, lng1], originLatLng);
+        // Top height interpolated at the piece midpoint (constant per piece;
+        // negligible variation over ≤10 m). Handles a sloping top if the
+        // barrier carries per-vertex heights.
+        const tm = (t0 + t1) / 2;
+        const height = hStart + (hEnd - hStart) * tm;
+        out.push(
+          aXY[0], aXY[1], cXY[0], cXY[1],
+          groundAt(lat0, lng0), groundAt(lat1, lng1), height,
+        );
+      }
     }
-    out.push(aXY[0], aXY[1], cXY[0], cXY[1], groundA, groundB, heightAg);
   }
   return new Float64Array(out);
 }
@@ -250,9 +278,12 @@ function snapshotPair(
     );
     const allBars = concatBarriers(barriersFlat, topoBars);
     const rotorD = source.rotorDiameterM ?? entry.rotorDiameterM ?? 120;
+    // Annex D.5 concave-ground criterion (A3), evaluated from the DEM along
+    // this hub→receiver path.
+    const concave = concaveCorrectionMet(source.latLng, hubZAbs, rxLatLng, rxZAbs, hubZ, rxZ, dem);
     const snap = evaluate_wtg_with_grad_src_octave(
       lw, se, sn, hubZAbs, hubZ, re, rn, rxZAbs, rxZ, g, allBars,
-      rotorD, false,
+      rotorD, concave,
       env.tC, env.rh, env.pKpa, env.barConv,
     );
     // srcAbsXyz is the ABSOLUTE source position — the gradient is taken w.r.t.
@@ -769,9 +800,11 @@ export async function snapshotGrid(
           : userBarriers;
 
         const { lw, isWtg, rotorD } = meta;
+        const concave = isWtg
+          && concaveCorrectionMet(es.latLng, srcZAbs[si], [lat, lng], rxZAbs, srcHagl[si], rxZ, dem);
         const snap = isWtg
           ? evaluate_wtg_with_grad_src_octave(
-              lw, se, sn, srcZAbs[si], srcHagl[si], e, n, rxZAbs, rxZ, g, allBars, rotorD, false,
+              lw, se, sn, srcZAbs[si], srcHagl[si], e, n, rxZAbs, rxZ, g, allBars, rotorD, concave,
               env.tC, env.rh, env.pKpa, env.barConv,
             )
           : evaluate_general_with_grad_src_octave(

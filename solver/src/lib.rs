@@ -387,11 +387,12 @@ mod wasm {
             r: Vec3<f64>,
             cell_hagl: f64,
             walls: &[WallBarrier<f64>],
+            apply_concave: bool,
         ) -> BandSpectrum<f64> {
             if src.is_wtg {
                 iso9613::annex_d::evaluate_wtg(
                     &src.lw, src.pos, r, src.hagl, cell_hagl, self.g, walls,
-                    WtgRules::default(), false, src.rotor_d, self.atm, self.bar_conv,
+                    WtgRules::default(), apply_concave, src.rotor_d, self.atm, self.bar_conv,
                 )
             } else {
                 iso9613::evaluate_with_barriers(
@@ -409,12 +410,16 @@ mod wasm {
         /// `topo_offsets` (len `n_sources + 1`, or empty for "no topo at all")
         /// gives source `i`'s topography barriers as
         /// `topo_barriers[5·topo_offsets[i] .. 5·topo_offsets[i+1]]`.
+        /// `concave_flags` (length n_sources, or empty for "none") carries the
+        /// Annex D.5 concave-ground verdict per source — 1 = apply the −3 dB
+        /// correction (WTG sources only; ignored for general sources).
         pub fn eval_cell_dba(
             &self,
             cell_e: f64, cell_n: f64, cell_z_abs: f64, cell_hagl: f64,
             cutoff_m: f64,
             topo_offsets: &[u32],
             topo_barriers: &[f64],
+            concave_flags: &[u8],
         ) -> f64 {
             let r = Vec3::new(cell_e, cell_n, cell_z_abs);
             let aw = self.bs.a_weighting();
@@ -430,7 +435,8 @@ mod wasm {
                     }
                 }
                 let walls = self.walls_for(i, topo_offsets, topo_barriers, &mut scratch);
-                let lp = self.lp_for_source(src, r, cell_hagl, walls);
+                let concave = src.is_wtg && concave_flags.get(i).copied().unwrap_or(0) != 0;
+                let lp = self.lp_for_source(src, r, cell_hagl, walls, concave);
                 for (bi, band) in lp.bands.iter().enumerate() {
                     energy += 10f64.powf(0.1 * (band + aw[bi]));
                 }

@@ -326,6 +326,15 @@ function strip(
   return ring;
 }
 
+/// Horizontal length (m) of a lat/lng segment (equirectangular approx).
+function segMetres(a: [number, number], b: [number, number]): number {
+  const R = 6371008.8;
+  const lat0 = ((a[0] + b[0]) / 2 * Math.PI) / 180;
+  const dx = (b[1] - a[1]) * (Math.PI / 180) * R * Math.cos(lat0);
+  const dy = (b[0] - a[0]) * (Math.PI / 180) * R;
+  return Math.hypot(dx, dy);
+}
+
 /// Build / refresh the source + receiver + barrier fill-extrusion
 /// features. The fill-extrusion layer is configured with terrain
 /// alignment (`fill-extrusion-base-alignment: 'terrain'`,
@@ -449,22 +458,35 @@ function installObjectsLayer(
     });
   }
   for (const b of project.barriers) {
-    if (b.polylineLatLng.length < 2) continue;
-    const top = (b.topHeightsM[0] ?? 0) * exaggeration;
+    const poly = b.polylineLatLng;
+    if (poly.length < 2) continue;
     const base = Math.max(0, b.baseFromGroundM ?? 0) * exaggeration;
-    // v1 only handles 2-point segments — same as the 2D draw flow.
-    // Future polyline barriers would emit one strip per segment.
-    const a = b.polylineLatLng[0];
-    const c = b.polylineLatLng[1];
-    if (![a[0], a[1], c[0], c[1]].every(Number.isFinite)) continue;
-    features.push({
-      type: 'Feature',
-      properties: {
-        kind: 'barrier', sub: 'barrier', name: b.name,
-        base, top,
-      },
-      geometry: { type: 'Polygon', coordinates: [strip(a, c, 1.0)] },
-    });
+    const h0 = b.topHeightsM[0] ?? 0;
+    // One strip per ≤10 m piece of every polyline edge, so the (terrain-
+    // aligned) top follows the ground bump-by-bump instead of interpolating
+    // linearly across one long segment — matching the solver's terrain-
+    // following wall.
+    for (let v = 0; v + 1 < poly.length; v++) {
+      const p0 = poly[v];
+      const p1 = poly[v + 1];
+      if (![p0[0], p0[1], p1[0], p1[1]].every(Number.isFinite)) continue;
+      const hStart = b.topHeightsM[v] ?? h0;
+      const hEnd = b.topHeightsM[v + 1] ?? h0;
+      const nSub = Math.max(1, Math.ceil(segMetres(p0, p1) / 10));
+      for (let k = 0; k < nSub; k++) {
+        const t0 = k / nSub;
+        const t1 = (k + 1) / nSub;
+        const tm = (t0 + t1) / 2;
+        const sa: [number, number] = [p0[0] + (p1[0] - p0[0]) * t0, p0[1] + (p1[1] - p0[1]) * t0];
+        const sc: [number, number] = [p0[0] + (p1[0] - p0[0]) * t1, p0[1] + (p1[1] - p0[1]) * t1];
+        const top = (hStart + (hEnd - hStart) * tm) * exaggeration;
+        features.push({
+          type: 'Feature',
+          properties: { kind: 'barrier', sub: 'barrier', name: b.name, base, top },
+          geometry: { type: 'Polygon', coordinates: [strip(sa, sc, 1.0)] },
+        });
+      }
+    }
   }
 
   const fc: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features };

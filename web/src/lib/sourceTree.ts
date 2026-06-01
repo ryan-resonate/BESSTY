@@ -46,6 +46,12 @@ interface TreeNode {
   zAboveGround: number;
   /// Number of source leaves below this node (1 for a single leaf).
   memberCount: number;
+  /// True if any source below this node is a wind turbine. A WTG must never be
+  /// folded into a cluster (it would lose its Annex D treatment — the G≤0.5
+  /// cap, 4 m receiver, 3 dB barrier cap, concave), so the walk refuses to
+  /// accept any multi-source node that contains one and recurses until each
+  /// WTG is an individual real source (A4 in `docs/solver-review-2026-06.md`).
+  containsWtg: boolean;
   /// Either children (internal node) or leaves (terminal node).
   children: TreeNode[] | null;
   leaves: Source[] | null;
@@ -138,12 +144,13 @@ function buildNode(
   const centroidLng = centLng / totalEnergy;
   const zAboveGround = zSum / totalEnergy;
   const diagM = bboxDiagM(bbox);
+  const containsWtg = members.some((s) => s.kind === 'wtg');
 
   // Leaf condition: small enough to stop subdividing.
   if (members.length <= LEAF_CAP) {
     return {
       bounds: { ...bbox, diagM },
-      centroidLat, centroidLng, combinedLw, zAboveGround,
+      centroidLat, centroidLng, combinedLw, zAboveGround, containsWtg,
       memberCount: members.length,
       children: null,
       leaves: members,
@@ -166,7 +173,7 @@ function buildNode(
   if (nonEmptyBuckets.length === 1) {
     return {
       bounds: { ...bbox, diagM },
-      centroidLat, centroidLng, combinedLw, zAboveGround,
+      centroidLat, centroidLng, combinedLw, zAboveGround, containsWtg,
       memberCount: members.length,
       children: null,
       leaves: members,
@@ -181,7 +188,7 @@ function buildNode(
   }
   return {
     bounds: { ...bbox, diagM },
-    centroidLat, centroidLng, combinedLw, zAboveGround,
+    centroidLat, centroidLng, combinedLw, zAboveGround, containsWtg,
     memberCount: members.length,
     children,
     leaves: null,
@@ -233,9 +240,12 @@ export function walkSourceTree(
       // Even the nearest face of this node's bbox is past the cutoff.
       return;
     }
-    // Acceptance: node looks small from here.
+    // Acceptance: node looks small from here. But never collapse a multi-
+    // source node that contains a WTG — recurse so each turbine ends up an
+    // individual real source with its Annex D treatment intact (A4).
+    const isSingleReal = node.leaves != null && node.leaves.length === 1;
     const accept = (theta > 0)
-      ? (node.bounds.diagM / Math.max(d, 1) < theta)
+      ? (node.bounds.diagM / Math.max(d, 1) < theta) && (isSingleReal || !node.containsWtg)
       : (node.leaves != null);     // theta==0 → always recurse to leaves
     if (accept) {
       if (node.leaves && node.leaves.length === 1) {
@@ -302,8 +312,10 @@ export function walkSourceTreeForRegion(
   function visit(node: TreeNode) {
     const d = distBboxToPointM(region, node.centroidLat, node.centroidLng);
     if (cutoffM > 0 && d - node.bounds.diagM / 2 > cutoffM) return;
+    // Never collapse a multi-source node containing a WTG (keep Annex D) — A4.
+    const isSingleReal = node.leaves != null && node.leaves.length === 1;
     const accept = (theta > 0)
-      ? (node.bounds.diagM / Math.max(d, 1) < theta)
+      ? (node.bounds.diagM / Math.max(d, 1) < theta) && (isSingleReal || !node.containsWtg)
       : (node.leaves != null);
     if (accept) {
       if (node.leaves && node.leaves.length === 1) {
