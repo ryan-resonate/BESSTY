@@ -148,21 +148,22 @@ function packBarriers(
     const [a, c] = b.polylineLatLng;
     const aXY = latLngToLocalMetres(a, originLatLng);
     const cXY = latLngToLocalMetres(c, originLatLng);
-    // Barrier `top_z` is ABSOLUTE in the solver (shares the source/receiver
-    // geometry datum). The stored `topHeightsM` is the barrier height above
-    // local ground, so add the DEM ground elevation at the barrier (mean of
-    // its two endpoints). Without a DEM, ground is 0 → top_z = height. This is
-    // the user-barrier half of the A1 z-datum fix.
+    // The solver wall is terrain-following: it carries the ABSOLUTE ground
+    // elevation under each endpoint plus the height-above-ground, and
+    // interpolates the top at the diffraction crossing (top = ground + height
+    // along its length). This matches the terrain-aligned 3D view and removes
+    // the off-centre asymmetry of a single flat top. No DEM → ground 0 at both
+    // ends → top = height (unchanged flat-ground behaviour).
     const heightAg = b.topHeightsM[0] ?? 0;
-    let ground = 0;
+    let groundA = 0;
+    let groundB = 0;
     if (dem) {
       const ga = dem.elevation(a[0], a[1]);
       const gc = dem.elevation(c[0], c[1]);
-      const gaOk = Number.isFinite(ga) ? ga : 0;
-      const gcOk = Number.isFinite(gc) ? gc : 0;
-      ground = (gaOk + gcOk) / 2;
+      groundA = Number.isFinite(ga) ? ga : 0;
+      groundB = Number.isFinite(gc) ? gc : 0;
     }
-    out.push(aXY[0], aXY[1], cXY[0], cXY[1], ground + heightAg);
+    out.push(aXY[0], aXY[1], cXY[0], cXY[1], groundA, groundB, heightAg);
   }
   return new Float64Array(out);
 }

@@ -30,7 +30,8 @@ fn lat_on_plateau(ground_elev: f64) -> f64 {
     let walls = vec![WallBarrier {
         a_e: 50.0, a_n: -1000.0,
         b_e: 50.0, b_n: 1000.0,
-        top_z: ground_elev + 8.0, // ABSOLUTE crest elevation
+        // Ground under the barrier sits on the same plateau; top follows it.
+        base_z_a: ground_elev, base_z_b: ground_elev, height_agl: 8.0,
     }];
     let lw = flat_100_db_octave();
     let lp = evaluate_with_barriers(

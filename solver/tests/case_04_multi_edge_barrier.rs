@@ -13,8 +13,8 @@ fn case_04_setup() -> (Vec3<f64>, Vec3<f64>, Vec<WallBarrier<f64>>) {
     let s = Vec3::new(0.0, 0.0, 5.0);
     let r = Vec3::new(100.0, 0.0, 1.5);
     let walls = vec![
-        WallBarrier { a_e: 30.0, a_n: -1000.0, b_e: 30.0, b_n: 1000.0, top_z: 7.0 },
-        WallBarrier { a_e: 70.0, a_n: -1000.0, b_e: 70.0, b_n: 1000.0, top_z: 7.0 },
+        WallBarrier { a_e: 30.0, a_n: -1000.0, b_e: 30.0, b_n: 1000.0, base_z_a: 0.0, base_z_b: 0.0, height_agl: 7.0 },
+        WallBarrier { a_e: 70.0, a_n: -1000.0, b_e: 70.0, b_n: 1000.0, base_z_a: 0.0, base_z_b: 0.0, height_agl: 7.0 },
     ];
     (s, r, walls)
 }
@@ -55,7 +55,7 @@ fn case_04_8khz_hits_25db_multi_edge_cap() {
 fn case_04_more_attenuation_than_case_03() {
     let (s, r, walls_4) = case_04_setup();
     let walls_3 = vec![WallBarrier {
-        a_e: 50.0, a_n: -1000.0, b_e: 50.0, b_n: 1000.0, top_z: 8.0,
+        a_e: 50.0, a_n: -1000.0, b_e: 50.0, b_n: 1000.0, base_z_a: 0.0, base_z_b: 0.0, height_agl: 8.0,
     }];
     let lw = flat_100_db_octave();
     let lp_4 = evaluate_with_barriers(

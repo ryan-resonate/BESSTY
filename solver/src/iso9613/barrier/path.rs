@@ -18,15 +18,28 @@ pub struct DiffractionEdge<T> {
     pub z: T,
 }
 
-/// A straight vertical wall barrier defined by two plan-view endpoints and
-/// a constant top height (m, absolute z).
+/// A straight wall barrier defined by two plan-view endpoints, the absolute
+/// ground elevation under each endpoint, and the barrier height above ground.
+///
+/// The wall **follows the terrain**: at any point along its length the top
+/// sits at `ground + height_agl`, where `ground` is linearly interpolated
+/// between the two endpoint elevations. The diffraction code samples this at
+/// the exact point where the source→receiver line crosses the wall, rather
+/// than collapsing the wall to a single flat top (which made screening depend
+/// asymmetrically on where the crossing fell). For a flat-ground barrier set
+/// `base_z_a = base_z_b = 0` and `height_agl` = the wall height.
 #[derive(Copy, Clone, Debug)]
 pub struct WallBarrier<T> {
     pub a_e: T,
     pub a_n: T,
     pub b_e: T,
     pub b_n: T,
-    pub top_z: T,
+    /// Absolute ground elevation under endpoint A (m).
+    pub base_z_a: T,
+    /// Absolute ground elevation under endpoint B (m).
+    pub base_z_b: T,
+    /// Barrier height above local ground (m), constant along the segment.
+    pub height_agl: T,
 }
 
 /// The 4 path-length quantities needed for Eqs 18 and 21.
@@ -90,10 +103,13 @@ pub fn project_walls<T: ADScalar>(
             continue;
         }
 
-        // x in the SR plane is t · dp; z is the wall's top height.
+        // Terrain-following top at the crossing: interpolate the ground
+        // elevation between the two endpoints at the wall parameter `s`, then
+        // add the (constant) barrier height. `x` in the SR plane is `t · dp`.
+        let base_at_s = wall.base_z_a + s * (wall.base_z_b - wall.base_z_a);
         edges.push(DiffractionEdge {
             x: t * dp,
-            z: wall.top_z,
+            z: base_at_s + wall.height_agl,
         });
     }
 
@@ -225,7 +241,7 @@ mod tests {
         let wall = WallBarrier {
             a_e: 50.0, a_n: -50.0,
             b_e: 50.0, b_n: 50.0,
-            top_z: 8.0,
+            base_z_a: 0.0, base_z_b: 0.0, height_agl: 8.0,
         };
         let candidates = project_walls(src, rcv, &[wall]);
         assert_eq!(candidates.len(), 1);
@@ -249,10 +265,12 @@ mod tests {
         let rcv = Vec3::new(100.0, 0.0, 1.5);
         let walls = [
             WallBarrier {
-                a_e: 30.0, a_n: -50.0, b_e: 30.0, b_n: 50.0, top_z: 7.0,
+                a_e: 30.0, a_n: -50.0, b_e: 30.0, b_n: 50.0,
+                base_z_a: 0.0, base_z_b: 0.0, height_agl: 7.0,
             },
             WallBarrier {
-                a_e: 70.0, a_n: -50.0, b_e: 70.0, b_n: 50.0, top_z: 7.0,
+                a_e: 70.0, a_n: -50.0, b_e: 70.0, b_n: 50.0,
+                base_z_a: 0.0, base_z_b: 0.0, height_agl: 7.0,
             },
         ];
         let candidates = project_walls(src, rcv, &walls);
@@ -278,11 +296,35 @@ mod tests {
         let src = Vec3::new(0.0, 0.0, 5.0);
         let rcv = Vec3::new(100.0, 0.0, 1.5);
         let wall = WallBarrier {
-            a_e: 50.0, a_n: -50.0, b_e: 50.0, b_n: 50.0, top_z: 2.0,
+            a_e: 50.0, a_n: -50.0, b_e: 50.0, b_n: 50.0,
+            base_z_a: 0.0, base_z_b: 0.0, height_agl: 2.0,
         };
         let candidates = project_walls(src, rcv, &[wall]);
         let (s, r) = sr_plane(src, rcv);
         let active = upper_hull_select(s, r, &candidates);
         assert_eq!(active.len(), 0);
+    }
+
+    #[test]
+    fn terrain_following_top_interpolates_at_crossing() {
+        // Wall along n from -100 to +100 at x = 50, ground sloping 0 → 10 m
+        // from endpoint A to endpoint B, barrier 2 m tall.
+        let wall = WallBarrier {
+            a_e: 50.0, a_n: -100.0, b_e: 50.0, b_n: 100.0,
+            base_z_a: 0.0, base_z_b: 10.0, height_agl: 2.0,
+        };
+        // SR line at n = -50 crosses the wall at s = 0.25 → base 2.5, top 4.5.
+        let c1 = project_walls(
+            Vec3::new(0.0, -50.0, 1.0), Vec3::new(100.0, -50.0, 1.0), &[wall],
+        );
+        assert_eq!(c1.len(), 1);
+        assert_relative_eq!(c1[0].z, 4.5, epsilon = 1e-6);
+        // SR line at n = +50 crosses at s = 0.75 → base 7.5, top 9.5. The
+        // barrier top tracks the terrain at the actual crossing, not a single
+        // flat value — this is what fixes the off-centre asymmetry.
+        let c2 = project_walls(
+            Vec3::new(0.0, 50.0, 1.0), Vec3::new(100.0, 50.0, 1.0), &[wall],
+        );
+        assert_relative_eq!(c2[0].z, 9.5, epsilon = 1e-6);
     }
 }

@@ -447,6 +447,12 @@ export function ProjectScreen() {
   // Cached point + grid snapshots (gradients) for fast Taylor extrapolation.
   const pointSnapRef = useRef<PointSnapshot | null>(null);
   const gridSnapRef = useRef<GridSnapshot | null>(null);
+  // Mirrors `grid != null` so the structural-change effect can tell whether a
+  // contour grid is currently on screen WITHOUT taking `grid` as a dependency
+  // (which would re-fire the effect on every recompute). Lets eval-only grids
+  // (large sims with no gradient pack) refresh when barriers/settings change.
+  const gridShownRef = useRef(false);
+  useEffect(() => { gridShownRef.current = grid != null; }, [grid]);
   // Generation counters: each new snapshot request bumps these. When an
   // async result comes back we discard it if a newer request has fired in
   // the meantime — stops a slow run from clobbering the latest geometry.
@@ -722,22 +728,31 @@ export function ProjectScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pointStructuralKey]);
 
-  // Grid re-snapshot on grid-relevant changes only. Receivers don't trigger.
+  // Grid recompute on grid-relevant changes (barriers, settings, sources, DEM).
+  // Receivers don't trigger. Handles BOTH modes: snapshot mode re-snapshots
+  // (keeps gradients for live drag); eval-only mode (large sims, no gradient
+  // pack) re-evaluates on the worker. If no grid has been run yet, do nothing.
   useEffect(() => {
-    if (!project || !gridSnapRef.current) return;        // no grid → nothing to do
+    if (!project) return;
+    const hasSnap = gridSnapRef.current != null;
+    if (!hasSnap && !gridShownRef.current) return;
     const handle = setTimeout(() => {
       const gen = ++gridGenRef.current;
       const start = performance.now();
-      snapshotGrid(project, dem, gridSpacingM,
-        project.settings?.general.defaultReceiverHeight ?? 1.5)
-        .then((s) => {
-          if (gen !== gridGenRef.current) return;        // superseded
-          gridSnapRef.current = s;
-          const { grid: g } = extrapolateGrid(project, s, dem);
-          g.computedMs = performance.now() - start;
-          setGrid(g);
-        })
-        .catch((e) => console.warn('grid re-snapshot failed:', e));
+      const height = project.settings?.general.defaultReceiverHeight ?? 1.5;
+      const p = hasSnap
+        ? snapshotGrid(project, dem, gridSpacingM, height).then((s) => {
+            if (gen !== gridGenRef.current) return;        // superseded
+            gridSnapRef.current = s;
+            const { grid: g } = extrapolateGrid(project, s, dem);
+            g.computedMs = performance.now() - start;
+            setGrid(g);
+          })
+        : evaluateGridViaWorker(project, dem, gridSpacingM, height).then((g) => {
+            if (gen !== gridGenRef.current) return;        // superseded
+            setGrid(g);
+          });
+      p.catch((e) => console.warn('grid recompute failed:', e));
     }, 80);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps

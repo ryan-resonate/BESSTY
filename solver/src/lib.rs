@@ -24,10 +24,15 @@ mod wasm {
     use crate::iso9613::barrier::{BarrierConvention, WallBarrier};
     use wasm_bindgen::prelude::*;
 
+    // Wall pack stride: [a_e, a_n, b_e, b_n, base_z_a, base_z_b, height_agl].
+    // base_z_* are absolute ground elevations under the endpoints; the top
+    // follows the terrain (interpolated base + height) at the diffraction
+    // crossing — see `WallBarrier`.
     fn unpack_walls(flat: &[f64]) -> Vec<WallBarrier<f64>> {
-        flat.chunks_exact(5)
+        flat.chunks_exact(7)
             .map(|c| WallBarrier {
-                a_e: c[0], a_n: c[1], b_e: c[2], b_n: c[3], top_z: c[4],
+                a_e: c[0], a_n: c[1], b_e: c[2], b_n: c[3],
+                base_z_a: c[4], base_z_b: c[5], height_agl: c[6],
             })
             .collect()
     }
@@ -174,13 +179,15 @@ mod wasm {
     // to the existing exact evaluator until that gradient is added.
 
     fn unpack_walls_dual<const N: usize>(flat: &[f64]) -> Vec<WallBarrier<crate::dual::Dual<N>>> {
-        flat.chunks_exact(5)
+        flat.chunks_exact(7)
             .map(|c| WallBarrier {
                 a_e: crate::dual::Dual::<N>::constant(c[0]),
                 a_n: crate::dual::Dual::<N>::constant(c[1]),
                 b_e: crate::dual::Dual::<N>::constant(c[2]),
                 b_n: crate::dual::Dual::<N>::constant(c[3]),
-                top_z: crate::dual::Dual::<N>::constant(c[4]),
+                base_z_a: crate::dual::Dual::<N>::constant(c[4]),
+                base_z_b: crate::dual::Dual::<N>::constant(c[5]),
+                height_agl: crate::dual::Dual::<N>::constant(c[6]),
             })
             .collect()
     }
@@ -365,8 +372,11 @@ mod wasm {
             }
             scratch.clear();
             scratch.extend_from_slice(&self.user_barriers);
-            for c in topo_barriers[5 * a..5 * b].chunks_exact(5) {
-                scratch.push(WallBarrier { a_e: c[0], a_n: c[1], b_e: c[2], b_n: c[3], top_z: c[4] });
+            for c in topo_barriers[7 * a..7 * b].chunks_exact(7) {
+                scratch.push(WallBarrier {
+                    a_e: c[0], a_n: c[1], b_e: c[2], b_n: c[3],
+                    base_z_a: c[4], base_z_b: c[5], height_agl: c[6],
+                });
             }
             scratch
         }
@@ -452,17 +462,19 @@ mod wasm {
                 .map(|w| WallBarrier {
                     a_e: D::constant(w.a_e), a_n: D::constant(w.a_n),
                     b_e: D::constant(w.b_e), b_n: D::constant(w.b_n),
-                    top_z: D::constant(w.top_z),
+                    base_z_a: D::constant(w.base_z_a), base_z_b: D::constant(w.base_z_b),
+                    height_agl: D::constant(w.height_agl),
                 })
                 .collect();
             if !topo_offsets.is_empty() {
                 let a = topo_offsets[source_idx] as usize;
                 let b = topo_offsets[source_idx + 1] as usize;
-                for c in topo_barriers[5 * a..5 * b].chunks_exact(5) {
+                for c in topo_barriers[7 * a..7 * b].chunks_exact(7) {
                     walls.push(WallBarrier {
                         a_e: D::constant(c[0]), a_n: D::constant(c[1]),
                         b_e: D::constant(c[2]), b_n: D::constant(c[3]),
-                        top_z: D::constant(c[4]),
+                        base_z_a: D::constant(c[4]), base_z_b: D::constant(c[5]),
+                        height_agl: D::constant(c[6]),
                     });
                 }
             }

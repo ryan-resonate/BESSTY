@@ -43,9 +43,10 @@ export interface TopoSettings {
 
 /// Sample the DEM along the (source → receiver) line; where the ground pokes
 /// above the straight-line path by more than `minHeightM`, emit a thin virtual
-/// barrier at the sample's local-frame XY with its top at the ABSOLUTE ground
-/// elevation (matching the absolute z passed for source/receiver). Returns the
-/// `packBarriers` layout (ax, ay, bx, by, topZ per barrier).
+/// barrier whose top IS the absolute ground elevation at that sample (a terrain
+/// ridge has zero height-above-ground — its "top" is the ground itself).
+/// Returns the wall pack layout `(ax, ay, bx, by, base_z_a, base_z_b, height)`
+/// per barrier — here `base_z_a = base_z_b = groundZ` and `height = 0`.
 export function topographyBarriers(
   topo: TopoSettings | undefined,
   sourceLatLng: [number, number],
@@ -89,7 +90,7 @@ export function topographyBarriers(
     const ay = n + perpY * wing;
     const bx = e - perpX * wing;
     const by = n - perpY * wing;
-    out.push(ax, ay, bx, by, groundZ);
+    out.push(ax, ay, bx, by, groundZ, groundZ, 0);
   }
   return new Float64Array(out);
 }
@@ -157,7 +158,7 @@ function cellTopoPack(
       [cellLat, cellLng], [cellE, cellN, cellZAbs], origin, dem,
     );
     for (let j = 0; j < tb.length; j++) chunks.push(tb[j]);
-    barCount += tb.length / 5;
+    barCount += tb.length / 7; // wall pack stride (a_e,a_n,b_e,b_n,base_a,base_b,height)
   }
   offsets[nS] = barCount;
   return { offsets, barriers: new Float64Array(chunks) };

@@ -20,7 +20,7 @@ fn case_03_setup() -> (Vec3<f64>, Vec3<f64>, Vec<WallBarrier<f64>>) {
     let walls = vec![WallBarrier {
         a_e: 50.0, a_n: -1000.0,
         b_e: 50.0, b_n: 1000.0,
-        top_z: 8.0,
+        base_z_a: 0.0, base_z_b: 0.0, height_agl: 8.0,
     }];
     (s, r, walls)
 }
