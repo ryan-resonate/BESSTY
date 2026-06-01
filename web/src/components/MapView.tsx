@@ -163,15 +163,25 @@ const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max: number
   satellite: {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attribution: '© Esri',
-    // Bumped to 22: Esri DOES have imagery past z=19 in many populated
-    // areas (urban / coastal / industrial sites). Where it doesn't, the
-    // tile content IS the "Map data not yet available" placeholder PNG
-    // served with HTTP 200 -- so errorTileUrl never fires. We detect
-    // the placeholder client-side via pixel sampling (see
-    // PlaceholderAwareTileLayer below) and substitute a transparent
-    // tile so Leaflet's parent-tile fallback shows through, giving
-    // smooth pixelation instead of the gray text card.
-    max: 22,
+    // Esri's documented reliable global-coverage limit is z=19. Past
+    // that, Esri returns a "Map data not yet available" placeholder
+    // PNG with HTTP 200 in many areas -- which means there's no
+    // programmatic indicator we can use to filter it out without
+    // breaking other things. We tried a pixel-sampling detector that
+    // substituted with transparent: the detector worked, but
+    // transparent tiles just expose the gray map-container background
+    // (Leaflet doesn't auto-fallback to the parent tile for
+    // non-errored tiles -- that's a misconception). Net result: solid
+    // gray at high zoom instead of placeholders.
+    //
+    // Reverting to the simple+reliable approach: cap at z=19, let
+    // Leaflet's CSS up-sampling handle z=20-24 from the z=19 tiles.
+    // Most places this means pixelated real imagery at high zoom.
+    // In the rare uncovered areas you'll still see Esri's placeholder
+    // text card at z=19 (and its CSS-upsampled version higher); that's
+    // an Esri data-availability limitation, not something we can fix
+    // without switching providers (Mapbox / Bing both need API keys).
+    max: 19,
   },
   osm: {
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -182,109 +192,10 @@ const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max: number
 };
 
 // 1x1 transparent PNG. Returned in place of any tile that errors / 404s
-// or that the placeholder detector identifies as the Esri "no coverage"
-// card, so Leaflet keeps showing the prior good (up-sampled) tile
-// rather than rendering the provider's placeholder image.
+// so Leaflet keeps showing the prior good (up-sampled) tile rather than
+// rendering the provider's "Map data not yet available" placeholder.
 const TRANSPARENT_TILE =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
-
-/// Detects Esri's "Map data not yet available" placeholder by sampling
-/// a handful of pixels from the loaded tile image. The placeholder is
-/// a near-uniform light-gray PNG with darker text in the centre. Real
-/// satellite imagery virtually never looks like that, so the heuristic
-/// is very safe: sample several pixels avoiding the centre (where the
-/// placeholder has text), require ALL of them to be near-grayscale
-/// (R≈G≈B) AND close to the placeholder's grey level (~200 / 255), AND
-/// have minimal variance across samples. False positives would require
-/// a real tile that's almost-perfectly uniform mid-gray, which doesn't
-/// happen in satellite imagery.
-function isEsriPlaceholder(img: HTMLImageElement): boolean {
-  // Tiles are always 256×256. If width is unexpected, bail.
-  if (img.naturalWidth !== 256 || img.naturalHeight !== 256) return false;
-  try {
-    // Reusable canvas (created once, sized to 256). Drawing into it is
-    // microseconds; the actual hot path is the getImageData call.
-    const canvas = placeholderDetectCanvas;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return false;
-    ctx.clearRect(0, 0, 256, 256);
-    ctx.drawImage(img, 0, 0);
-    // Sample 8 points spread across the tile, avoiding the central
-    // text area (~80-176 px). The placeholder background is uniform
-    // around these points.
-    const xs = [16, 64, 192, 240, 16, 192, 64, 240];
-    const ys = [16, 32, 32, 16, 240, 224, 224, 240];
-    let sumGrey = 0;
-    const greys: number[] = [];
-    for (let i = 0; i < xs.length; i++) {
-      const d = ctx.getImageData(xs[i], ys[i], 1, 1).data;
-      const r = d[0], g = d[1], b = d[2];
-      // Hard reject as soon as any sample fails the grey test --
-      // typical satellite imagery has a colour cast (greens, browns,
-      // blues) that fails this quickly without paying for all 8 reads.
-      const maxChan = Math.max(r, g, b);
-      const minChan = Math.min(r, g, b);
-      if (maxChan - minChan > 8) return false;
-      // Esri placeholder grey is around 200/255; allow ±20 tolerance.
-      const grey = (r + g + b) / 3;
-      if (grey < 180 || grey > 220) return false;
-      greys.push(grey);
-      sumGrey += grey;
-    }
-    // All samples grey and in-range. Final check: low variance (the
-    // placeholder background is essentially flat).
-    const mean = sumGrey / greys.length;
-    let variance = 0;
-    for (const v of greys) variance += (v - mean) * (v - mean);
-    variance /= greys.length;
-    return variance < 40;
-  } catch {
-    // CORS-tainted canvas (no crossOrigin or server doesn't echo CORS
-    // headers) throws on getImageData. Fall through to "not a
-    // placeholder" -- worst case the user sees the placeholder, same
-    // as before this fix.
-    return false;
-  }
-}
-// Reusable detection canvas. Created once outside any hot path.
-const placeholderDetectCanvas: HTMLCanvasElement = (() => {
-  const c = typeof document !== 'undefined' ? document.createElement('canvas') : {} as HTMLCanvasElement;
-  if (c instanceof HTMLCanvasElement) { c.width = 256; c.height = 256; }
-  return c;
-})();
-
-/// L.TileLayer subclass that runs every loaded tile through the
-/// placeholder detector and rewrites the src to a transparent PNG when
-/// the detector fires. The transparent tile lets Leaflet's parent-tile
-/// up-sampling show through, which is exactly the smooth-pixelation
-/// behaviour we want at high zooms over poorly-covered areas.
-const PlaceholderAwareTileLayer = L.TileLayer.extend({
-  createTile: function (coords: { z: number; x: number; y: number }, done: (err: Error | null, tile?: HTMLElement) => void) {
-    const tile = document.createElement('img') as HTMLImageElement;
-    // Honour the base class' standard options (CORS, alt text).
-    tile.alt = '';
-    // We need crossOrigin so the canvas read isn't tainted -- without
-    // this, isEsriPlaceholder returns false on every tile and the fix
-    // is silently dead.
-    if (this.options.crossOrigin || this.options.crossOrigin === '') {
-      tile.crossOrigin = this.options.crossOrigin === true ? '' : (this.options.crossOrigin as string);
-    } else {
-      tile.crossOrigin = '';
-    }
-    L.DomEvent.on(tile, 'load', () => {
-      if (isEsriPlaceholder(tile)) {
-        tile.src = TRANSPARENT_TILE;
-      }
-      done(null, tile);
-    });
-    L.DomEvent.on(tile, 'error', () => {
-      tile.src = this.options.errorTileUrl as string ?? TRANSPARENT_TILE;
-      done(null, tile);
-    });
-    tile.src = this.getTileUrl(coords);
-    return tile;
-  },
-});
 
 function tileLayerOpts(b: BaseMap): L.TileLayerOptions {
   const cfg = TILE_URLS[b];
@@ -308,20 +219,6 @@ function tileLayerOpts(b: BaseMap): L.TileLayerOptions {
     // before the new ones arrive.
     keepBuffer: 4,
   };
-}
-
-/// Construct the right tile-layer instance for a base map. Esri uses
-/// the placeholder-aware subclass; other providers don't serve the
-/// "no coverage" placeholder pattern, so they go through the stock
-/// L.tileLayer for one less canvas round-trip per tile.
-function makeTileLayer(b: BaseMap): L.TileLayer {
-  const url = TILE_URLS[b].url;
-  const opts = tileLayerOpts(b);
-  if (b === 'satellite') {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return new (PlaceholderAwareTileLayer as any)(url, opts) as L.TileLayer;
-  }
-  return L.tileLayer(url, opts);
 }
 
 function gridToCanvas(
@@ -445,7 +342,7 @@ export function MapView({
       // Right-click context menu is harmless; LMB box-select reserves left.
       boxZoom: false,
     });
-    baseLayerRef.current = makeTileLayer(baseMap).addTo(map);
+    baseLayerRef.current = L.tileLayer(TILE_URLS[baseMap].url, tileLayerOpts(baseMap)).addTo(map);
     overlayGroupRef.current = L.layerGroup().addTo(map);
     barriersGroupRef.current = L.layerGroup().addTo(map);
     measureGroupRef.current = L.layerGroup().addTo(map);
@@ -676,7 +573,7 @@ export function MapView({
     if (baseLayerRef.current) {
       map.removeLayer(baseLayerRef.current);
     }
-    baseLayerRef.current = makeTileLayer(baseMap).addTo(map);
+    baseLayerRef.current = L.tileLayer(TILE_URLS[baseMap].url, tileLayerOpts(baseMap)).addTo(map);
     if (overlayGroupRef.current) { overlayGroupRef.current.remove(); overlayGroupRef.current.addTo(map); }
     if (barriersGroupRef.current) { barriersGroupRef.current.remove(); barriersGroupRef.current.addTo(map); }
     if (measureGroupRef.current) { measureGroupRef.current.remove(); measureGroupRef.current.addTo(map); }
