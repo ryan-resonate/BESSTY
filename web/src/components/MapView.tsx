@@ -487,6 +487,13 @@ export function MapView({
   /// id → Leaflet Marker handle, so we can update sibling marker positions
   /// during a group drag without going through React state.
   const markersByIdRef = useRef<Map<string, L.Marker>>(new Map());
+  /// Per-source footprint polygons. Lives in parallel with
+  /// markersByIdRef so the live-drag handlers (single drag, BESS-group
+  /// centre drag, BESS-group rotation) can translate / rotate the
+  /// polygon visuals at 60 fps instead of waiting for the React state
+  /// round-trip. Populated only for BESS / Auxiliary sources (WTGs use
+  /// the rotor SVG icon, no polygon).
+  const polysByIdRef = useRef<Map<string, L.Polygon>>(new Map());
   /// Selection set kept in a ref so drag handlers (bound at marker-effect
   /// time) read the latest set without needing the effect to re-run.
   const selectedIdsRef = useRef<Set<string>>(selectedIds);
@@ -959,11 +966,20 @@ export function MapView({
     group.clearLayers();
     if (footprints) footprints.clearLayers();
     markersByIdRef.current.clear();
+    polysByIdRef.current.clear();
 
     /// Track group-drag state. When a selected marker starts dragging, we
     /// snapshot all sibling positions and translate them in lockstep on
     /// every `drag` event (no React state involved — direct setLatLng).
-    let dragGroup: { leaderId: string; leaderStart: L.LatLng; siblings: Map<string, L.LatLng> } | null = null;
+    /// `polys` carries each affected source's footprint-polygon corner
+    /// snapshot so the metre-true rectangle translates alongside the
+    /// marker icon during the drag (fix-up to fix #48).
+    let dragGroup: {
+      leaderId: string;
+      leaderStart: L.LatLng;
+      siblings: Map<string, L.LatLng>;
+      polys: Map<string, L.LatLng[]>;
+    } | null = null;
 
     const anySelected = selectedIds.size > 0;
     const isSelected = (id: string) => selectedIds.has(id);
@@ -1049,6 +1065,7 @@ export function MapView({
           });
         }
         fpPoly.addTo(footprints);
+        polysByIdRef.current.set(s.id, fpPoly);
       }
 
       const marker = L.marker(s.latLng, {
@@ -1075,26 +1092,66 @@ export function MapView({
           if (g) callbacksRef.current.onOpenBessGroupWizard?.(g);
         });
       }
+      // Per-marker drag snapshot. `dragStart` is the marker's lat/lng
+      // at the moment dragstart fired -- used to compute (dLat, dLng)
+      // on every drag tick, since marker.getLatLng() returns the
+      // CURRENT position (which is the new position by the time the
+      // drag callback runs). `polyCorners` holds this source's
+      // footprint-polygon corners so the polygon translates with the
+      // marker. The multi-select branch below additionally populates
+      // dragGroup with sibling marker / polygon snapshots for the
+      // lockstep group-drag case.
+      let dragStart: L.LatLng | null = null;
+      let ownPolyCorners: L.LatLng[] | null = null;
       marker.on('dragstart', () => {
         cancelBoxSelectRef.current();
+        dragStart = marker.getLatLng();
+        const ownPoly = polysByIdRef.current.get(s.id);
+        ownPolyCorners = ownPoly
+          ? (ownPoly.getLatLngs()[0] as L.LatLng[]).map((p) => L.latLng(p.lat, p.lng))
+          : null;
         const sel = selectedIdsRef.current;
         if (sel.size <= 1 || !sel.has(s.id)) return;
         const siblings = new Map<string, L.LatLng>();
+        const polys = new Map<string, L.LatLng[]>();
         for (const id of sel) {
           if (id === s.id) continue;
           const m = markersByIdRef.current.get(id);
           if (m) siblings.set(id, m.getLatLng());
+          const poly = polysByIdRef.current.get(id);
+          if (poly) {
+            polys.set(id, (poly.getLatLngs()[0] as L.LatLng[])
+              .map((p) => L.latLng(p.lat, p.lng)));
+          }
         }
-        dragGroup = { leaderId: s.id, leaderStart: marker.getLatLng(), siblings };
+        dragGroup = { leaderId: s.id, leaderStart: marker.getLatLng(), siblings, polys };
       });
       marker.on('drag', () => {
-        if (!dragGroup || dragGroup.leaderId !== s.id) return;
+        if (!dragStart) return;
         const here = marker.getLatLng();
-        const dLat = here.lat - dragGroup.leaderStart.lat;
-        const dLng = here.lng - dragGroup.leaderStart.lng;
+        const dLat = here.lat - dragStart.lat;
+        const dLng = here.lng - dragStart.lng;
+        // Always translate THIS source's polygon (covers solo drag).
+        if (ownPolyCorners) {
+          const own = polysByIdRef.current.get(s.id);
+          if (own) {
+            own.setLatLngs(ownPolyCorners.map((p) =>
+              L.latLng(p.lat + dLat, p.lng + dLng)));
+          }
+        }
+        if (!dragGroup || dragGroup.leaderId !== s.id) return;
+        // Multi-select: translate every sibling marker + polygon by
+        // the same delta.
         for (const [id, orig] of dragGroup.siblings) {
           const m = markersByIdRef.current.get(id);
           if (m) m.setLatLng([orig.lat + dLat, orig.lng + dLng]);
+        }
+        for (const [id, origCorners] of dragGroup.polys) {
+          const poly = polysByIdRef.current.get(id);
+          if (poly) {
+            poly.setLatLngs(origCorners.map((p) =>
+              L.latLng(p.lat + dLat, p.lng + dLng)));
+          }
         }
       });
       marker.on('dragend', (e: L.LeafletEvent) => {
@@ -1102,6 +1159,8 @@ export function MapView({
         const latLng = m.getLatLng();
         callbacksRef.current.onMoveSource?.(s.id, [latLng.lat, latLng.lng]);
         dragGroup = null;
+        dragStart = null;
+        ownPolyCorners = null;
       });
       marker.addTo(group);
     }
@@ -1128,12 +1187,20 @@ export function MapView({
         const sel = selectedIdsRef.current;
         if (sel.size <= 1 || !sel.has(r.id)) return;
         const siblings = new Map<string, L.LatLng>();
+        const polys = new Map<string, L.LatLng[]>();
         for (const id of sel) {
           if (id === r.id) continue;
           const m = markersByIdRef.current.get(id);
           if (m) siblings.set(id, m.getLatLng());
+          // Pick up any selected source's footprint polygon so it
+          // tracks during a mixed receiver+source multi-select drag.
+          const poly = polysByIdRef.current.get(id);
+          if (poly) {
+            polys.set(id, (poly.getLatLngs()[0] as L.LatLng[])
+              .map((p) => L.latLng(p.lat, p.lng)));
+          }
         }
-        dragGroup = { leaderId: r.id, leaderStart: marker.getLatLng(), siblings };
+        dragGroup = { leaderId: r.id, leaderStart: marker.getLatLng(), siblings, polys };
       });
       marker.on('drag', () => {
         if (!dragGroup || dragGroup.leaderId !== r.id) return;
@@ -1143,6 +1210,13 @@ export function MapView({
         for (const [id, orig] of dragGroup.siblings) {
           const m = markersByIdRef.current.get(id);
           if (m) m.setLatLng([orig.lat + dLat, orig.lng + dLng]);
+        }
+        for (const [id, origCorners] of dragGroup.polys) {
+          const poly = polysByIdRef.current.get(id);
+          if (poly) {
+            poly.setLatLngs(origCorners.map((p) =>
+              L.latLng(p.lat + dLat, p.lng + dLng)));
+          }
         }
       });
       marker.on('dragend', (e: L.LeafletEvent) => {
@@ -1425,6 +1499,13 @@ export function MapView({
         members: Map<string, { lx: number; ly: number }>;
         polyCorners: Array<{ lx: number; ly: number }>;
         stemEndpoints: Array<{ lx: number; ly: number }>;
+        /// Per-member footprint-polygon corners in local metres
+        /// relative to the group centre. Rotating each corner about
+        /// the origin by deltaRad rotates the whole rectangle the
+        /// right way -- equivalent to translating the marker AND
+        /// rotating the rectangle's own frame, which is exactly what
+        /// a group rotation does.
+        memberFpCorners: Map<string, Array<{ lx: number; ly: number }>>;
       };
       let rotSnap: RotSnapshot | null = null;
       const toLocalM = (cLL: L.LatLng, p: L.LatLng): { lx: number; ly: number } => ({
@@ -1442,15 +1523,30 @@ export function MapView({
         const dx0 = (here.lng - cLL.lng) * cosLat;
         const dy0 = here.lat - cLL.lat;
         const angle0 = Math.atan2(dx0, dy0);  // clockwise from north
-        // Snapshot every member marker + the bounding poly + the stem.
+        // Snapshot every member marker + footprint polygon + the
+        // bounding poly + the stem.
         const memberSnap = new Map<string, { lx: number; ly: number }>();
+        const memberFpSnap = new Map<string, Array<{ lx: number; ly: number }>>();
         for (const m of members) {
           const mk = markersByIdRef.current.get(m.id);
           if (mk) memberSnap.set(m.id, toLocalM(cLL, mk.getLatLng()));
+          const fp = polysByIdRef.current.get(m.id);
+          if (fp) {
+            memberFpSnap.set(m.id, (fp.getLatLngs()[0] as L.LatLng[])
+              .map((p) => toLocalM(cLL, p)));
+          }
         }
         const polyCorners = (poly.getLatLngs()[0] as L.LatLng[]).map((p) => toLocalM(cLL, p));
         const stemEndpoints = (rotStem.getLatLngs() as L.LatLng[]).map((p) => toLocalM(cLL, p));
-        rotSnap = { cLL, startAngleRad: angle0, startRotDeg: g.rotationDeg, members: memberSnap, polyCorners, stemEndpoints };
+        rotSnap = {
+          cLL,
+          startAngleRad: angle0,
+          startRotDeg: g.rotationDeg,
+          members: memberSnap,
+          polyCorners,
+          stemEndpoints,
+          memberFpCorners: memberFpSnap,
+        };
         dragRefs.set(g.id, { startCentre: cLL, startAngleRad: angle0, startRotDeg: g.rotationDeg });
       });
       rotHandle.on('drag', () => {
@@ -1477,6 +1573,20 @@ export function MapView({
           const r = rot(pt);
           const mk = markersByIdRef.current.get(id);
           if (mk) mk.setLatLng(fromLocalM(snap.cLL, r.lx, r.ly));
+        }
+        // Apply to every member footprint polygon. Rotating each
+        // corner about the group centre by deltaRad gives both the
+        // translated centre AND the rotated rectangle (since the
+        // four corners define the rectangle's orientation as well as
+        // its position).
+        for (const [id, corners] of snap.memberFpCorners) {
+          const fp = polysByIdRef.current.get(id);
+          if (fp) {
+            fp.setLatLngs(corners.map((p) => {
+              const r = rot(p);
+              return fromLocalM(snap.cLL, r.lx, r.ly);
+            }));
+          }
         }
         // Apply to bounding poly + stem.
         poly.setLatLngs(snap.polyCorners.map((p) => {
@@ -1520,15 +1630,27 @@ export function MapView({
       // recompute doesn't fire on every mousemove.
       let centreDragStart: L.LatLng | null = null;
       const memberMarkerSnapshots = new Map<string, L.LatLng>();
+      // Per-member footprint-polygon corner snapshots (parallel map to
+      // memberMarkerSnapshots). On each drag tick we translate each
+      // polygon's corners by the same (dLat, dLng) as its marker so
+      // the metre-true rectangles slide with the cursor instead of
+      // jumping at dragend.
+      const memberPolySnapshots = new Map<string, L.LatLng[]>();
       let rotHandleSnap: L.LatLng | null = null;
       let rotStemSnap: L.LatLng[] | null = null;
       let polySnap: L.LatLng[] | null = null;
       alwaysCentreHandle.on('dragstart', () => {
         centreDragStart = alwaysCentreHandle.getLatLng();
         memberMarkerSnapshots.clear();
+        memberPolySnapshots.clear();
         for (const m of members) {
           const mk = markersByIdRef.current.get(m.id);
           if (mk) memberMarkerSnapshots.set(m.id, mk.getLatLng());
+          const fp = polysByIdRef.current.get(m.id);
+          if (fp) {
+            memberPolySnapshots.set(m.id, (fp.getLatLngs()[0] as L.LatLng[])
+              .map((p) => L.latLng(p.lat, p.lng)));
+          }
         }
         rotHandleSnap = rotHandle.getLatLng();
         rotStemSnap = (rotStem.getLatLngs() as L.LatLng[]).map((p) => L.latLng(p.lat, p.lng));
@@ -1542,6 +1664,12 @@ export function MapView({
         for (const [id, orig] of memberMarkerSnapshots) {
           const mk = markersByIdRef.current.get(id);
           if (mk) mk.setLatLng([orig.lat + dLat, orig.lng + dLng]);
+        }
+        for (const [id, corners] of memberPolySnapshots) {
+          const fp = polysByIdRef.current.get(id);
+          if (fp) {
+            fp.setLatLngs(corners.map((p) => L.latLng(p.lat + dLat, p.lng + dLng)));
+          }
         }
         if (rotHandleSnap) {
           rotHandle.setLatLng([rotHandleSnap.lat + dLat, rotHandleSnap.lng + dLng]);
@@ -1557,6 +1685,7 @@ export function MapView({
         const ll = alwaysCentreHandle.getLatLng();
         centreDragStart = null;
         memberMarkerSnapshots.clear();
+        memberPolySnapshots.clear();
         rotHandleSnap = null;
         rotStemSnap = null;
         polySnap = null;
