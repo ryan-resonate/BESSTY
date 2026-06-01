@@ -212,6 +212,9 @@ export function CatalogScreen() {
                           {e.id}
                           {e.kind === 'auxiliary' && e.auxiliaryType ? ` · ${e.auxiliaryType}` : ''}
                           {e.kind === 'wtg' && e.rotorDiameterM ? ` · rotor ${e.rotorDiameterM} m` : ''}
+                          {Number.isFinite(e.sourceHeightM) && (e.sourceHeightM as number) > 0
+                            ? ` · ${e.kind === 'wtg' ? 'hub' : 'h'} ${e.sourceHeightM} m`
+                            : ''}
                         </div>
                       </td>
                       <td>{e.modes.length}</td>
@@ -480,6 +483,27 @@ export function CatalogEntryEditor(props: {
                   onChange={(e) => update('auxiliaryType', e.target.value)} />
               </label>
             )}
+            <label className="fld">
+              <span>
+                {draft.kind === 'wtg'
+                  ? 'Default hub height (m) — used when a placed WTG doesn\'t pin its own'
+                  : 'Source emission height (m) — height above local ground for ISO 9613-2'}
+              </span>
+              <input
+                type="number" step="0.1" min="0.1" max="300"
+                placeholder={draft.kind === 'wtg' ? '100' : '1.5'}
+                value={draft.sourceHeightM ?? ''}
+                onChange={(e) => {
+                  const v = +e.target.value;
+                  update('sourceHeightM', Number.isFinite(v) && v > 0 ? v : undefined);
+                }}
+              />
+              <span className="hint" style={{ fontSize: 11, color: 'var(--ink-soft)' }}>
+                {draft.kind === 'wtg'
+                  ? 'Per-source hub height (Side panel) overrides this. Leave blank to fall back to legacy hubHeights[0] or 100 m.'
+                  : 'Per-source elevation offset (Side panel) adds to this value. Leave blank for the 1.5 m kind default.'}
+              </span>
+            </label>
             {(draft.kind === 'bess' || draft.kind === 'auxiliary') && (
               <div className="fld" style={{ flex: '1 1 100%' }}>
                 <span>Footprint (m) — used for BESS-group edge-to-edge spacing</span>

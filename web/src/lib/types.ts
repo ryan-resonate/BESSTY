@@ -486,6 +486,16 @@ export interface CatalogEntry {
   rotorDiameterM?: number;
   /// WTG-only — common installed hub heights (UI hint).
   hubHeights?: number[];
+  /// Default source emission height above local ground (m). Used for
+  /// the ISO 9613-2 source z passed to the solver:
+  ///   - WTG: acts as the default hub height (overridden per-source
+  ///     by `Source.hubHeight`; falls back to `hubHeights[0]` then 100 m).
+  ///   - BESS / Auxiliary: replaces the previous hard-coded 1.5 m base.
+  ///     `Source.elevationOffset` is added on top as a per-unit delta.
+  /// Optional: when unset, the per-kind fallback (WTG 100 m hub,
+  /// BESS / Aux 1.5 m base) is used so older catalog entries keep
+  /// their existing behaviour.
+  sourceHeightM?: number;
   /// Physical footprint of one unit (metres). Used by the BESS group
   /// materialiser to compute edge-to-edge spacing in metres -- without
   /// this, "1.5 m spacing" wouldn't know how wide a unit is to leave

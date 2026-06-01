@@ -26,7 +26,7 @@ import type {
   Source,
   Project,
 } from './types';
-import { lookupEntry, spectrumFor } from './catalog';
+import { lookupEntry, sourceHeightFor, spectrumFor } from './catalog';
 import type { DemRaster } from './dem';
 import {
   approxDistanceM,
@@ -166,12 +166,15 @@ function sourceAbsZ(
   project: Project,
   _dem: DemRaster | null,
 ): number | null {
+  const entry = lookupEntry(project, source);
   if (source.kind === 'wtg') {
-    const entry = lookupEntry(project, source);
-    const hubHeight = source.hubHeight ?? entry?.hubHeights?.[0] ?? 100;
-    return hubHeight;
+    // Per-source `hubHeight` REPLACES the library default (it's the
+    // explicit hub-height field, not a delta). Falls back to the
+    // catalog's sourceHeightM, then hubHeights[0], then 100 m.
+    return source.hubHeight ?? sourceHeightFor(entry);
   }
-  return (source.elevationOffset ?? 0) + 1.5;
+  // BESS / Aux: library height + per-source elevation delta.
+  return sourceHeightFor(entry) + (source.elevationOffset ?? 0);
 }
 
 function snapshotPair(
@@ -218,7 +221,10 @@ function snapshotPair(
 
   const env = solverEnv(project);
   if (source.kind === 'wtg') {
-    const hubHeight = source.hubHeight ?? entry.hubHeights?.[0] ?? 100;
+    // sourceHeightFor() centralises the WTG fallback chain
+    // (sourceHeightM > hubHeights[0] > 100 m) so the catalog's
+    // library default is honoured.
+    const hubHeight = source.hubHeight ?? sourceHeightFor(entry);
     const hubZ = hubHeight;
     // Topography barriers still use ABSOLUTE z (so the DEM ridge profile
     // along the path is sampled correctly). The vector arguments are
@@ -239,7 +245,12 @@ function snapshotPair(
     // what the solver saw at snapshot time.
     return { snapshot: snap, srcAbsXyz: [se, sn, hubZ] };
   }
-  const sourceZ = (source.elevationOffset ?? 0) + 1.5;
+  // BESS / Aux: library-defined source height (sourceHeightM) plus
+  // the per-source elevation delta. Falls back to the kind default
+  // (1.5 m) when the catalog entry doesn't pin a sourceHeightM, so
+  // older projects + seed catalog entries keep their existing
+  // numbers.
+  const sourceZ = sourceHeightFor(entry) + (source.elevationOffset ?? 0);
   // Topography barriers consume absolute z (DEM-aware ridge sampling).
   const topoBars = topographyBarriers(
     project, source,

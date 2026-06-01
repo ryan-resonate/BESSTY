@@ -24,6 +24,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Project } from '../lib/types';
 import type { GridResult } from '../lib/solver';
 import type { DemRaster } from '../lib/dem';
+import { lookupEntry, sourceHeightFor } from '../lib/catalog';
 import { makeBandsForRange, paletteCss, tForDb, type Palette } from '../lib/colormap';
 import { buildContourPolygons } from '../lib/contourLines';
 
@@ -355,8 +356,13 @@ function installObjectsLayer(
     if (!Number.isFinite(s.latLng[0]) || !Number.isFinite(s.latLng[1])) continue;
     const yaw = s.yawDeg ?? 0;
 
+    const entry = lookupEntry(project, s);
     if (s.kind === 'wtg') {
-      const hubHeight = s.hubHeight ?? 100;
+      // Honour the catalog's library-defined sourceHeightM (falls back
+      // to hubHeights[0] then 100 m) so a model with a 120 m default
+      // hub draws at 120 m even when the source itself doesn't pin a
+      // per-instance hubHeight.
+      const hubHeight = s.hubHeight ?? sourceHeightFor(entry);
       const top = hubHeight * exaggeration;
       // Slim cylinder ground → hub.
       features.push({
