@@ -176,13 +176,21 @@ export function materialiseBessGroup(
     const entry = lookup(ref.catalogScope, ref.modelId);
     const kind: SourceKind = entry?.kind ?? 'bess';
     counts[kind]++;
+    // User-facing name: number units sequentially per-kind within the
+    // group (e.g. "GP BESS — BESS 1" ... "GP BESS — BESS 168",
+    // "GP BESS — INV 1" ... "GP BESS — INV 24"). Stable identifier
+    // for diffing / overrides lives on `id` (which still uses the
+    // slotKey); the name field is purely display.
+    const kindLabel: Record<SourceKind, string> = {
+      wtg: 'WTG', bess: 'BESS', auxiliary: 'AUX',
+    };
+    const displayName = `${group.name} — ${kindLabel[kind]} ${counts[kind]}`;
     const src: Source = {
+      // ID stays slot-key based for stable per-unit override + diff
+      // identification across re-materialisation. Never user-visible.
       id: `${group.id}-${p.slotKey}`,
       kind,
-      // Name the unit by its slot for stable identification. Users
-      // can rename per-unit via the side panel; that becomes another
-      // override field we'll add when #18 / per-unit-edit UI lands.
-      name: `${group.name} ${p.slotKey}`,
+      name: displayName,
       latLng,
       modelId: ref.modelId,
       catalogScope: ref.catalogScope,
