@@ -22,7 +22,8 @@ fn flat_100_db_octave() -> BandSpectrum<f64> {
 #[test]
 fn case_02_per_band_agr() {
     let (s, r) = case_02_geometry();
-    let agr = ground::agr_spectrum(s, r, 0.5, 0.5, 0.5, BandSystem::Octave);
+    // Flat ground at z = 0 → HAG equals absolute z.
+    let agr = ground::agr_spectrum(s, r, s.z, r.z, 0.5, 0.5, 0.5, BandSystem::Octave);
     // 16 + 31.5 Hz octaves use the same Agr formula as 63 Hz (Table 3 only
     // defines 63 Hz upward; sub-63 Hz inherits the 63 Hz coefficients).
     let expected = [
@@ -38,7 +39,7 @@ fn case_02_per_band_agr() {
 fn case_02_per_band_lp() {
     let (s, r) = case_02_geometry();
     let lw = flat_100_db_octave();
-    let lp = evaluate_with_ground(&lw, s, r, 0.5, Atmosphere::iso_reference());
+    let lp = evaluate_with_ground(&lw, s, r, s.z, r.z, 0.5, Atmosphere::iso_reference());
     let expected = [
         46.053, 46.044,                                                        // 16, 31.5 Hz
         46.030, 42.347, 40.423, 41.696, 43.453, 42.578, 37.958, 21.118,        // unchanged
@@ -52,7 +53,7 @@ fn case_02_per_band_lp() {
 fn case_02_a_weighted_total() {
     let (s, r) = case_02_geometry();
     let lw = flat_100_db_octave();
-    let lp = evaluate_with_ground(&lw, s, r, 0.5, Atmosphere::iso_reference());
+    let lp = evaluate_with_ground(&lw, s, r, s.z, r.z, 0.5, Atmosphere::iso_reference());
     let total = lp.a_weighted_total();
     assert_relative_eq!(total, 48.00, epsilon = TOL_OVERALL_DBA);
 }
@@ -67,8 +68,8 @@ fn case_02_q_threshold_active() {
     let r_low = Vec3::new(200.0, 0.0, 1.5);    // q > 0
     let r_high = Vec3::new(200.0, 0.0, 5.0);   // 30·10 = 300 > 200 → q = 0
 
-    let agr_low = ground::agr_spectrum(s, r_low, 0.5, 0.5, 0.5, BandSystem::Octave);
-    let agr_high = ground::agr_spectrum(s, r_high, 0.5, 0.5, 0.5, BandSystem::Octave);
+    let agr_low = ground::agr_spectrum(s, r_low, s.z, r_low.z, 0.5, 0.5, 0.5, BandSystem::Octave);
+    let agr_high = ground::agr_spectrum(s, r_high, s.z, r_high.z, 0.5, 0.5, 0.5, BandSystem::Octave);
     // The high-receiver case has q = 0, so Am = 0, while the low-receiver case
     // has small but nonzero Am contributions. The difference at 63 Hz is
     // dominated by Am (= -3·q ≈ -0.075) so the totals must differ.
@@ -96,7 +97,10 @@ fn case_02_ad_gradient_w_r_t_source_height_finite_difference() {
         BandSystem::Octave,
         lw_vals.iter().map(|&v| Dual::<1>::constant(v)),
     );
-    let lp_dual = evaluate_with_ground(&lw, s, r, Dual::<1>::constant(0.5), Atmosphere::iso_reference());
+    // h_s tracks the same dual variable as the source z so the derivative
+    // captures both the geometric (Adiv/Agr-distance) and ground-height
+    // sensitivity, matching the finite difference below (which perturbs both).
+    let lp_dual = evaluate_with_ground(&lw, s, r, s.z, r.z, Dual::<1>::constant(0.5), Atmosphere::iso_reference());
 
     // Compute A-weighted total and its derivative via the dual numbers'
     // chain rule. We mirror the f64 a_weighted_total math.
@@ -124,6 +128,8 @@ fn case_02_ad_gradient_w_r_t_source_height_finite_difference() {
         &lw_f,
         Vec3::new(0.0, 0.0, 5.0 + h),
         Vec3::new(200.0, 0.0, 1.5),
+        5.0 + h,
+        1.5,
         0.5,
         Atmosphere::iso_reference(),
     );
@@ -131,6 +137,8 @@ fn case_02_ad_gradient_w_r_t_source_height_finite_difference() {
         &lw_f,
         Vec3::new(0.0, 0.0, 5.0 - h),
         Vec3::new(200.0, 0.0, 1.5),
+        5.0 - h,
+        1.5,
         0.5,
         Atmosphere::iso_reference(),
     );

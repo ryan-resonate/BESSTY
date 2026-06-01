@@ -16,7 +16,7 @@ pub const OCTAVE_CENTRES_HZ: [Hz; 10] =
 
 /// A-weighting at octave-band centres per IEC 61672-1.
 pub const OCTAVE_A_WEIGHTING_DB: [Decibels; 10] =
-    [-56.4, -39.4, -26.2, -16.1, -8.6, -3.2, 0.0, 1.2, 1.0, -1.1];
+    [-56.7, -39.4, -26.2, -16.1, -8.6, -3.2, 0.0, 1.2, 1.0, -1.1];
 
 /// One-third octave centres, 10 Hz to 10 kHz (full audio range covering both
 /// IEC 61400-11 WTG datasheets and standard industrial spectra).
@@ -97,7 +97,10 @@ impl BandSystem {
 #[derive(Clone, Debug)]
 pub struct BandSpectrum<T = f64> {
     pub system: BandSystem,
-    pub bands: SmallVec<[T; 24]>,
+    // Inline capacity 32 keeps BOTH octave (10) and one-third octave (31)
+    // spectra on the stack — 31 > 24 used to spill every third-octave
+    // spectrum (lw, aatm, agr, abar, out, …) to the heap in the hot path.
+    pub bands: SmallVec<[T; 32]>,
 }
 
 impl<T: ADScalar> BandSpectrum<T> {
@@ -109,7 +112,7 @@ impl<T: ADScalar> BandSpectrum<T> {
     }
 
     pub fn from_iter<I: IntoIterator<Item = T>>(system: BandSystem, iter: I) -> Self {
-        let bands: SmallVec<[T; 24]> = iter.into_iter().collect();
+        let bands: SmallVec<[T; 32]> = iter.into_iter().collect();
         assert_eq!(
             bands.len(), system.n_bands(),
             "BandSpectrum length {} doesn't match BandSystem ({} bands)",

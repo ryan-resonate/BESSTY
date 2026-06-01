@@ -13,7 +13,7 @@ import { loadDemForBounds, type DemRaster } from '../lib/dem';
 import {
   GRID_SNAPSHOT_BUDGET_BYTES,
   estimateGridMemoryBytes,
-  evaluateGrid,
+  evaluateGridViaWorker,
   extrapolateGrid,
   extrapolateProject,
   snapshotGrid,
@@ -813,7 +813,7 @@ export function ProjectScreen() {
                   g.computedMs = performance.now() - gridStart;
                   setGrid(g);
                 })
-              : evaluateGrid(project, dem, gridSpacingM, heightAbove).then((g) => {
+              : evaluateGridViaWorker(project, dem, gridSpacingM, heightAbove).then((g) => {
                   if (gGen !== gridGenRef.current) return;
                   setGrid(g);
                 });
@@ -853,7 +853,7 @@ export function ProjectScreen() {
           `Falling back to evaluate-only mode — drag still works but re-evaluates ` +
           `instead of fast-extrapolating.`,
         );
-        evaluateGrid(project, dem, gridSpacingM, heightAbove)
+        evaluateGridViaWorker(project, dem, gridSpacingM, heightAbove)
           .then((g) => {
             if (gen !== gridGenRef.current) return;
             setGrid(g);

@@ -27,9 +27,12 @@
 // All three are project-wide settings, opt-out via the SettingsModal.
 
 import type { Project, Source, Receiver } from './types';
-import type { DemRaster } from './dem';
-import { latLngToLocalMetres } from './solver';
 import { buildSourceTree, walkSourceTree } from './sourceTree';
+
+// Geo helpers + the topography sampler now live in the worker-safe `gridCore`
+// (so the grid worker doesn't pull this module's catalog/firebase deps). Keep
+// re-exporting `approxDistanceM` here for existing importers (e.g. sourceTree).
+export { approxDistanceM, topographyBarriers, type TopoSettings } from './gridCore';
 
 /// Lightweight "source-shaped" thing handed to the snapshot loop. Includes
 /// real Sources (kept verbatim) and synthetic cluster aggregates.
@@ -76,19 +79,6 @@ export function propagationSettings(project: Project): PropagationSettings {
   return project.settings?.propagation ?? DEFAULT_PROP;
 }
 
-/// Compute the great-circle distance between two lat/lng points in metres.
-/// Uses the equirectangular approximation — good to ~0.1% inside ~50 km
-/// which is plenty for cutoff / cluster decisions.
-export function approxDistanceM(a: [number, number], b: [number, number]): number {
-  const R = 6371008.8;
-  const lat0 = (a[0] * Math.PI) / 180;
-  const dLat = ((b[0] - a[0]) * Math.PI) / 180;
-  const dLng = ((b[1] - a[1]) * Math.PI) / 180;
-  const e = R * dLng * Math.cos(lat0);
-  const n = R * dLat;
-  return Math.sqrt(e * e + n * n);
-}
-
 /// Per-receiver effective-source list, computed by walking a Barnes-Hut
 /// tree once per receiver. For batched callers (snapshot loops) prefer
 /// `buildEffectiveSourcesContext` + `effectiveSourcesForReceiver` so the
@@ -132,69 +122,9 @@ export function effectiveSourcesForReceiver(
   return walkSourceTree(ctx.tree, receiverLatLng, ctx.theta, ctx.cutoffM);
 }
 
-// =================== Topography virtual barriers ===================
-
-/// Sample the DEM along the (source → receiver) line at N intermediate
-/// points; for each sample where the ground pokes above the straight-line
-/// (sourceZ → rxZ) path by more than `minHeightM`, emit a thin virtual
-/// barrier at the sample's local-frame XY with its top at the ground
-/// elevation. The solver applies normal Abar to it via the General method.
-///
-/// Returns a Float64Array packed in the same layout as `packBarriers` —
-/// (ax, ay, bx, by, topZ) per barrier — so callers can concatenate with
-/// the user-defined barrier pack and pass through to WASM unchanged.
-export function topographyBarriers(
-  project: Project,
-  source: Source,
-  sourceXyz: [number, number, number],
-  receiverLatLng: [number, number],
-  receiverXyz: [number, number, number],
-  origin: [number, number],
-  dem: DemRaster | null,
-): Float64Array {
-  if (!dem) return new Float64Array(0);
-  const cfg = project.settings?.topography;
-  const samples = cfg?.pathSamples ?? 12;
-  const minH = cfg?.virtualBarrierMinHeightM ?? 2;
-  if (samples <= 0) return new Float64Array(0);
-
-  const out: number[] = [];
-  // Offset the barrier endpoints a little perpendicular to the path so the
-  // solver sees a finite-length segment (matching the existing barrier
-  // pack format which expects A and B endpoints).
-  const dxPath = receiverXyz[0] - sourceXyz[0];
-  const dyPath = receiverXyz[1] - sourceXyz[1];
-  const pathLen = Math.sqrt(dxPath * dxPath + dyPath * dyPath);
-  if (pathLen < 1) return new Float64Array(0);
-  // Perpendicular unit vector × small extent (50 m wing each side).
-  const perpX = -dyPath / pathLen;
-  const perpY = dxPath / pathLen;
-  const wing = 50;
-
-  const srcLat = source.latLng[0];
-  const srcLng = source.latLng[1];
-  const rxLat = receiverLatLng[0];
-  const rxLng = receiverLatLng[1];
-
-  for (let k = 1; k < samples; k++) {
-    const t = k / samples;
-    const lat = srcLat + (rxLat - srcLat) * t;
-    const lng = srcLng + (rxLng - srcLng) * t;
-    const groundZ = dem.elevation(lat, lng);
-    if (!Number.isFinite(groundZ)) continue;
-    const lineZ = sourceXyz[2] + (receiverXyz[2] - sourceXyz[2]) * t;
-    const protrusion = groundZ - lineZ;
-    if (protrusion < minH) continue;
-
-    const [e, n] = latLngToLocalMetres([lat, lng], origin);
-    const ax = e + perpX * wing;
-    const ay = n + perpY * wing;
-    const bx = e - perpX * wing;
-    const by = n - perpY * wing;
-    out.push(ax, ay, bx, by, groundZ);
-  }
-  return new Float64Array(out);
-}
+// =================== Barrier pack helpers ===================
+// `topographyBarriers` moved to `./gridCore` (worker-safe) and is re-exported
+// from the top of this file for backward-compatible imports.
 
 /// Concatenate two barrier-pack arrays into one. Both must already be in
 /// `packBarriers` format (5 numbers per barrier).

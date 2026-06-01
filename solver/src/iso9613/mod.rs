@@ -51,13 +51,15 @@ pub fn evaluate_with_ground<T: ADScalar>(
     lw: &BandSpectrum<T>,
     source_pos: Vec3<T>,
     receiver_pos: Vec3<T>,
+    h_s: T,
+    h_r: T,
     g: T,
     atm: Atmosphere,
 ) -> BandSpectrum<T> {
     let system = lw.system;
     let adiv = divergence::adiv(source_pos, receiver_pos);
     let aatm = atmosphere::aatm_spectrum(source_pos, receiver_pos, system, atm);
-    let agr = ground::agr_spectrum(source_pos, receiver_pos, g, g, g, system);
+    let agr = ground::agr_spectrum(source_pos, receiver_pos, h_s, h_r, g, g, g, system);
 
     let mut out = BandSpectrum::zeros(system);
     for i in 0..system.n_bands() {
@@ -71,10 +73,17 @@ pub fn evaluate_with_ground<T: ADScalar>(
 /// `Lp = LW − Adiv − Aatm − Agr − Abar`. Per Eqs 16/17 the per-band Abar
 /// either replaces (Eq 16, when Agr > 0 over-top) or stacks with (Eq 17)
 /// the ground attenuation.
+///
+/// `source_pos`/`receiver_pos` are in an absolute datum (shared with the
+/// barrier top heights, so over-top diffraction geometry is correct over real
+/// terrain); `h_s`/`h_r` are the heights above local ground for the ground
+/// attenuation. See `ground::agr_spectrum`.
 pub fn evaluate_with_barriers<T: ADScalar>(
     lw: &BandSpectrum<T>,
     source_pos: Vec3<T>,
     receiver_pos: Vec3<T>,
+    h_s: T,
+    h_r: T,
     g: T,
     barriers: &[barrier::WallBarrier<T>],
     dz_cap_db: Option<f64>,
@@ -84,7 +93,7 @@ pub fn evaluate_with_barriers<T: ADScalar>(
     let system = lw.system;
     let adiv = divergence::adiv(source_pos, receiver_pos);
     let aatm = atmosphere::aatm_spectrum(source_pos, receiver_pos, system, atm);
-    let agr = ground::agr_spectrum(source_pos, receiver_pos, g, g, g, system);
+    let agr = ground::agr_spectrum(source_pos, receiver_pos, h_s, h_r, g, g, g, system);
     let (abar, ground_in_bar) = barrier::abar_spectrum(
         source_pos, receiver_pos, barriers, &agr, system, dz_cap_db, barrier_conv,
     );

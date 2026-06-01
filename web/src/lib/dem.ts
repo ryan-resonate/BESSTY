@@ -94,6 +94,71 @@ export interface DemRaster {
   tilesLoaded: number;
 }
 
+/// A serializable elevation snapshot over a lat/lng rectangle — a dense grid
+/// sampled from a `DemRaster`. Plain typed-array data, so it transfers cleanly
+/// to a Web Worker (the tile-closure `DemRaster` can't). Row 0 = north edge,
+/// col 0 = west edge; both axes linear in lat/lng.
+export interface DemRegion {
+  data: Float32Array;   // ny rows × nx cols, row-major
+  sw: [number, number];
+  ne: [number, number];
+  nx: number;
+  ny: number;
+}
+
+/// Sample a `DemRaster` into a `DemRegion` covering `[sw, ne]`. `nx`/`ny`
+/// default to ~tile density (256²); over a few-km project that's tens of
+/// metres per sample — comparable to the source tiles and ample for ridge
+/// path sampling.
+export function captureDemRegion(
+  dem: DemRaster,
+  sw: [number, number],
+  ne: [number, number],
+  nx = 256,
+  ny = 256,
+): DemRegion {
+  const data = new Float32Array(nx * ny);
+  for (let j = 0; j < ny; j++) {
+    const lat = ne[0] + (sw[0] - ne[0]) * (j / (ny - 1)); // north → south
+    for (let i = 0; i < nx; i++) {
+      const lng = sw[1] + (ne[1] - sw[1]) * (i / (nx - 1)); // west → east
+      data[j * nx + i] = dem.elevation(lat, lng);
+    }
+  }
+  return { data, sw, ne, nx, ny };
+}
+
+/// Rebuild a `DemRaster` (bilinear lookup) from a transferred `DemRegion`.
+/// Used inside the grid worker. Returns 0 outside the region.
+export function regionRaster(region: DemRegion): DemRaster {
+  const { data, sw, ne, nx, ny } = region;
+  return {
+    elevation(lat: number, lng: number): number {
+      const fi = ((lng - sw[1]) / (ne[1] - sw[1])) * (nx - 1);
+      const fj = ((ne[0] - lat) / (ne[0] - sw[0])) * (ny - 1);
+      if (!(fi >= 0 && fi <= nx - 1 && fj >= 0 && fj <= ny - 1)) return 0;
+      const i0 = Math.floor(fi);
+      const j0 = Math.floor(fj);
+      const i1 = Math.min(i0 + 1, nx - 1);
+      const j1 = Math.min(j0 + 1, ny - 1);
+      const fx = fi - i0;
+      const fy = fj - j0;
+      const e00 = data[j0 * nx + i0];
+      const e10 = data[j0 * nx + i1];
+      const e01 = data[j1 * nx + i0];
+      const e11 = data[j1 * nx + i1];
+      return (
+        e00 * (1 - fx) * (1 - fy) +
+        e10 * fx * (1 - fy) +
+        e01 * (1 - fx) * fy +
+        e11 * fx * fy
+      );
+    },
+    bounds: { sw, ne },
+    tilesLoaded: 0,
+  };
+}
+
 /// Fetch DEM tiles covering the given lat/lng bounding box, return an
 /// elevation lookup raster. Caches tiles in memory so repeated calls within
 /// one project session don't re-download.

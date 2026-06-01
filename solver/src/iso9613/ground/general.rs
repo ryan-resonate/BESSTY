@@ -25,18 +25,22 @@ use super::functions::{a_prime, b_prime, c_prime, d_prime};
 /// passes the same value for all three; future versions split by terrain
 /// classification along the path.
 ///
-/// Source and receiver heights `hS`, `hR` are taken from the z components of
-/// the position vectors (flat ground at z = 0 is assumed for v0.2).
+/// `h_s`, `h_r` are the source/receiver **heights above local ground** (HAG),
+/// passed explicitly rather than read from the position `z`. The positions are
+/// in an absolute datum (so `divergence`/`barrier` geometry is consistent over
+/// real terrain); only their horizontal components feed `dp` here. Conflating
+/// the two — reading `h_s = source_pos.z` while `z` carried absolute elevation
+/// — was the v0.x terrain bug (see `docs/solver-review-2026-06.md`, A1).
 pub fn agr_spectrum<T: ADScalar>(
     source_pos: Vec3<T>,
     receiver_pos: Vec3<T>,
+    h_s: T,
+    h_r: T,
     g_source: T,
     g_middle: T,
     g_receiver: T,
     system: BandSystem,
 ) -> BandSpectrum<T> {
-    let h_s = source_pos.z;
-    let h_r = receiver_pos.z;
     let delta = receiver_pos.sub(source_pos);
     let dp = delta.length_horizontal();
 
@@ -122,7 +126,8 @@ mod tests {
     #[test]
     fn agr_spectrum_matches_case_02() {
         let (s, r) = case_02_geometry();
-        let agr = agr_spectrum(s, r, 0.5, 0.5, 0.5, BandSystem::Octave);
+        // Flat ground → HAG equals absolute z.
+        let agr = agr_spectrum(s, r, s.z, r.z, 0.5, 0.5, 0.5, BandSystem::Octave);
         // 10-band layout: 16, 31.5, 63, 125, 250, 500, 1k, 2k, 4k, 8k.
         // The new 16/31.5 Hz octaves use the 63 Hz formula → −3.074.
         let expected = [
@@ -139,8 +144,8 @@ mod tests {
         // Each third-octave band should produce the same Agr as its parent
         // octave (the Table-3 shape functions are octave-defined).
         let (s, r) = case_02_geometry();
-        let agr_oct = agr_spectrum(s, r, 0.5, 0.5, 0.5, BandSystem::Octave);
-        let agr_3rd = agr_spectrum(s, r, 0.5, 0.5, 0.5, BandSystem::OneThirdOctave);
+        let agr_oct = agr_spectrum(s, r, s.z, r.z, 0.5, 0.5, 0.5, BandSystem::Octave);
+        let agr_3rd = agr_spectrum(s, r, s.z, r.z, 0.5, 0.5, 0.5, BandSystem::OneThirdOctave);
 
         for (third_idx, &third_value) in agr_3rd.bands.iter().enumerate() {
             let parent = BandSystem::OneThirdOctave.parent_octave(third_idx);

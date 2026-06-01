@@ -13,8 +13,6 @@
 //      drag settles.
 
 import init, {
-  evaluate_general_octave,
-  evaluate_wtg_octave,
   evaluate_general_with_grad_src_octave,
   evaluate_wtg_with_grad_src_octave,
   octave_a_weighting,
@@ -27,15 +25,27 @@ import type {
   Project,
 } from './types';
 import { lookupEntry, sourceHeightFor, spectrumFor } from './catalog';
-import type { DemRaster } from './dem';
+import { type DemRaster, type DemRegion, captureDemRegion } from './dem';
 import {
-  approxDistanceM,
   concatBarriers,
   effectiveSourcesFor,
   propagationSettings,
-  topographyBarriers,
   type EffectiveSource,
 } from './propagation';
+import {
+  approxDistanceM,
+  latLngToLocalMetres,
+  topographyBarriers,
+  runBatchedGrid,
+  type GridJob,
+  type GridResult,
+  type SolverEnv,
+} from './gridCore';
+
+// Re-export so downstream consumers (contourLines, exporters) keep importing
+// these from './solver'.
+export type { GridResult, GridJob } from './gridCore';
+export { latLngToLocalMetres } from './gridCore';
 
 // Atmosphere + barrier-convention parameters threaded through to every
 // WASM call. Atmosphere defaults match `Atmosphere::iso_reference()` in
@@ -43,7 +53,6 @@ import {
 // defaults to the simpler-bookkeeping variant (`Dz − max(Agr, 0)`) since
 // it's numerically equivalent to strict ISO Eq 16/17 in every case and
 // matches what the team's reference tools produce.
-interface SolverEnv { tC: number; rh: number; pKpa: number; barConv: number; dzCap: number; }
 function solverEnv(project: Project): SolverEnv {
   const atm = project.settings?.atmosphere;
   const tC = atm?.temperatureC ?? 10;
@@ -95,7 +104,7 @@ function packLen(bs: 'octave' | 'oneThirdOctave'): number {
 
 /// A-weighting offsets per IEC 61672-1 — separate tables for the two band
 /// systems so we don't hand the wrong-length weights to a downstream sum.
-const OCTAVE_AW = new Float64Array([-56.4, -39.4, -26.2, -16.1, -8.6, -3.2, 0.0, 1.2, 1.0, -1.1]);
+const OCTAVE_AW = new Float64Array([-56.7, -39.4, -26.2, -16.1, -8.6, -3.2, 0.0, 1.2, 1.0, -1.1]);
 const THIRD_OCT_AW = new Float64Array([
   -70.4, -63.4, -56.7, -50.5, -44.7, -39.4, -34.6,
   -30.2, -26.2, -22.5, -19.1, -16.1, -13.4, -10.9, -8.6, -6.6, -4.8,
@@ -128,44 +137,41 @@ export interface ReceiverResult {
   perSource: Array<{ sourceId: string; perBandLp: Float64Array }>;
 }
 
-function packBarriers(barriers: Barrier[], originLatLng: [number, number]): Float64Array {
+function packBarriers(
+  barriers: Barrier[],
+  originLatLng: [number, number],
+  dem: DemRaster | null,
+): Float64Array {
   const out: number[] = [];
   for (const b of barriers) {
     if (b.polylineLatLng.length < 2) continue;
     const [a, c] = b.polylineLatLng;
     const aXY = latLngToLocalMetres(a, originLatLng);
     const cXY = latLngToLocalMetres(c, originLatLng);
-    const topZ = b.topHeightsM[0] ?? 0;
-    out.push(aXY[0], aXY[1], cXY[0], cXY[1], topZ);
+    // Barrier `top_z` is ABSOLUTE in the solver (shares the source/receiver
+    // geometry datum). The stored `topHeightsM` is the barrier height above
+    // local ground, so add the DEM ground elevation at the barrier (mean of
+    // its two endpoints). Without a DEM, ground is 0 → top_z = height. This is
+    // the user-barrier half of the A1 z-datum fix.
+    const heightAg = b.topHeightsM[0] ?? 0;
+    let ground = 0;
+    if (dem) {
+      const ga = dem.elevation(a[0], a[1]);
+      const gc = dem.elevation(c[0], c[1]);
+      const gaOk = Number.isFinite(ga) ? ga : 0;
+      const gcOk = Number.isFinite(gc) ? gc : 0;
+      ground = (gaOk + gcOk) / 2;
+    }
+    out.push(aXY[0], aXY[1], cXY[0], cXY[1], ground + heightAg);
   }
   return new Float64Array(out);
 }
 
-export function latLngToLocalMetres(
-  latLng: [number, number],
-  origin: [number, number],
-): [number, number] {
-  const R = 6371008.8;
-  const lat0 = (origin[0] * Math.PI) / 180;
-  const dLat = ((latLng[0] - origin[0]) * Math.PI) / 180;
-  const dLng = ((latLng[1] - origin[1]) * Math.PI) / 180;
-  const n = R * dLat;
-  const e = R * dLng * Math.cos(lat0);
-  return [e, n];
-}
-
-/// Returns the source z passed to the solver — height-above-local-ground
-/// for the ground-attenuation calc. Used both at snapshot time and during
-/// extrapolation (delta = position-now − position-at-snapshot). Both must
-/// use the same convention so the delta is meaningful — see the "Solver z
-/// convention" comment in `snapshotPair` for the rationale.
+/// Source **height above local ground** (HAG) — the machine height fed to the
+/// ground-attenuation shape functions. Independent of terrain elevation.
 ///
 /// Returns null if the catalog entry is missing.
-function sourceAbsZ(
-  source: Source,
-  project: Project,
-  _dem: DemRaster | null,
-): number | null {
+function sourceHagl(source: Source, project: Project): number | null {
   const entry = lookupEntry(project, source);
   if (source.kind === 'wtg') {
     // Per-source `hubHeight` REPLACES the library default (it's the
@@ -175,6 +181,18 @@ function sourceAbsZ(
   }
   // BESS / Aux: library height + per-source elevation delta.
   return sourceHeightFor(entry) + (source.elevationOffset ?? 0);
+}
+
+/// Source **absolute** z = local ground elevation (from the DEM) + HAG. This is
+/// what divergence + barrier geometry consume, and what the source-position
+/// gradient is taken w.r.t. (so the Taylor delta during a drag is in the
+/// absolute frame). Without a DEM, ground is 0 → abs z = HAG. See A1 in
+/// `docs/solver-review-2026-06.md`.
+function sourceAbsZ(source: Source, project: Project, dem: DemRaster | null): number | null {
+  const h = sourceHagl(source, project);
+  if (h == null) return null;
+  const ground = dem ? dem.elevation(source.latLng[0], source.latLng[1]) : 0;
+  return (Number.isFinite(ground) ? ground : 0) + h;
 }
 
 function snapshotPair(
@@ -189,28 +207,21 @@ function snapshotPair(
   const [se, sn] = latLngToLocalMetres(source.latLng, origin);
   const [re, rn] = latLngToLocalMetres(rxLatLng, origin);
   const g = project.settings?.ground.defaultG ?? 0.5;
-  // Solver z convention: HEIGHT-ABOVE-LOCAL-GROUND.
-  //
-  // The Rust ISO 9613-2 implementation reads `source_pos.z` and
-  // `receiver_pos.z` as "height above local ground" when feeding the
-  // Table 3 shape functions a'(h, dp), b'(h, dp), etc. Earlier code
-  // passed ABSOLUTE z (= ground_elevation + height_above_ground) which
-  // — once a DEM was loaded with non-zero terrain — pushed h_S and h_R
-  // up by the elevation, collapsing the shape-function exponentials and
-  // returning a near-constant Agr. With the DEM at e.g. 200 m elevation,
-  // h_R looked like 201.5 m to the solver, exp(-0.46·201.5²) was ~0,
-  // and the receiver-side ground attenuation degraded into a small
-  // boost rather than a real attenuation. Same problem for the source.
-  //
-  // Fix: pass HAG to both. Distance for Adiv loses the DEM elevation
-  // term, but for typical terrain (Δelevation << horizontal distance)
-  // the error in 3D distance is sub-percent — at 1000 m horizontal and
-  // 100 m elevation difference that's 0.1 dB on Adiv, well below the
-  // tolerance of the rest of the chain. Topography effects re-enter via
-  // the virtual-barrier mechanism in `topographyBarriers`.
-  const groundSrc = dem ? dem.elevation(source.latLng[0], source.latLng[1]) : 0;
-  const groundRx = dem ? dem.elevation(rxLatLng[0], rxLatLng[1]) : 0;
-  const rxZ = rxHeightAboveGround;
+  // Solver z convention (A1 fix): the engine takes BOTH an absolute z and a
+  // height-above-ground (HAG) for source and receiver. Absolute z (= DEM
+  // ground elevation + HAG) drives divergence + barrier diffraction geometry,
+  // which must share a datum with the (absolute) barrier tops. HAG drives the
+  // Table-3 ground shape functions. Conflating the two — the previous
+  // "pass HAG as the only z" workaround — made Adiv drop the source↔receiver
+  // ground-elevation difference and put barrier geometry in a mixed datum
+  // (barriers looked ~ground-elevation metres too tall). See
+  // `docs/solver-review-2026-06.md` A1/A2.
+  const groundSrcRaw = dem ? dem.elevation(source.latLng[0], source.latLng[1]) : 0;
+  const groundRxRaw = dem ? dem.elevation(rxLatLng[0], rxLatLng[1]) : 0;
+  const groundSrc = Number.isFinite(groundSrcRaw) ? groundSrcRaw : 0;
+  const groundRx = Number.isFinite(groundRxRaw) ? groundRxRaw : 0;
+  const rxZ = rxHeightAboveGround;        // receiver HAG
+  const rxZAbs = groundRx + rxZ;          // receiver absolute z
 
   const entry = lookupEntry(project, source);
   if (!entry) {
@@ -225,44 +236,45 @@ function snapshotPair(
     // (sourceHeightM > hubHeights[0] > 100 m) so the catalog's
     // library default is honoured.
     const hubHeight = source.hubHeight ?? sourceHeightFor(entry);
-    const hubZ = hubHeight;
-    // Topography barriers still use ABSOLUTE z (so the DEM ridge profile
-    // along the path is sampled correctly). The vector arguments are
-    // there for the path-line vs ground comparison only.
+    const hubZ = hubHeight;              // hub HAG
+    const hubZAbs = groundSrc + hubZ;    // hub absolute z
+    // Topography barriers use ABSOLUTE z (the DEM ridge profile is sampled in
+    // the absolute frame, now consistent with the source/receiver z below).
     const topoBars = topographyBarriers(
-      project, source,
-      [se, sn, groundSrc + hubZ],
-      rxLatLng, [re, rn, groundRx + rxZ], origin, dem,
+      project.settings?.topography, source.latLng,
+      [se, sn, hubZAbs],
+      rxLatLng, [re, rn, rxZAbs], origin, dem,
     );
     const allBars = concatBarriers(barriersFlat, topoBars);
     const rotorD = source.rotorDiameterM ?? entry.rotorDiameterM ?? 120;
     const snap = evaluate_wtg_with_grad_src_octave(
-      lw, se, sn, hubZ, re, rn, rxZ, g, allBars,
+      lw, se, sn, hubZAbs, hubZ, re, rn, rxZAbs, rxZ, g, allBars,
       rotorD, false,
       env.tC, env.rh, env.pKpa, env.barConv,
     );
-    // srcAbsXyz uses the HAG-z too — extrapolation is consistent with
-    // what the solver saw at snapshot time.
-    return { snapshot: snap, srcAbsXyz: [se, sn, hubZ] };
+    // srcAbsXyz is the ABSOLUTE source position — the gradient is taken w.r.t.
+    // it, so extrapolation deltas must be in the same frame.
+    return { snapshot: snap, srcAbsXyz: [se, sn, hubZAbs] };
   }
   // BESS / Aux: library-defined source height (sourceHeightM) plus
   // the per-source elevation delta. Falls back to the kind default
   // (1.5 m) when the catalog entry doesn't pin a sourceHeightM, so
   // older projects + seed catalog entries keep their existing
   // numbers.
-  const sourceZ = sourceHeightFor(entry) + (source.elevationOffset ?? 0);
+  const sourceZ = sourceHeightFor(entry) + (source.elevationOffset ?? 0); // HAG
+  const sourceZAbs = groundSrc + sourceZ;                                 // absolute z
   // Topography barriers consume absolute z (DEM-aware ridge sampling).
   const topoBars = topographyBarriers(
-    project, source,
-    [se, sn, groundSrc + sourceZ],
-    rxLatLng, [re, rn, groundRx + rxZ], origin, dem,
+    project.settings?.topography, source.latLng,
+    [se, sn, sourceZAbs],
+    rxLatLng, [re, rn, rxZAbs], origin, dem,
   );
   const allBars = concatBarriers(barriersFlat, topoBars);
   const snap = evaluate_general_with_grad_src_octave(
-    lw, se, sn, sourceZ, re, rn, rxZ, g, allBars,
+    lw, se, sn, sourceZAbs, sourceZ, re, rn, rxZAbs, rxZ, g, allBars,
     env.tC, env.rh, env.pKpa, env.barConv, env.dzCap,
   );
-  return { snapshot: snap, srcAbsXyz: [se, sn, sourceZ] };
+  return { snapshot: snap, srcAbsXyz: [se, sn, sourceZAbs] };
 }
 
 /// Snapshot for a synthetic cluster (an EffectiveSource of kind 'cluster').
@@ -356,7 +368,7 @@ export async function snapshotProject(
     ?? project.receivers[0]?.latLng
     ?? project.sources[0]?.latLng
     ?? [0, 0];
-  const barriersFlat = packBarriers(project.barriers, origin);
+  const barriersFlat = packBarriers(project.barriers, origin, dem);
   const aw = aWeights(project.scenario.bandSystem);
 
   const pairs = new Map<string, { snapshot: Float64Array; srcAbsXyz: [number, number, number] }>();
@@ -501,14 +513,7 @@ export async function evaluateProject(
 }
 
 // ============== Grid snapshot + extrapolation ==============
-
-export interface GridResult {
-  cols: number;
-  rows: number;
-  bounds: { sw: [number, number]; ne: [number, number] };
-  dbA: Float32Array;
-  computedMs: number;
-}
+// (GridResult is defined in ./gridCore and re-exported above.)
 
 export interface GridSnapshot {
   cols: number;
@@ -638,7 +643,7 @@ export async function snapshotGrid(
   const sw: [number, number] = [origin[0] - dLat, origin[1] - dLng];
   const ne: [number, number] = [origin[0] + dLat, origin[1] + dLng];
 
-  const userBarriers = packBarriers(project.barriers, origin);
+  const userBarriers = packBarriers(project.barriers, origin, dem);
   const g = project.settings?.ground.defaultG ?? 0.5;
   const cutoffM = propagationSettings(project).maxContributionDistanceM;
   const env = solverEnv(project);
@@ -647,25 +652,27 @@ export async function snapshotGrid(
   const sourceIds = eff.map((es) => es.id);
   const realSourceFlags = new Uint8Array(eff.length);
   const srcLocal: Array<[number, number]> = [];
-  const srcZ: number[] = [];
+  const srcHagl: number[] = [];   // height above local ground (ground attenuation)
+  const srcZAbs: number[] = [];   // absolute z (geometry + gradient frame)
   for (let i = 0; i < eff.length; i++) {
     const es = eff[i];
     realSourceFlags[i] = es.kind === 'real' ? 1 : 0;
     srcLocal.push(latLngToLocalMetres(es.latLng, origin));
-    if (es.kind === 'real') {
-      // HAG-z (height above local ground), per the solver z convention
-      // documented in `snapshotPair`.
-      srcZ.push(sourceAbsZ(es.source!, project, dem) ?? 0);
-    } else {
-      // Cluster: zAboveGround is already a HAG mean by construction.
-      srcZ.push(es.zAboveGround ?? 1.5);
-    }
+    const groundRaw = dem ? dem.elevation(es.latLng[0], es.latLng[1]) : 0;
+    const ground = Number.isFinite(groundRaw) ? groundRaw : 0;
+    const hagl = es.kind === 'real'
+      ? (sourceHagl(es.source!, project) ?? 0)
+      : (es.zAboveGround ?? 1.5); // cluster: HAG mean by construction
+    srcHagl.push(hagl);
+    srcZAbs.push(ground + hagl);
   }
+  // Snapshot positions are ABSOLUTE — the source-position gradient is taken
+  // w.r.t. (e, n, z_abs), so extrapolation deltas must match this frame.
   const srcAbsAtSnapshot = new Float32Array(eff.length * 3);
   for (let i = 0; i < eff.length; i++) {
     srcAbsAtSnapshot[i * 3] = srcLocal[i][0];
     srcAbsAtSnapshot[i * 3 + 1] = srcLocal[i][1];
-    srcAbsAtSnapshot[i * 3 + 2] = srcZ[i];
+    srcAbsAtSnapshot[i * 3 + 2] = srcZAbs[i];
   }
 
   const cellCount = cols * rows;
@@ -725,15 +732,13 @@ export async function snapshotGrid(
       const cellIdx = row * cols + col;
       const e = (col - (cols - 1) / 2) * dxM;
       const lng = origin[1] + (e / (R * Math.cos(lat0))) * (180 / Math.PI);
-      const groundZ = dem ? dem.elevation(lat, lng) : 0;
-      // HAG-z for the solver call; absolute z still used by topography
-      // helper which needs the DEM ridge profile. See snapshotPair for
-      // the full rationale on the z-convention switch.
-      const rxZ = rxHeightAboveGround;
-      const rxZAbs = groundZ + rxZ;
+      const groundZRaw = dem ? dem.elevation(lat, lng) : 0;
+      const groundZ = Number.isFinite(groundZRaw) ? groundZRaw : 0;
+      const rxZ = rxHeightAboveGround;      // receiver HAG
+      const rxZAbs = groundZ + rxZ;         // receiver absolute z
       cellEnZ[cellIdx * 3] = e;
       cellEnZ[cellIdx * 3 + 1] = n;
-      cellEnZ[cellIdx * 3 + 2] = rxZ;
+      cellEnZ[cellIdx * 3 + 2] = rxZAbs;
 
       for (let si = 0; si < eff.length; si++) {
         const meta = effMeta[si];
@@ -747,18 +752,14 @@ export async function snapshotGrid(
           if (dx * dx + dy * dy > cutoffM * cutoffM) continue;
         }
         // Per-cell topography barriers (DEM-derived ridges between source
-        // and this cell). Topography uses ABSOLUTE z so the source→cell
-        // straight line is compared against absolute terrain elevations.
-        // Skipped for clusters since they're aggregates — sampling along
-        // a centroid→cell line for a virtual source isn't meaningful
-        // enough to justify the per-cell cost. Real sources still get
-        // the ridge analysis.
+        // and this cell), in the ABSOLUTE frame — now consistent with the
+        // absolute source/receiver z passed below. Clusters skip topo.
         const allBars = es.kind === 'real'
           ? concatBarriers(
               userBarriers,
               topographyBarriers(
-                project, es.source!,
-                [se, sn, (dem ? dem.elevation(es.source!.latLng[0], es.source!.latLng[1]) : 0) + srcZ[si]],
+                project.settings?.topography, es.source!.latLng,
+                [se, sn, srcZAbs[si]],
                 [lat, lng], [e, n, rxZAbs], origin, dem,
               ),
             )
@@ -767,11 +768,11 @@ export async function snapshotGrid(
         const { lw, isWtg, rotorD } = meta;
         const snap = isWtg
           ? evaluate_wtg_with_grad_src_octave(
-              lw, se, sn, srcZ[si], e, n, rxZ, g, allBars, rotorD, false,
+              lw, se, sn, srcZAbs[si], srcHagl[si], e, n, rxZAbs, rxZ, g, allBars, rotorD, false,
               env.tC, env.rh, env.pKpa, env.barConv,
             )
           : evaluate_general_with_grad_src_octave(
-              lw, se, sn, srcZ[si], e, n, rxZ, g, allBars,
+              lw, se, sn, srcZAbs[si], srcHagl[si], e, n, rxZAbs, rxZ, g, allBars,
               env.tC, env.rh, env.pKpa, env.barConv, env.dzCap,
             );
         const base = (cellIdx * eff.length + si) * PACK;
@@ -873,10 +874,116 @@ export function extrapolateGrid(
   };
 }
 
+// ============== Batched grid evaluation (S2) ==============
+
+/// Per-source data packed for `GridEvaluator`: one row per source as
+/// `[is_wtg, e, n, z_abs, hagl, rotor_d, lw_0 … lw_{nb-1}]`. Sources whose
+/// catalog entry is missing are dropped (so the returned `eff`/`srcLocal`/
+/// `srcZAbs` stay index-aligned with the evaluator's internal source order
+/// and with `cellTopoPack`).
+interface GridSourcePack {
+  eff: EffectiveSource[];
+  srcLocal: Array<[number, number]>;
+  srcZAbs: number[];
+  sourcesFlat: Float64Array;
+  nBands: number;
+}
+
+function buildGridSourcePack(
+  project: Project,
+  dem: DemRaster | null,
+  origin: [number, number],
+  effRaw: EffectiveSource[],
+): GridSourcePack {
+  const nBands = bandCount(project.scenario.bandSystem);
+  const stride = 6 + nBands;
+  const eff: EffectiveSource[] = [];
+  const rows: number[][] = [];
+  const srcLocal: Array<[number, number]> = [];
+  const srcZAbs: number[] = [];
+  for (const es of effRaw) {
+    let isWtg = false;
+    let hagl: number;
+    let rotorD = 120;
+    let lw: Float64Array | null;
+    if (es.kind === 'real') {
+      const entry = lookupEntry(project, es.source!);
+      if (!entry) continue; // missing catalog → drop (matches old `if (!meta) continue`)
+      const modeName = es.source!.modeOverride ?? entry.defaultMode;
+      lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
+      isWtg = es.source!.kind === 'wtg';
+      hagl = sourceHagl(es.source!, project) ?? 0;
+      rotorD = es.source!.rotorDiameterM ?? entry.rotorDiameterM ?? 120;
+    } else {
+      lw = es.lwOverride!;
+      hagl = es.zAboveGround ?? 1.5;
+    }
+    if (!lw) continue;
+    const [se, sn] = latLngToLocalMetres(es.latLng, origin);
+    const groundRaw = dem ? dem.elevation(es.latLng[0], es.latLng[1]) : 0;
+    const ground = Number.isFinite(groundRaw) ? groundRaw : 0;
+    const zAbs = ground + hagl;
+    const row = new Array<number>(stride);
+    row[0] = isWtg ? 1 : 0;
+    row[1] = se; row[2] = sn; row[3] = zAbs; row[4] = hagl; row[5] = rotorD;
+    for (let b = 0; b < nBands; b++) row[6 + b] = lw[b] ?? 0;
+    eff.push(es);
+    rows.push(row);
+    srcLocal.push([se, sn]);
+    srcZAbs.push(zAbs);
+  }
+  const sourcesFlat = new Float64Array(rows.length * stride);
+  for (let i = 0; i < rows.length; i++) sourcesFlat.set(rows[i], i * stride);
+  return { eff, srcLocal, srcZAbs, sourcesFlat, nBands };
+}
+
+/// Resolve a project into a serializable `GridJob` (catalog + per-source
+/// geometry done here, on the main thread). The DEM is consumed for source
+/// absolute-z only; cell-by-cell terrain is sampled later in `runBatchedGrid`.
+function buildGridJob(
+  project: Project,
+  dem: DemRaster | null,
+  spacingM: number,
+  rxHeightAboveGround: number,
+): GridJob {
+  const ca = project.calculationArea;
+  if (!ca) throw new Error('calculationArea not set; cannot compute grid');
+  const origin = ca.centerLatLng;
+  const cols = Math.max(2, Math.round(ca.widthM / spacingM));
+  const rows = Math.max(2, Math.round(ca.heightM / spacingM));
+  const dxM = ca.widthM / cols;
+  const dyM = ca.heightM / rows;
+  const R = 6371008.8;
+  const lat0 = (origin[0] * Math.PI) / 180;
+  const dLat = (ca.heightM / 2 / R) * (180 / Math.PI);
+  const dLng = (ca.widthM / 2 / (R * Math.cos(lat0))) * (180 / Math.PI);
+  const bounds = {
+    sw: [origin[0] - dLat, origin[1] - dLng] as [number, number],
+    ne: [origin[0] + dLat, origin[1] + dLng] as [number, number],
+  };
+  const pack = buildGridSourcePack(project, dem, origin, effectiveSourcesForGrid(project, ca));
+  return {
+    cols, rows, dxM, dyM, origin, bounds,
+    nBands: pack.nBands,
+    g: project.settings?.ground.defaultG ?? 0.5,
+    cutoffM: propagationSettings(project).maxContributionDistanceM,
+    dOmegaDb: projectDOmegaDb(project),
+    env: solverEnv(project),
+    rxHeightAboveGround,
+    userBarriers: packBarriers(project.barriers, origin, dem),
+    sourcesFlat: pack.sourcesFlat,
+    srcLatLng: pack.eff.map((es) => es.latLng),
+    srcIsReal: pack.eff.map((es) => es.kind === 'real'),
+    topo: project.settings?.topography,
+  };
+}
+
 // ============== Compatibility: exact grid evaluation ==============
 
-/// Compute the grid exactly without snapshotting (legacy path; prefer
-/// `snapshotGrid()` if you'll subsequently want to extrapolate).
+/// Compute the grid exactly without snapshotting. Batched primal path (S2):
+/// one `GridEvaluator.eval_cell_dba` call per cell — all sources energy-summed
+/// inside Rust — instead of one JS↔WASM call per (cell, source). This is the
+/// default contour path (primal-only, no gradient tensor).
 export async function evaluateGrid(
   project: Project,
   dem: DemRaster | null,
@@ -884,113 +991,109 @@ export async function evaluateGrid(
   rxHeightAboveGround: number,
 ): Promise<GridResult> {
   await ensureSolverReady();
-  const t0 = performance.now();
+  return runBatchedGrid(buildGridJob(project, dem, spacingM, rxHeightAboveGround), dem);
+}
 
-  const ca = project.calculationArea;
-  if (!ca) throw new Error('calculationArea not set; cannot compute grid');
+// ============== Worker offload (S1) ==============
 
-  const origin = ca.centerLatLng;
-  // Cell-centred sampling — see snapshotGrid for the full rationale.
-  const cols = Math.max(2, Math.round(ca.widthM / spacingM));
-  const rows = Math.max(2, Math.round(ca.heightM / spacingM));
-  const dxM = ca.widthM / cols;
-  const dyM = ca.heightM / rows;
-
-  const R = 6371008.8;
-  const lat0 = (origin[0] * Math.PI) / 180;
-  const dLat = (ca.heightM / 2 / R) * (180 / Math.PI);
-  const dLng = (ca.widthM / 2 / (R * Math.cos(lat0))) * (180 / Math.PI);
-  const sw: [number, number] = [origin[0] - dLat, origin[1] - dLng];
-  const ne: [number, number] = [origin[0] + dLat, origin[1] + dLng];
-
-  const userBarriers = packBarriers(project.barriers, origin);
-  const aw = aWeights(project.scenario.bandSystem);
-  const dOmegaDb = projectDOmegaDb(project);
-  const ca2 = project.calculationArea!;
-  const eff = effectiveSourcesForGrid(project, ca2);
-  // Hoist these out of the per-cell loop body — they don't change between
-  // cells, and the previous code was re-reading them every iteration.
-  const g = project.settings?.ground.defaultG ?? 0.5;
-  const cutoffM = propagationSettings(project).maxContributionDistanceM;
-  const env = solverEnv(project);
-  const effLocal = eff.map((es) => latLngToLocalMetres(es.latLng, origin));
-  // HAG-z (height above local ground) — see snapshotPair for the
-  // z-convention rationale. Topography barriers compute absolute z
-  // on-the-fly when needed.
-  const effZ = eff.map((es) => {
-    if (es.kind === 'real') return sourceAbsZ(es.source!, project, dem) ?? 0;
-    return es.zAboveGround ?? 1.5;
-  });
-  // Per-source catalog metadata (lookup once, reused per cell).
-  type EffMeta = { lw: Float64Array; isWtg: boolean; rotorD: number } | null;
-  const effMeta: EffMeta[] = eff.map((es): EffMeta => {
-    if (es.kind === 'real') {
-      const entry = lookupEntry(project, es.source!);
-      if (!entry) return null;
-      const modeName = es.source!.modeOverride ?? entry.defaultMode;
-      const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
-      // Per-source rotorDiameterM override beats the catalog entry.
-      const rotorD = es.source!.rotorDiameterM ?? entry.rotorDiameterM ?? 120;
-      return { lw, isWtg: es.source!.kind === 'wtg', rotorD };
-    }
-    return { lw: es.lwOverride!, isWtg: false, rotorD: 120 };
-  });
-
-  const dbA = new Float32Array(cols * rows);
-
-  for (let row = 0; row < rows; row++) {
-    const n = (row - (rows - 1) / 2) * dyM;
-    const lat = origin[0] + (n / R) * (180 / Math.PI);
-    for (let col = 0; col < cols; col++) {
-      const e = (col - (cols - 1) / 2) * dxM;
-      const lng = origin[1] + (e / (R * Math.cos(lat0))) * (180 / Math.PI);
-      const groundZ = dem ? dem.elevation(lat, lng) : 0;
-      // HAG-z passed to WASM; absolute z used by topography helper.
-      const rxZ = rxHeightAboveGround;
-      const rxZAbs = groundZ + rxZ;
-
-      let aSum = 0;
-      for (let si = 0; si < eff.length; si++) {
-        const meta = effMeta[si];
-        if (!meta) continue;
-        const es = eff[si];
-        const [se, sn] = effLocal[si];
-        // Per-cell distance cutoff: cheap pre-filter that skips the WASM
-        // call entirely for sources / clusters too far to contribute.
-        if (cutoffM > 0) {
-          const dx = se - e;
-          const dy = sn - n;
-          if (dx * dx + dy * dy > cutoffM * cutoffM) continue;
-        }
-        // Skip topo barriers for clusters (see snapshotGrid for rationale).
-        // Topography uses ABSOLUTE z, solver call uses HAG-z.
-        const allBars = es.kind === 'real'
-          ? concatBarriers(
-              userBarriers,
-              topographyBarriers(
-                project, es.source!,
-                [se, sn, (dem ? dem.elevation(es.source!.latLng[0], es.source!.latLng[1]) : 0) + effZ[si]],
-                [lat, lng], [e, n, rxZAbs], origin, dem,
-              ),
-            )
-          : userBarriers;
-        const lp = meta.isWtg
-          ? evaluate_wtg_octave(
-              meta.lw, se, sn, effZ[si], e, n, rxZ, g, allBars, meta.rotorD, false,
-              env.tC, env.rh, env.pKpa, env.barConv,
-            )
-          : evaluate_general_octave(
-              meta.lw, se, sn, effZ[si], e, n, rxZ, g, allBars,
-              env.tC, env.rh, env.pKpa, env.barConv, env.dzCap,
-            );
-        // `lp` is a Float64Array of length n_bands (no gradient pack).
-        for (let i = 0; i < lp.length; i++) aSum += Math.pow(10, (lp[i] + aw[i] + dOmegaDb) / 10);
-      }
-      dbA[row * cols + col] = aSum > 0 ? 10 * Math.log10(aSum) : -120;
-    }
+/// Run the contour grid in a Web Worker so the main thread stays responsive
+/// (S1). The worker reconstructs the DEM from a transferable region snapshot
+/// and runs the SAME `runBatchedGrid` core. Falls back to the synchronous path
+/// on any worker error (unsupported environment, init failure, etc.) so the
+/// grid always renders.
+export async function evaluateGridViaWorker(
+  project: Project,
+  dem: DemRaster | null,
+  spacingM: number,
+  rxHeightAboveGround: number,
+): Promise<GridResult> {
+  await ensureSolverReady();
+  const job = buildGridJob(project, dem, spacingM, rxHeightAboveGround);
+  try {
+    // The DEM region must cover the calc area AND every (real) source, because
+    // ridge sampling walks the whole source→cell line. Expand the snapshot
+    // bounds to the union of the calc-area rectangle and the source positions,
+    // with a small margin, so the worker's region DEM never reads outside its
+    // coverage (which would return 0 / sea level). Resolution is scaled to keep
+    // roughly the source-tile density across the (possibly larger) extent.
+    const region = dem ? captureDemRegion(
+      dem, ...sourcePaddedBounds(job),
+    ) : null;
+    return await runGridJobOnWorker(job, region);
+  } catch (e) {
+    console.warn('[BESSTY] grid worker unavailable, running inline:', e);
+    return runBatchedGrid(job, dem);
   }
+}
 
-  return { cols, rows, bounds: { sw, ne }, dbA, computedMs: performance.now() - t0 };
+/// SW/NE/nx/ny for a DEM region covering the grid bounds + all sources, sized
+/// to ~30 m/sample and capped so the snapshot stays small.
+function sourcePaddedBounds(job: GridJob): [[number, number], [number, number], number, number] {
+  let minLat = Math.min(job.bounds.sw[0], job.bounds.ne[0]);
+  let maxLat = Math.max(job.bounds.sw[0], job.bounds.ne[0]);
+  let minLng = Math.min(job.bounds.sw[1], job.bounds.ne[1]);
+  let maxLng = Math.max(job.bounds.sw[1], job.bounds.ne[1]);
+  for (let i = 0; i < job.srcLatLng.length; i++) {
+    if (!job.srcIsReal[i]) continue; // clusters skip topo, so don't widen for them
+    const [la, ln] = job.srcLatLng[i];
+    if (la < minLat) minLat = la; if (la > maxLat) maxLat = la;
+    if (ln < minLng) minLng = ln; if (ln > maxLng) maxLng = ln;
+  }
+  const mLat = (maxLat - minLat) * 0.05 + 0.002;
+  const mLng = (maxLng - minLng) * 0.05 + 0.002;
+  const sw: [number, number] = [minLat - mLat, minLng - mLng];
+  const ne: [number, number] = [maxLat + mLat, maxLng + mLng];
+  // ~111 km per degree latitude; target ≈ 30 m/sample, clamp to [128, 1024].
+  const spanLatM = (ne[0] - sw[0]) * 111_000;
+  const spanLngM = (ne[1] - sw[1]) * 111_000 * Math.cos((minLat * Math.PI) / 180);
+  const ny = Math.max(128, Math.min(1024, Math.round(spanLatM / 30)));
+  const nx = Math.max(128, Math.min(1024, Math.round(spanLngM / 30)));
+  return [sw, ne, nx, ny];
+}
+
+/// Pool of one reusable grid worker. Created lazily; survives across grid runs.
+let gridWorker: Worker | null = null;
+let gridWorkerSeq = 0;
+
+function getGridWorker(): Worker {
+  if (!gridWorker) {
+    gridWorker = new Worker(new URL('./grid.worker.ts', import.meta.url), { type: 'module' });
+  }
+  return gridWorker;
+}
+
+function runGridJobOnWorker(job: GridJob, region: DemRegion | null): Promise<GridResult> {
+  const worker = getGridWorker();
+  const id = ++gridWorkerSeq;
+  return new Promise<GridResult>((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timeout);
+      worker.removeEventListener('message', onMessage);
+      worker.removeEventListener('error', onError);
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('grid worker timed out'));
+    }, 60000);
+    const onMessage = (ev: MessageEvent) => {
+      const data = ev.data as { id: number; ok: boolean; result?: GridResult; error?: string };
+      if (data.id !== id) return;
+      cleanup();
+      if (data.ok && data.result) resolve(data.result);
+      else reject(new Error(data.error ?? 'grid worker failed'));
+    };
+    // A worker module-load / runtime error fires 'error' (not a message).
+    // Drop the worker so the next call rebuilds it, and reject fast so the
+    // caller falls back to the inline path without waiting for the timeout.
+    const onError = (e: ErrorEvent) => {
+      cleanup();
+      gridWorker = null;
+      reject(new Error(`grid worker error: ${e.message || 'load failed'}`));
+    };
+    worker.addEventListener('message', onMessage);
+    worker.addEventListener('error', onError);
+    worker.postMessage({ id, job, region });
+  });
 }
 
 export { octave_centres, octave_a_weighting };

@@ -29,11 +29,20 @@ pub fn z_min<T: ADScalar>(lambda: f64, c3_val: T) -> T {
 }
 
 /// Meteorological correction `Kmet` per Eq 21.
+///
+/// Eq 21 is defined for the whole `z > zmin` domain (where `Dz` is non-zero),
+/// not just `z > 0`. As `z → zmin⁺` the denominator `2(z − zmin) → 0`, the
+/// argument → ∞, and `Kmet → 0`, so `Dz = 10·log10(1 + inner·Kmet) → 0`
+/// continuously into the `z ≤ zmin → Dz = 0` branch. Short-circuiting at
+/// `z ≤ 0` instead (the previous behaviour) injected a ~4.8 dB step at
+/// `z = zmin` and a non-differentiable kink the AD/Taylor cache can't see.
+/// Guarding at `z ≤ zmin` keeps the value continuous and avoids the
+/// division by zero at `z = zmin` (where `Dz` is 0 regardless of `Kmet`).
 pub fn k_met<T: ADScalar>(lengths: &PathLengths<T>, z_min_val: T) -> T {
     let delta_z_v = lengths.delta_z.to_f64();
-    if delta_z_v <= 0.0 {
-        // Standard treats Kmet = 1 when there is no positive path-length
-        // difference (no over-top diffraction).
+    if delta_z_v <= z_min_val.to_f64() {
+        // At or below zmin Dz is 0 anyway; return 1 to avoid the 0/0 in the
+        // denominator. The caller (`dz_uncapped`) already short-circuits here.
         return T::one();
     }
     let max_dss_dsr = if lengths.d_ss.to_f64() >= lengths.d_sr.to_f64() {

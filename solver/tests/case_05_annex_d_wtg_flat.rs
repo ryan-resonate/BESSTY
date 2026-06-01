@@ -30,6 +30,7 @@ fn case_05_a_weighted_total() {
         &lw,
         hub,
         r,
+        hub.z, r.z,           // hub + receiver HAG (flat ground → = abs z)
         0.5,                  // G_user (Annex D caps at 0.5; this is already 0.5)
         &[],                  // no barriers
         WtgRules::default(),
@@ -47,11 +48,11 @@ fn case_05_g_above_0_5_silently_capped() {
     // to the G = 0.5 case.
     let (hub, r, lw) = case_05_setup();
     let lp_a = evaluate_wtg(
-        &lw, hub, r, 0.5, &[], WtgRules::default(), false, 120.0,
+        &lw, hub, r, hub.z, r.z, 0.5, &[], WtgRules::default(), false, 120.0,
         Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
     );
     let lp_b = evaluate_wtg(
-        &lw, hub, r, 1.0, &[], WtgRules::default(), false, 120.0,
+        &lw, hub, r, hub.z, r.z, 1.0, &[], WtgRules::default(), false, 120.0,
         Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
     );
     assert_relative_eq!(lp_a.a_weighted_total(), lp_b.a_weighted_total(), epsilon = 1e-9);
@@ -65,11 +66,11 @@ fn case_05_receiver_below_4m_is_clamped() {
     let r_low = Vec3::new(500.0, 0.0, 1.5);
     let r_at4 = Vec3::new(500.0, 0.0, 4.0);
     let lp_low = evaluate_wtg(
-        &lw, hub, r_low, 0.5, &[], WtgRules::default(), false, 120.0,
+        &lw, hub, r_low, hub.z, r_low.z, 0.5, &[], WtgRules::default(), false, 120.0,
         Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
     );
     let lp_at4 = evaluate_wtg(
-        &lw, hub, r_at4, 0.5, &[], WtgRules::default(), false, 120.0,
+        &lw, hub, r_at4, hub.z, r_at4.z, 0.5, &[], WtgRules::default(), false, 120.0,
         Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
     );
     // Adiv differs slightly because actual receiver height enters d, but Agr

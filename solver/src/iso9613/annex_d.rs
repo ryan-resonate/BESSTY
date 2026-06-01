@@ -90,6 +90,8 @@ pub fn evaluate_wtg<T: ADScalar>(
     lw: &BandSpectrum<T>,
     hub_pos: Vec3<T>,
     receiver_pos: Vec3<T>,
+    h_s: T,
+    h_r: T,
     g: T,
     barriers: &[barrier::WallBarrier<T>],
     rules: WtgRules,
@@ -100,21 +102,18 @@ pub fn evaluate_wtg<T: ADScalar>(
 ) -> BandSpectrum<T> {
     let system = lw.system;
 
-    // Annex D.4: clamp G ≤ 0.5 and receiver height ≥ 4 m for ground calc.
+    // `hub_pos`/`receiver_pos` are absolute (geometry); `h_s`/`h_r` are heights
+    // above local ground (ground attenuation). See `evaluate_with_barriers`.
+    // Annex D.4: clamp G ≤ 0.5 and the receiver HAG ≥ 4 m for the ground calc.
     let g_capped = cap_g_for_wtg(g);
-    let r_for_ground = Vec3 {
-        e: receiver_pos.e,
-        n: receiver_pos.n,
-        z: enforce_receiver_height(receiver_pos.z, rules.receiver_height_min_m),
-    };
+    let h_r_ground = enforce_receiver_height(h_r, rules.receiver_height_min_m);
 
-    // Adiv and Aatm use the actual receiver height (not the clamped one) so
-    // that source-to-receiver geometry is consistent with the user-set point.
+    // Adiv and Aatm use the absolute source/receiver geometry.
     let adiv = divergence::adiv(hub_pos, receiver_pos);
     let aatm = atmosphere::aatm_spectrum(hub_pos, receiver_pos, system, atm);
 
-    // Agr uses the clamped receiver height per D.4.
-    let mut agr = ground::agr_spectrum(hub_pos, r_for_ground, g_capped, g_capped, g_capped, system);
+    // Agr uses the hub HAG and the clamped receiver HAG per D.4.
+    let mut agr = ground::agr_spectrum(hub_pos, receiver_pos, h_s, h_r_ground, g_capped, g_capped, g_capped, system);
 
     // D.5 concave correction.
     if rules.apply_concave_correction && apply_concave {
