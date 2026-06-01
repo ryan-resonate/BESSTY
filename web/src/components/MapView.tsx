@@ -163,25 +163,16 @@ const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max: number
   satellite: {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attribution: '© Esri',
-    // Esri's documented reliable global-coverage limit is z=19. Past
-    // that, Esri returns a "Map data not yet available" placeholder
-    // PNG with HTTP 200 in many areas -- which means there's no
-    // programmatic indicator we can use to filter it out without
-    // breaking other things. We tried a pixel-sampling detector that
-    // substituted with transparent: the detector worked, but
-    // transparent tiles just expose the gray map-container background
-    // (Leaflet doesn't auto-fallback to the parent tile for
-    // non-errored tiles -- that's a misconception). Net result: solid
-    // gray at high zoom instead of placeholders.
-    //
-    // Reverting to the simple+reliable approach: cap at z=19, let
-    // Leaflet's CSS up-sampling handle z=20-24 from the z=19 tiles.
-    // Most places this means pixelated real imagery at high zoom.
-    // In the rare uncovered areas you'll still see Esri's placeholder
-    // text card at z=19 (and its CSS-upsampled version higher); that's
-    // an Esri data-availability limitation, not something we can fix
-    // without switching providers (Mapbox / Bing both need API keys).
-    max: 19,
+    // Bumped back to 22 because the custom EsriCanvasTileLayer below
+    // can now handle placeholders properly: it samples each loaded
+    // tile, and if it detects the Esri placeholder it recursively
+    // walks UP the zoom tree (z-1, z-2, ...) until it finds real
+    // imagery and draws THAT scaled into the canvas, cropped to the
+    // current tile's quadrant. So you get pixelated real imagery
+    // at high zooms in poorly-covered areas instead of the gray text
+    // card -- the behaviour the user has been asking for from the
+    // start.
+    max: 22,
   },
   osm: {
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -190,6 +181,184 @@ const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max: number
     subdomains: 'abc',
   },
 };
+
+// ===== Esri placeholder detection + parent-tile canvas fallback =====
+//
+// Esri's World Imagery returns a "Map data not yet available" placeholder
+// PNG with HTTP 200 in poorly-covered areas, so there's no error code
+// to filter on. We work around it with a custom GridLayer that emits
+// <canvas> tiles instead of <img> tiles. For each requested tile we
+// load Esri's image, check whether it's the placeholder, and if so
+// recursively load the PARENT tile (z-1), drawing the relevant
+// quadrant into the canvas at 2x scale. Recursion continues up the
+// zoom tree until a real tile is found; floors at z=10 (always
+// covered globally).
+//
+// All loaded tile images are cached by (z, x, y) so a single parent
+// tile reused by all four children only fetches once. Cache is
+// per-layer-instance and cleared on layer removal.
+
+/// Pixel-sampling detector for Esri's placeholder PNG. Heuristic:
+/// sample 8 corner-ish pixels (avoiding the central text area), require
+/// all of them to be near-grayscale (R≈G≈B), within Esri's grey band
+/// (180-220), and low variance. Real satellite imagery virtually never
+/// looks like that. Returns false on CORS-tainted canvases (the bail
+/// path) so an unconfigured CORS setup degrades gracefully to the
+/// "show placeholder" baseline.
+function isEsriPlaceholder(img: HTMLImageElement | HTMLCanvasElement, ctx: CanvasRenderingContext2D): boolean {
+  // Draw image into ctx first if it's an HTMLImageElement; canvases
+  // are already drawn.
+  try {
+    if (img instanceof HTMLImageElement) {
+      if (img.naturalWidth !== 256 || img.naturalHeight !== 256) return false;
+      ctx.clearRect(0, 0, 256, 256);
+      ctx.drawImage(img, 0, 0);
+    }
+    const xs = [16, 64, 192, 240, 16, 192, 64, 240];
+    const ys = [16, 32, 32, 16, 240, 224, 224, 240];
+    let sumGrey = 0;
+    const greys: number[] = [];
+    for (let i = 0; i < xs.length; i++) {
+      const d = ctx.getImageData(xs[i], ys[i], 1, 1).data;
+      const r = d[0], g = d[1], b = d[2];
+      // Hard reject as soon as any sample fails the grey test --
+      // satellite imagery usually fails fast on the first sample.
+      const maxChan = Math.max(r, g, b);
+      const minChan = Math.min(r, g, b);
+      if (maxChan - minChan > 8) return false;
+      const grey = (r + g + b) / 3;
+      if (grey < 180 || grey > 220) return false;
+      greys.push(grey);
+      sumGrey += grey;
+    }
+    const mean = sumGrey / greys.length;
+    let variance = 0;
+    for (const v of greys) variance += (v - mean) * (v - mean);
+    variance /= greys.length;
+    return variance < 40;
+  } catch {
+    return false;
+  }
+}
+
+/// Load an Esri tile as an HTMLImageElement. Returns null on error.
+/// All requests are CORS-anonymous so the canvas reads aren't tainted.
+function loadEsriTileImage(url: string): Promise<HTMLImageElement | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+
+/// Custom canvas-based tile layer for Esri. Detects placeholders and
+/// substitutes with the parent tile at 2x scale, recursing as needed.
+/// Subclasses L.GridLayer so each tile is a fresh <canvas> we control.
+const EsriCanvasTileLayer = L.GridLayer.extend({
+  initialize: function (options: L.GridLayerOptions & { urlTemplate: string }) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (L.GridLayer.prototype as any).initialize.call(this, options);
+    // Per-layer-instance image cache: key = "z/x/y" -> Promise<image|null>.
+    // Shared across siblings so a parent tile fetched on behalf of one
+    // quadrant is reused for the other three without an extra request.
+    this._tileCache = new Map<string, Promise<HTMLImageElement | null>>();
+  },
+  // Floor for the recursive fallback. Z=10 always has global imagery
+  // (e.g. for Australia, even ocean tiles return something at z=10).
+  _floorZoom: 10,
+
+  _tileKey: function (z: number, x: number, y: number) {
+    return `${z}/${x}/${y}`;
+  },
+  _urlFor: function (z: number, x: number, y: number) {
+    // The TileLayer URL template uses {z}/{y}/{x} for Esri. Mimic.
+    return (this.options.urlTemplate as string)
+      .replace('{z}', String(z))
+      .replace('{x}', String(x))
+      .replace('{y}', String(y));
+  },
+  _loadImage: function (z: number, x: number, y: number): Promise<HTMLImageElement | null> {
+    const key = this._tileKey(z, x, y);
+    const cached = this._tileCache.get(key);
+    if (cached) return cached;
+    const p = loadEsriTileImage(this._urlFor(z, x, y));
+    this._tileCache.set(key, p);
+    return p;
+  },
+
+  createTile: function (coords: { z: number; x: number; y: number }, done: (err: Error | null, tile: HTMLElement) => void) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) {
+      // No 2d context? Shouldn't happen in any real browser. Bail.
+      done(null, canvas);
+      return canvas;
+    }
+    // Async resolution path: load the tile, check if placeholder,
+    // walk up if needed, paint to canvas, call done().
+    const that = this;
+    (async () => {
+      // Walk up the zoom tree until we find a non-placeholder tile,
+      // or until we hit the floor. Track how many levels we climbed
+      // so we know the upscale factor + quadrant offset for drawing.
+      let z = coords.z, x = coords.x, y = coords.y;
+      let scale = 1;        // 2^(levelsUp) -- how much to scale the source image when drawing
+      let img: HTMLImageElement | null = null;
+      while (z >= that._floorZoom) {
+        img = await that._loadImage(z, x, y);
+        if (img && !isEsriPlaceholder(img, ctx)) break;
+        // Placeholder (or load failure): try the parent. Each level
+        // up doubles the scale at which we'll draw the source.
+        z -= 1;
+        x = Math.floor(x / 2);
+        y = Math.floor(y / 2);
+        scale *= 2;
+      }
+      if (!img) {
+        // Total miss (even the floor failed). Leave the canvas blank
+        // -- the leaflet background colour shows; same as a 404.
+        done(null, canvas);
+        return;
+      }
+      // Figure out which quadrant of the source tile we want. Each
+      // step up halves the coordinate; the LOST low bits tell us
+      // which quadrant the original (coords.x, coords.y) lived in
+      // relative to the ancestor we ended up at.
+      const levelsUp = Math.log2(scale);                     // integer
+      const subTilesPerSide = scale;                         // e.g. 1 / 2 / 4 / 8...
+      const localX = coords.x & (subTilesPerSide - 1);       // lower N bits
+      const localY = coords.y & (subTilesPerSide - 1);
+      // Source rect within the parent (256 px wide) that we want to
+      // sample and stretch to fill our 256x256 canvas.
+      const srcSize = 256 / subTilesPerSide;
+      const srcX = localX * srcSize;
+      const srcY = localY * srcSize;
+      ctx.imageSmoothingEnabled = false;     // crisp pixelation, matches Leaflet CSS upscale
+      ctx.clearRect(0, 0, 256, 256);
+      ctx.drawImage(img, srcX, srcY, srcSize, srcSize, 0, 0, 256, 256);
+      // If we drew an upscaled parent (levelsUp > 0), faintly tag
+      // the tile so the user can tell the resolution dropped --
+      // optional, lightly subtle.
+      if (levelsUp > 0) {
+        // Intentionally no-op: the natural pixelation is the
+        // indicator. Keep this block as a deliberate decision rather
+        // than a forgotten TODO -- if visual annotation becomes
+        // desired, add a thin border or watermark here.
+      }
+      done(null, canvas);
+    })().catch(() => {
+      // Should never happen with the resolve-on-error pattern above,
+      // but keep the handler so promise rejections don't go silently
+      // into the void.
+      done(null, canvas);
+    });
+    return canvas;
+  },
+});
 
 // 1x1 transparent PNG. Returned in place of any tile that errors / 404s
 // so Leaflet keeps showing the prior good (up-sampled) tile rather than
@@ -211,14 +380,31 @@ function tileLayerOpts(b: BaseMap): L.TileLayerOptions {
     attribution: cfg.attribution,
     crossOrigin: true,
     subdomains: cfg.subdomains ?? 'abc',
-    // Silence the Esri / OSM error placeholders for HTTP errors.
-    // (Placeholder-content tiles, which come back with HTTP 200, are
-    // caught separately by PlaceholderAwareTileLayer's load handler.)
+    // Silence HTTP-error placeholders. (Esri's HTTP-200 placeholder
+    // PNGs are handled inside EsriCanvasTileLayer, not here.)
     errorTileUrl: TRANSPARENT_TILE,
     // Keep adjacent tiles around when panning so they don't pop out
     // before the new ones arrive.
     keepBuffer: 4,
   };
+}
+
+/// Build the right tile layer for a base map. Satellite uses the
+/// EsriCanvasTileLayer so we get parent-tile fallback whenever Esri
+/// serves the placeholder. Other base maps use the stock L.tileLayer.
+function makeBaseLayer(b: BaseMap): L.Layer {
+  const cfg = TILE_URLS[b];
+  if (b === 'satellite') {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return new (EsriCanvasTileLayer as any)({
+      urlTemplate: cfg.url,
+      maxNativeZoom: cfg.max,
+      maxZoom: 24,
+      attribution: cfg.attribution,
+      keepBuffer: 4,
+    });
+  }
+  return L.tileLayer(cfg.url, tileLayerOpts(b));
 }
 
 function gridToCanvas(
@@ -342,7 +528,7 @@ export function MapView({
       // Right-click context menu is harmless; LMB box-select reserves left.
       boxZoom: false,
     });
-    baseLayerRef.current = L.tileLayer(TILE_URLS[baseMap].url, tileLayerOpts(baseMap)).addTo(map);
+    baseLayerRef.current = makeBaseLayer(baseMap).addTo(map) as L.TileLayer;
     overlayGroupRef.current = L.layerGroup().addTo(map);
     barriersGroupRef.current = L.layerGroup().addTo(map);
     measureGroupRef.current = L.layerGroup().addTo(map);
@@ -573,7 +759,7 @@ export function MapView({
     if (baseLayerRef.current) {
       map.removeLayer(baseLayerRef.current);
     }
-    baseLayerRef.current = L.tileLayer(TILE_URLS[baseMap].url, tileLayerOpts(baseMap)).addTo(map);
+    baseLayerRef.current = makeBaseLayer(baseMap).addTo(map) as L.TileLayer;
     if (overlayGroupRef.current) { overlayGroupRef.current.remove(); overlayGroupRef.current.addTo(map); }
     if (barriersGroupRef.current) { barriersGroupRef.current.remove(); barriersGroupRef.current.addTo(map); }
     if (measureGroupRef.current) { measureGroupRef.current.remove(); measureGroupRef.current.addTo(map); }

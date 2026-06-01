@@ -397,13 +397,63 @@ function tsToDate(v: unknown): Date {
   return new Date(0);
 }
 
-function pruneUndefined<T extends Record<string, unknown>>(obj: T): T {
+/// DEEP-prune undefined values from an object before sending to
+/// Firestore. Firestore rejects `undefined` field values anywhere in
+/// the document tree -- not just at the top level. Optional fields
+/// on nested types (e.g. BessSegment.modeOverride, BessRow.
+/// segmentSequenceRepeat) are commonly undefined at construction time
+/// and would otherwise blow up the save with
+///   "Function setDoc() called with invalid data. Unsupported field
+///    value: undefined (found in field bessGroups.0.rows.0.segments.0
+///    .modeOverride ...)"
+///
+/// Behaviour:
+///   - Arrays: recurse into each element, keep nulls/sparse holes
+///     (Firestore accepts arrays with null entries; absent entries
+///     become null).
+///   - Plain objects: recurse, drop keys whose value is undefined OR
+///     whose recursed value becomes undefined.
+///   - Firestore sentinels (serverTimestamp, FieldValue): instances
+///     of FieldValue from the SDK -- pass through unchanged via the
+///     `_methodName` heuristic check. Same for Timestamp.
+///   - Date / number / string / boolean / null: pass through.
+///
+/// Returns the pruned value, typed loosely as it may have lost keys.
+function deepPruneUndefined<T>(value: T): T {
+  if (value === undefined) return value;     // caller decides what to do
+  if (value === null) return value;
+  if (typeof value !== 'object') return value;
+  // Firestore sentinel objects (FieldValue instances such as
+  // serverTimestamp()) carry a `_methodName` field; passing them
+  // through a `for...in` loop strips the FieldValue prototype and
+  // produces an invalid plain-object impostor. Detect and bypass.
+  if (typeof (value as { _methodName?: unknown })._methodName === 'string') {
+    return value;
+  }
+  // Firestore Timestamp / GeoPoint / etc: instanceof check via the
+  // constructor's name to avoid importing the whole SDK type set.
+  const ctorName = (value as object).constructor?.name;
+  if (ctorName === 'Timestamp' || ctorName === 'GeoPoint' || ctorName === 'DocumentReference') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => v === undefined ? null : deepPruneUndefined(v)) as unknown as T;
+  }
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(obj)) {
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
     if (v === undefined) continue;
-    out[k] = v;
+    const cleaned = deepPruneUndefined(v);
+    if (cleaned === undefined) continue;
+    out[k] = cleaned;
   }
   return out as T;
+}
+
+/// Back-compat alias for the older shallow helper. All call sites have
+/// been switched to the deep version; this just keeps the existing
+/// usages compiling and behaviourally equivalent (deep is a superset).
+function pruneUndefined<T extends Record<string, unknown>>(obj: T): T {
+  return deepPruneUndefined(obj);
 }
 
 // Default scenario when creating a brand-new project. Kept here rather
