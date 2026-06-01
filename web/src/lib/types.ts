@@ -121,6 +121,18 @@ export interface BessRow {
   /// then Inverter×1 with gapAfterM=0. An empty `segments` array
   /// makes the row a pure spacer.
   segments: BessSegment[];
+  /// Repeats the entire segment sequence WITHIN one physical row.
+  /// E.g. segments=[BESS×8, INV×1] with segmentSequenceRepeat=3 gives
+  /// [BESS×8 INV BESS×8 INV BESS×8 INV] all in one row, with
+  /// `gapBetweenSegmentSequencesM` between each repeat. Distinct from
+  /// the group-level `BessGroup.sequenceRepeat` which repeats the
+  /// entire row sequence top-to-bottom. Default 1.
+  segmentSequenceRepeat?: number;
+  /// Edge-to-edge gap (m) between adjacent copies of the segment
+  /// sequence when segmentSequenceRepeat > 1. Defaults to the last
+  /// segment's gapAfterM (if any) or 3 m. Ignored when
+  /// segmentSequenceRepeat <= 1.
+  gapBetweenSegmentSequencesM?: number;
   /// How many copies of this row template are stamped, top-to-bottom.
   /// Copies are separated by `gapBetweenCopiesM`.
   rowRepeat: number;

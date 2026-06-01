@@ -235,42 +235,61 @@ function placeRow(
   let x = 0;
   let maxLengthInRow = 0;
   const segments = row.segments ?? [];
-  for (let segIdx = 0; segIdx < segments.length; segIdx++) {
-    const seg = segments[segIdx];
-    const count = Math.max(0, Math.floor(seg.count));
-    if (count === 0) continue;
-    const entry = lookup(seg.catalogScope, seg.modelId);
-    // Catalog footprint = (widthM, lengthM) in the unit's NATIVE frame.
-    // For BESS / aux the convention is widthM = LONG axis, lengthM =
-    // SHORT axis (matches the marker rect drawn as 18×12 with the
-    // long side horizontal). "Along" orientation lays units with the
-    // long axis along the row direction (so we lay them widthM
-    // along x); "across" rotates 90° (lay lengthM along x).
-    const fp = entry ? footprintFor(entry) : { widthM: 5.1, lengthM: 1.7 };
-    const orientedWidthM = seg.orientation === 'across' ? fp.lengthM : fp.widthM;
-    const orientedLengthM = seg.orientation === 'across' ? fp.widthM : fp.lengthM;
-    if (orientedLengthM > maxLengthInRow) maxLengthInRow = orientedLengthM;
-    for (let u = 0; u < count; u++) {
-      units.push({
-        slotKey: `q${seqIdx}-r${rowIdx}-c${rowCopyIdx}-s${seg.id}-u${u}`,
-        segRef: {
-          catalogScope: seg.catalogScope,
-          modelId: seg.modelId,
-          modeOverride: seg.modeOverride,
-        },
-        centreX: x + orientedWidthM / 2,
-        centreY: y + orientedLengthM / 2,
-        widthM: orientedWidthM,
-        lengthM: orientedLengthM,
-      });
-      x += orientedWidthM;
-      // Intra-segment spacing applies between consecutive units in the
-      // same segment only. The LAST unit in the segment gets the
-      // segment's gapAfterM appended (handled below).
-      if (u < count - 1) x += seg.spacingWithinM;
+  // Per-row "segment-sequence repeat": stamps the entire segment list
+  // N times WITHIN one physical row. E.g. [BESS×8, INV×1] with reps=3
+  // -> [BESS×8 INV BESS×8 INV BESS×8 INV] inline. Distinct from
+  // group.sequenceRepeat (which stamps row sequences top-to-bottom).
+  // Defaults to 1 (no inline repeat); inter-repeat spacing comes from
+  // row.gapBetweenSegmentSequencesM, with sensible fallbacks.
+  const segSeqReps = Math.max(1, row.segmentSequenceRepeat ?? 1);
+  const lastSegGap = segments.length > 0 ? (segments[segments.length - 1].gapAfterM || 0) : 0;
+  const segSeqGap = row.gapBetweenSegmentSequencesM ?? (lastSegGap > 0 ? lastSegGap : 3);
+  for (let segSeqIdx = 0; segSeqIdx < segSeqReps; segSeqIdx++) {
+    for (let segIdx = 0; segIdx < segments.length; segIdx++) {
+      const seg = segments[segIdx];
+      const count = Math.max(0, Math.floor(seg.count));
+      if (count === 0) continue;
+      const entry = lookup(seg.catalogScope, seg.modelId);
+      // Catalog footprint = (widthM, lengthM) in the unit's NATIVE frame.
+      // For BESS / aux the convention is widthM = LONG axis, lengthM =
+      // SHORT axis (matches the marker rect drawn as 18×12 with the
+      // long side horizontal). "Along" orientation lays units with the
+      // long axis along the row direction (so we lay them widthM
+      // along x); "across" rotates 90° (lay lengthM along x).
+      const fp = entry ? footprintFor(entry) : { widthM: 5.1, lengthM: 1.7 };
+      const orientedWidthM = seg.orientation === 'across' ? fp.lengthM : fp.widthM;
+      const orientedLengthM = seg.orientation === 'across' ? fp.widthM : fp.lengthM;
+      if (orientedLengthM > maxLengthInRow) maxLengthInRow = orientedLengthM;
+      for (let u = 0; u < count; u++) {
+        units.push({
+          // Slot key gains the segment-sequence index (k) so per-unit
+          // overrides survive a change in segmentSequenceRepeat. Older
+          // keys (without k) continue to work via existingOverrides
+          // lookup; they just won't match any post-rewrite slots, which
+          // is the correct behaviour for a structural change.
+          slotKey: `q${seqIdx}-r${rowIdx}-c${rowCopyIdx}-k${segSeqIdx}-s${seg.id}-u${u}`,
+          segRef: {
+            catalogScope: seg.catalogScope,
+            modelId: seg.modelId,
+            modeOverride: seg.modeOverride,
+          },
+          centreX: x + orientedWidthM / 2,
+          centreY: y + orientedLengthM / 2,
+          widthM: orientedWidthM,
+          lengthM: orientedLengthM,
+        });
+        x += orientedWidthM;
+        // Intra-segment spacing applies between consecutive units in the
+        // same segment only. The LAST unit in the segment gets the
+        // segment's gapAfterM appended (handled below).
+        if (u < count - 1) x += seg.spacingWithinM;
+      }
+      // Gap to next segment (skipped for the final segment in the
+      // current sequence copy -- handled by segSeqGap below).
+      if (segIdx < segments.length - 1) x += seg.gapAfterM;
     }
-    // Gap to next segment (skipped for the final segment in the row).
-    if (segIdx < segments.length - 1) x += seg.gapAfterM;
+    // Gap between sequence copies (skipped after the final copy).
+    if (segSeqIdx < segSeqReps - 1) x += segSeqGap;
   }
   return { units, rowLengthM: maxLengthInRow };
 }

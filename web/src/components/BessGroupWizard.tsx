@@ -457,7 +457,25 @@ function BessRowCard(p: RowCardProps) {
               <button type="button" onClick={p.onAddSegment} style={ghostBtnTinyStyle}>+ add segment</button>
             </div>
             <label style={fieldStyleSm}>
-              <span style={fieldLabelStyle}>Repeat row × N</span>
+              <span style={fieldLabelStyle} title="Repeats the segment sequence WITHIN this one row. E.g. [BESS×8, INV×1] × 3 gives BESS×8 INV BESS×8 INV BESS×8 INV inline.">
+                Repeat segment sequence × N (within row)
+              </span>
+              <NumberDraft value={row.segmentSequenceRepeat ?? 1} min={1} step={1} integer
+                onCommit={(v) => p.onChange({ segmentSequenceRepeat: v })} />
+            </label>
+            <label style={fieldStyleSm}>
+              <span style={fieldLabelStyle}>Gap between segment sequences (m)</span>
+              <NumberDraft
+                value={row.gapBetweenSegmentSequencesM
+                  ?? ((row.segments.length > 0 && row.segments[row.segments.length - 1].gapAfterM > 0)
+                    ? row.segments[row.segments.length - 1].gapAfterM
+                    : 3)}
+                min={0} step={0.1}
+                disabled={(row.segmentSequenceRepeat ?? 1) <= 1}
+                onCommit={(v) => p.onChange({ gapBetweenSegmentSequencesM: v })} />
+            </label>
+            <label style={fieldStyleSm}>
+              <span style={fieldLabelStyle}>Repeat row × N (stacks rows down)</span>
               <NumberDraft value={row.rowRepeat} min={1} step={1} integer
                 onCommit={(v) => p.onChange({ rowRepeat: v })} />
             </label>

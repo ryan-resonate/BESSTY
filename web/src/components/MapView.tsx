@@ -163,16 +163,15 @@ const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max: number
   satellite: {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attribution: '© Esri',
-    // Esri World Imagery is documented as serving global coverage up
-    // to z=19. Past that, it returns an HTTP 200 "Map data not yet
-    // available" placeholder PNG -- which means errorTileUrl
-    // (404-only) never fires, and the user sees the placeholder.
-    // We previously bumped this to 22 hoping for sharper tiles in
-    // populated areas; that just made the placeholder show MORE
-    // often. Capping at 19 and relying on Leaflet's CSS up-sampling
-    // (maxZoom: 24) for higher zooms is the correct trade-off:
-    // smooth pixelation instead of placeholders.
-    max: 19,
+    // Bumped to 22: Esri DOES have imagery past z=19 in many populated
+    // areas (urban / coastal / industrial sites). Where it doesn't, the
+    // tile content IS the "Map data not yet available" placeholder PNG
+    // served with HTTP 200 -- so errorTileUrl never fires. We detect
+    // the placeholder client-side via pixel sampling (see
+    // PlaceholderAwareTileLayer below) and substitute a transparent
+    // tile so Leaflet's parent-tile fallback shows through, giving
+    // smooth pixelation instead of the gray text card.
+    max: 22,
   },
   osm: {
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -183,10 +182,109 @@ const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max: number
 };
 
 // 1x1 transparent PNG. Returned in place of any tile that errors / 404s
-// so Leaflet keeps showing the prior good (up-sampled) tile rather than
-// rendering the provider's "Map data not yet available" placeholder.
+// or that the placeholder detector identifies as the Esri "no coverage"
+// card, so Leaflet keeps showing the prior good (up-sampled) tile
+// rather than rendering the provider's placeholder image.
 const TRANSPARENT_TILE =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+
+/// Detects Esri's "Map data not yet available" placeholder by sampling
+/// a handful of pixels from the loaded tile image. The placeholder is
+/// a near-uniform light-gray PNG with darker text in the centre. Real
+/// satellite imagery virtually never looks like that, so the heuristic
+/// is very safe: sample several pixels avoiding the centre (where the
+/// placeholder has text), require ALL of them to be near-grayscale
+/// (R≈G≈B) AND close to the placeholder's grey level (~200 / 255), AND
+/// have minimal variance across samples. False positives would require
+/// a real tile that's almost-perfectly uniform mid-gray, which doesn't
+/// happen in satellite imagery.
+function isEsriPlaceholder(img: HTMLImageElement): boolean {
+  // Tiles are always 256×256. If width is unexpected, bail.
+  if (img.naturalWidth !== 256 || img.naturalHeight !== 256) return false;
+  try {
+    // Reusable canvas (created once, sized to 256). Drawing into it is
+    // microseconds; the actual hot path is the getImageData call.
+    const canvas = placeholderDetectCanvas;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return false;
+    ctx.clearRect(0, 0, 256, 256);
+    ctx.drawImage(img, 0, 0);
+    // Sample 8 points spread across the tile, avoiding the central
+    // text area (~80-176 px). The placeholder background is uniform
+    // around these points.
+    const xs = [16, 64, 192, 240, 16, 192, 64, 240];
+    const ys = [16, 32, 32, 16, 240, 224, 224, 240];
+    let sumGrey = 0;
+    const greys: number[] = [];
+    for (let i = 0; i < xs.length; i++) {
+      const d = ctx.getImageData(xs[i], ys[i], 1, 1).data;
+      const r = d[0], g = d[1], b = d[2];
+      // Hard reject as soon as any sample fails the grey test --
+      // typical satellite imagery has a colour cast (greens, browns,
+      // blues) that fails this quickly without paying for all 8 reads.
+      const maxChan = Math.max(r, g, b);
+      const minChan = Math.min(r, g, b);
+      if (maxChan - minChan > 8) return false;
+      // Esri placeholder grey is around 200/255; allow ±20 tolerance.
+      const grey = (r + g + b) / 3;
+      if (grey < 180 || grey > 220) return false;
+      greys.push(grey);
+      sumGrey += grey;
+    }
+    // All samples grey and in-range. Final check: low variance (the
+    // placeholder background is essentially flat).
+    const mean = sumGrey / greys.length;
+    let variance = 0;
+    for (const v of greys) variance += (v - mean) * (v - mean);
+    variance /= greys.length;
+    return variance < 40;
+  } catch {
+    // CORS-tainted canvas (no crossOrigin or server doesn't echo CORS
+    // headers) throws on getImageData. Fall through to "not a
+    // placeholder" -- worst case the user sees the placeholder, same
+    // as before this fix.
+    return false;
+  }
+}
+// Reusable detection canvas. Created once outside any hot path.
+const placeholderDetectCanvas: HTMLCanvasElement = (() => {
+  const c = typeof document !== 'undefined' ? document.createElement('canvas') : {} as HTMLCanvasElement;
+  if (c instanceof HTMLCanvasElement) { c.width = 256; c.height = 256; }
+  return c;
+})();
+
+/// L.TileLayer subclass that runs every loaded tile through the
+/// placeholder detector and rewrites the src to a transparent PNG when
+/// the detector fires. The transparent tile lets Leaflet's parent-tile
+/// up-sampling show through, which is exactly the smooth-pixelation
+/// behaviour we want at high zooms over poorly-covered areas.
+const PlaceholderAwareTileLayer = L.TileLayer.extend({
+  createTile: function (coords: { z: number; x: number; y: number }, done: (err: Error | null, tile?: HTMLElement) => void) {
+    const tile = document.createElement('img') as HTMLImageElement;
+    // Honour the base class' standard options (CORS, alt text).
+    tile.alt = '';
+    // We need crossOrigin so the canvas read isn't tainted -- without
+    // this, isEsriPlaceholder returns false on every tile and the fix
+    // is silently dead.
+    if (this.options.crossOrigin || this.options.crossOrigin === '') {
+      tile.crossOrigin = this.options.crossOrigin === true ? '' : (this.options.crossOrigin as string);
+    } else {
+      tile.crossOrigin = '';
+    }
+    L.DomEvent.on(tile, 'load', () => {
+      if (isEsriPlaceholder(tile)) {
+        tile.src = TRANSPARENT_TILE;
+      }
+      done(null, tile);
+    });
+    L.DomEvent.on(tile, 'error', () => {
+      tile.src = this.options.errorTileUrl as string ?? TRANSPARENT_TILE;
+      done(null, tile);
+    });
+    tile.src = this.getTileUrl(coords);
+    return tile;
+  },
+});
 
 function tileLayerOpts(b: BaseMap): L.TileLayerOptions {
   const cfg = TILE_URLS[b];
@@ -202,15 +300,28 @@ function tileLayerOpts(b: BaseMap): L.TileLayerOptions {
     attribution: cfg.attribution,
     crossOrigin: true,
     subdomains: cfg.subdomains ?? 'abc',
-    // Silence the Esri / OSM error placeholders. When a tile 404s
-    // (out of coverage area or above native zoom), Leaflet falls back
-    // to up-sampling the parent tile -- exactly what we want for
-    // smooth pixelated zoom-in.
+    // Silence the Esri / OSM error placeholders for HTTP errors.
+    // (Placeholder-content tiles, which come back with HTTP 200, are
+    // caught separately by PlaceholderAwareTileLayer's load handler.)
     errorTileUrl: TRANSPARENT_TILE,
     // Keep adjacent tiles around when panning so they don't pop out
     // before the new ones arrive.
     keepBuffer: 4,
   };
+}
+
+/// Construct the right tile-layer instance for a base map. Esri uses
+/// the placeholder-aware subclass; other providers don't serve the
+/// "no coverage" placeholder pattern, so they go through the stock
+/// L.tileLayer for one less canvas round-trip per tile.
+function makeTileLayer(b: BaseMap): L.TileLayer {
+  const url = TILE_URLS[b].url;
+  const opts = tileLayerOpts(b);
+  if (b === 'satellite') {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return new (PlaceholderAwareTileLayer as any)(url, opts) as L.TileLayer;
+  }
+  return L.tileLayer(url, opts);
 }
 
 function gridToCanvas(
@@ -334,7 +445,7 @@ export function MapView({
       // Right-click context menu is harmless; LMB box-select reserves left.
       boxZoom: false,
     });
-    baseLayerRef.current = L.tileLayer(TILE_URLS[baseMap].url, tileLayerOpts(baseMap)).addTo(map);
+    baseLayerRef.current = makeTileLayer(baseMap).addTo(map);
     overlayGroupRef.current = L.layerGroup().addTo(map);
     barriersGroupRef.current = L.layerGroup().addTo(map);
     measureGroupRef.current = L.layerGroup().addTo(map);
@@ -565,7 +676,7 @@ export function MapView({
     if (baseLayerRef.current) {
       map.removeLayer(baseLayerRef.current);
     }
-    baseLayerRef.current = L.tileLayer(TILE_URLS[baseMap].url, tileLayerOpts(baseMap)).addTo(map);
+    baseLayerRef.current = makeTileLayer(baseMap).addTo(map);
     if (overlayGroupRef.current) { overlayGroupRef.current.remove(); overlayGroupRef.current.addTo(map); }
     if (barriersGroupRef.current) { barriersGroupRef.current.remove(); barriersGroupRef.current.addTo(map); }
     if (measureGroupRef.current) { measureGroupRef.current.remove(); measureGroupRef.current.addTo(map); }
@@ -1124,9 +1235,10 @@ export function MapView({
         g.centerLatLng[0] + (-topEdgeWY / R) * (180 / Math.PI),
         g.centerLatLng[1] + (topEdgeWX / (R * cosLat)) * (180 / Math.PI),
       ];
-      L.polyline([topEdgeLatLng, rotHandleLatLng], {
+      const rotStem = L.polyline([topEdgeLatLng, rotHandleLatLng], {
         color: '#1f2937', weight: 1.5, opacity: 0.85, interactive: false,
-      }).addTo(layer);
+      });
+      rotStem.addTo(layer);
       const rotHandle = L.marker(rotHandleLatLng, {
         draggable: true,
         bubblingMouseEvents: false,
@@ -1143,30 +1255,91 @@ export function MapView({
         }),
         title: 'Rotate group',
       });
+      // Live rotation visualisation (fix #16). Mirror the centre-drag
+      // pattern: snapshot every member marker's lat/lng + the bounding
+      // poly's corners + the stem polyline's endpoints relative to the
+      // group centre on dragstart. On each `drag` event, transform
+      // each snapshot point by the delta rotation about the group
+      // centre and apply via setLatLng / setLatLngs. State write
+      // happens only on dragend so the snapshot recompute doesn't fire
+      // on every mousemove.
+      //
+      // Coord model: convert lat/lng -> local metres about
+      // g.centerLatLng, rotate by deltaDeg (clockwise from north), and
+      // convert back. Same equirectangular shorthand the materialiser
+      // uses; sub-cm accuracy at site scale.
+      type RotSnapshot = {
+        cLL: L.LatLng;
+        startAngleRad: number;
+        startRotDeg: number;
+        members: Map<string, { lx: number; ly: number }>;
+        polyCorners: Array<{ lx: number; ly: number }>;
+        stemEndpoints: Array<{ lx: number; ly: number }>;
+      };
+      let rotSnap: RotSnapshot | null = null;
+      const toLocalM = (cLL: L.LatLng, p: L.LatLng): { lx: number; ly: number } => ({
+        lx: (p.lng - cLL.lng) * (Math.PI / 180) * R * cosLat,
+        ly: -(p.lat - cLL.lat) * (Math.PI / 180) * R,
+      });
+      const fromLocalM = (cLL: L.LatLng, lx: number, ly: number): [number, number] => [
+        cLL.lat + (-ly / R) * (180 / Math.PI),
+        cLL.lng + (lx / (R * cosLat)) * (180 / Math.PI),
+      ];
+
       rotHandle.on('dragstart', () => {
         const cLL = L.latLng(g.centerLatLng[0], g.centerLatLng[1]);
         const here = rotHandle.getLatLng();
         const dx0 = (here.lng - cLL.lng) * cosLat;
         const dy0 = here.lat - cLL.lat;
         const angle0 = Math.atan2(dx0, dy0);  // clockwise from north
-        dragRefs.set(g.id, {
-          startCentre: cLL,
-          startAngleRad: angle0,
-          startRotDeg: g.rotationDeg,
-        });
+        // Snapshot every member marker + the bounding poly + the stem.
+        const memberSnap = new Map<string, { lx: number; ly: number }>();
+        for (const m of members) {
+          const mk = markersByIdRef.current.get(m.id);
+          if (mk) memberSnap.set(m.id, toLocalM(cLL, mk.getLatLng()));
+        }
+        const polyCorners = (poly.getLatLngs()[0] as L.LatLng[]).map((p) => toLocalM(cLL, p));
+        const stemEndpoints = (rotStem.getLatLngs() as L.LatLng[]).map((p) => toLocalM(cLL, p));
+        rotSnap = { cLL, startAngleRad: angle0, startRotDeg: g.rotationDeg, members: memberSnap, polyCorners, stemEndpoints };
+        dragRefs.set(g.id, { startCentre: cLL, startAngleRad: angle0, startRotDeg: g.rotationDeg });
       });
       rotHandle.on('drag', () => {
-        const ref = dragRefs.get(g.id);
-        if (!ref) return;
+        const snap = rotSnap;
+        if (!snap) return;
         const here = rotHandle.getLatLng();
-        const dx = (here.lng - ref.startCentre.lng) * cosLat;
-        const dy = here.lat - ref.startCentre.lat;
+        const dx = (here.lng - snap.cLL.lng) * cosLat;
+        const dy = here.lat - snap.cLL.lat;
         const angleNow = Math.atan2(dx, dy);
-        const deltaDeg = ((angleNow - ref.startAngleRad) * 180) / Math.PI;
-        // Live preview: don't fire the callback until dragend (would
-        // re-render the whole group mid-drag, which fights Leaflet).
-        // Show interim rotation by stashing it on a custom property.
-        rotHandle.options.title = `${(ref.startRotDeg + deltaDeg).toFixed(0)}°`;
+        const deltaRad = angleNow - snap.startAngleRad;
+        // Rotation of a point (lx, ly) about origin by deltaRad
+        // CLOCKWISE (matching the materialiser's screen-clockwise
+        // convention with y pointing south). Standard 2D rotation
+        // matrix with the sign convention consistent with materialiser:
+        //   x' =  lx * cos - ly * sin
+        //   y' =  lx * sin + ly * cos
+        const cosD = Math.cos(deltaRad), sinD = Math.sin(deltaRad);
+        const rot = (p: { lx: number; ly: number }): { lx: number; ly: number } => ({
+          lx: p.lx * cosD - p.ly * sinD,
+          ly: p.lx * sinD + p.ly * cosD,
+        });
+        // Apply to every member marker.
+        for (const [id, pt] of snap.members) {
+          const r = rot(pt);
+          const mk = markersByIdRef.current.get(id);
+          if (mk) mk.setLatLng(fromLocalM(snap.cLL, r.lx, r.ly));
+        }
+        // Apply to bounding poly + stem.
+        poly.setLatLngs(snap.polyCorners.map((p) => {
+          const r = rot(p);
+          return fromLocalM(snap.cLL, r.lx, r.ly);
+        }));
+        rotStem.setLatLngs(snap.stemEndpoints.map((p) => {
+          const r = rot(p);
+          return fromLocalM(snap.cLL, r.lx, r.ly);
+        }));
+        // Title tooltip for numeric feedback.
+        const deltaDeg = (deltaRad * 180) / Math.PI;
+        rotHandle.options.title = `${(snap.startRotDeg + deltaDeg).toFixed(0)}°`;
       });
       rotHandle.on('dragend', () => {
         const ref = dragRefs.get(g.id);
@@ -1180,6 +1353,7 @@ export function MapView({
         // Normalise to [-180, 180].
         while (nextDeg > 180) nextDeg -= 360;
         while (nextDeg < -180) nextDeg += 360;
+        rotSnap = null;
         callbacksRef.current.onRotateBessGroup?.(g.id, +nextDeg.toFixed(1));
         dragRefs.delete(g.id);
       });
