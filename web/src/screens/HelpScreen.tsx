@@ -124,17 +124,21 @@ export function HelpScreen() {
       <section id="barriers">
         <h2>Barriers</h2>
         <p>
-          Click <b>+ Barrier</b>, then click two points on the map to drop a
-          straight wall between them. Each barrier carries a top height (m
-          above local ground) — edited inline in the Barriers tab list. The
+          Click <b>+ Barrier</b>, then click on the map to drop each wall
+          vertex — <b>double-click</b> or press <b>Enter</b> to finish. A wall
+          can be a single straight segment (two clicks) or a multi-vertex
+          polyline that bends around a site. Each barrier carries a top height
+          (m above local ground) — edited inline in the Barriers tab list. The
           solver applies <code>Abar</code> per ISO 9613-2 §7.4 along every
           source → receiver path that the wall intersects, combining the
           per-band <code>Dz</code> with <code>Agr</code> per the convention
           chosen in Settings.
         </p>
         <p className="hint">
-          Esc cancels an in-progress draw. The map shows each barrier with a
-          height label at its midpoint.
+          While drawing: <b>Backspace</b> removes the last vertex, <b>Esc</b>
+          cancels the draw. After placing a wall, select it to drag any vertex
+          or the whole line. The map shows each barrier with a height label at
+          its midpoint.
         </p>
       </section>
 

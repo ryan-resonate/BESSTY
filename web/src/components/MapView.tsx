@@ -28,9 +28,10 @@ interface Props {
   onBoxSelect(ids: string[], modifiers?: { shift?: boolean }): void;
   onAddSource?(latLng: [number, number]): void;
   onAddReceiver?(latLng: [number, number]): void;
-  /// Called once the user clicks the second endpoint of a barrier draw.
-  /// Parent picks the next id, default name, default height etc.
-  onAddBarrier?(a: [number, number], b: [number, number]): void;
+  /// Called once the user finishes a barrier draw (double-click / Enter).
+  /// The polyline carries every vertex placed (≥2). Parent picks the next
+  /// id, default name, default height etc.
+  onAddBarrierPolyline?(polyline: Array<[number, number]>): void;
   /// Called on barrier-vertex drag-end. The vertex array IS the new
   /// `polylineLatLng` value — parent replaces it wholesale (and saves
   /// it to the project). Same callback is used for both endpoint drags
@@ -441,7 +442,7 @@ function gridToCanvas(
 
 export function MapView({
   project, results, grid, selectedIds, onSelect, onBoxSelect,
-  onAddSource, onAddReceiver, onAddBarrier, onUpdateBarrier, onMoveSource, onMoveReceiver,
+  onAddSource, onAddReceiver, onAddBarrierPolyline, onUpdateBarrier, onMoveSource, onMoveReceiver,
   onResizeCalcArea, onMoveCalcArea,
   onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
   addMode, baseMap, showContours, showGridDebug, contourMode, contourOpacity, contourStepDb,
@@ -476,10 +477,19 @@ export function MapView({
   const measurePointsRef = useRef<L.LatLng[]>([]);
   /// Layer + draft state for the in-progress barrier draw. The layer
   /// group hosts both the persistent barrier polylines AND the live
-  /// preview while the user is mid-draw (first endpoint placed, mouse
-  /// hovering for the second).
+  /// preview while the user is mid-draw. A draw accumulates an ordered
+  /// list of `points` (each click drops one vertex + a `dot` marker);
+  /// `cursor` is the live mouse position used to rubber-band the next
+  /// segment; `preview` is the dashed polyline through points + cursor.
+  /// Double-click / Enter commits (≥2 points); Esc (mode exit) cancels;
+  /// Backspace removes the last vertex.
   const barriersGroupRef = useRef<L.LayerGroup | null>(null);
-  const barrierDraftRef = useRef<{ start: L.LatLng; preview: L.Polyline | null } | null>(null);
+  const barrierDraftRef = useRef<{
+    points: L.LatLng[];
+    cursor: L.LatLng | null;
+    preview: L.Polyline | null;
+    dots: L.CircleMarker[];
+  } | null>(null);
   /// BESS-group overlays: one bounding rect, rotation handle, centre
   /// handle per group. Re-rendered when project.bessGroups, the
   /// materialised sources, or the selection change.
@@ -506,13 +516,13 @@ export function MapView({
   // state on every frame, which would otherwise rebuild markers — and a
   // marker rebuilt mid-drag drops the drag interaction).
   const callbacksRef = useRef({
-    onAddSource, onAddReceiver, onAddBarrier, onUpdateBarrier, onMoveSource, onMoveReceiver,
+    onAddSource, onAddReceiver, onAddBarrierPolyline, onUpdateBarrier, onMoveSource, onMoveReceiver,
     onResizeCalcArea, onMoveCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
     onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
   });
   useEffect(() => {
     callbacksRef.current = {
-      onAddSource, onAddReceiver, onAddBarrier, onUpdateBarrier, onMoveSource, onMoveReceiver,
+      onAddSource, onAddReceiver, onAddBarrierPolyline, onUpdateBarrier, onMoveSource, onMoveReceiver,
       onResizeCalcArea, onMoveCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
       onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
     };
@@ -667,23 +677,87 @@ export function MapView({
     window.addEventListener('mousemove', onBoxMove);
     window.addEventListener('mouseup', onBoxUp);
 
+    // ---- Multi-vertex barrier draw helpers ----
+    // The draft (barrierDraftRef) accumulates vertices on each click; the
+    // dashed preview rubber-bands from the last vertex to the cursor. These
+    // close over `map` + the stable refs, so they're defined once here and
+    // reused by the click / dblclick / keydown handlers below.
+    const redrawBarrierDraft = () => {
+      const draft = barrierDraftRef.current;
+      const group = barriersGroupRef.current;
+      if (!draft || !group) return;
+      if (draft.preview) { draft.preview.remove(); draft.preview = null; }
+      const pts = draft.cursor ? [...draft.points, draft.cursor] : draft.points.slice();
+      if (pts.length >= 2) {
+        draft.preview = L.polyline(pts, {
+          color: '#F2CB00', weight: 3, dashArray: '6 4', opacity: 0.95,
+        }).addTo(group);
+      }
+    };
+    const clearBarrierDraft = () => {
+      const draft = barrierDraftRef.current;
+      if (!draft) return;
+      if (draft.preview) draft.preview.remove();
+      for (const d of draft.dots) d.remove();
+      barrierDraftRef.current = null;
+    };
+    const finishBarrierDraft = () => {
+      const draft = barrierDraftRef.current;
+      if (!draft) return;
+      const pts = draft.points.map((p): [number, number] => [p.lat, p.lng]);
+      clearBarrierDraft();
+      if (pts.length >= 2) callbacksRef.current.onAddBarrierPolyline?.(pts);
+    };
+    const undoLastBarrierVertex = () => {
+      const draft = barrierDraftRef.current;
+      if (!draft || draft.points.length === 0) return;
+      draft.points.pop();
+      const dot = draft.dots.pop();
+      if (dot) dot.remove();
+      redrawBarrierDraft();
+    };
+    // Enter commits the polyline; Backspace removes the last vertex. (Esc is
+    // handled by ProjectScreen, which exits barrier mode → the mode-change
+    // effect clears the draft.)
+    const onBarrierKey = (ev: KeyboardEvent) => {
+      if (callbacksRef.current.addMode !== 'barrier' || !barrierDraftRef.current) return;
+      if (ev.key === 'Enter') { ev.preventDefault(); finishBarrierDraft(); }
+      else if (ev.key === 'Backspace') { ev.preventDefault(); undoLastBarrierVertex(); }
+    };
+    window.addEventListener('keydown', onBarrierKey);
+
+    map.on('dblclick', () => {
+      // doubleClickZoom is disabled while in barrier mode (see the addMode
+      // effect), so this only commits the wall.
+      if (callbacksRef.current.addMode === 'barrier') finishBarrierDraft();
+    });
+
     map.on('click', (e: L.LeafletMouseEvent) => {
-      const { addMode, onAddSource, onAddReceiver, onAddBarrier } = callbacksRef.current;
+      const { addMode, onAddSource, onAddReceiver } = callbacksRef.current;
       const latLng: [number, number] = [e.latlng.lat, e.latlng.lng];
       if (addMode === 'barrier') {
-        const draft = barrierDraftRef.current;
+        const group = barriersGroupRef.current;
+        if (!group) return;
+        let draft = barrierDraftRef.current;
         if (!draft) {
-          // First endpoint — drop a marker, no callback yet.
-          barrierDraftRef.current = { start: e.latlng, preview: null };
+          draft = { points: [], cursor: null, preview: null, dots: [] };
+          barrierDraftRef.current = draft;
+        }
+        // A double-click fires two `click`s at (almost) the same pixel before
+        // the `dblclick`. Drop the near-duplicate so we don't append a
+        // zero-length vertex at the finish point.
+        const last = draft.points[draft.points.length - 1];
+        if (last && map.latLngToContainerPoint(last)
+          .distanceTo(map.latLngToContainerPoint(e.latlng)) < 8) {
           return;
         }
-        // Second endpoint — commit the segment and reset for the next one.
-        onAddBarrier?.(
-          [draft.start.lat, draft.start.lng],
-          [latLng[0], latLng[1]],
+        draft.points.push(e.latlng);
+        draft.dots.push(
+          L.circleMarker(e.latlng, {
+            radius: 4, color: '#F2CB00', fillColor: '#F2CB00', fillOpacity: 1, weight: 2,
+          }).addTo(group),
         );
-        if (draft.preview) draft.preview.remove();
-        barrierDraftRef.current = null;
+        redrawBarrierDraft();
         return;
       }
       if (addMode === 'measure') {
@@ -737,11 +811,9 @@ export function MapView({
         });
       }
       const draft = barrierDraftRef.current;
-      if (draft && barriersGroupRef.current) {
-        if (draft.preview) draft.preview.remove();
-        draft.preview = L.polyline([draft.start, e.latlng], {
-          color: '#F2CB00', weight: 3, dashArray: '6 4', opacity: 0.95,
-        }).addTo(barriersGroupRef.current);
+      if (draft && barriersGroupRef.current && draft.points.length > 0) {
+        draft.cursor = e.latlng;
+        redrawBarrierDraft();
       }
     });
     map.on('mouseout', () => {
@@ -762,6 +834,7 @@ export function MapView({
       window.removeEventListener('mouseup', onMmbUp);
       window.removeEventListener('mousemove', onBoxMove);
       window.removeEventListener('mouseup', onBoxUp);
+      window.removeEventListener('keydown', onBarrierKey);
       map.remove();
       mapRef.current = null;
       baseLayerRef.current = null;
@@ -797,13 +870,23 @@ export function MapView({
     }
   }, [addMode]);
 
-  // Clear an in-flight barrier draft when leaving barrier mode (Esc, mode
-  // toggle, etc). The persistent layers are repainted by the next effect.
+  // Barrier mode: disable double-click-zoom (dblclick commits the wall) and,
+  // when leaving barrier mode (Esc, mode toggle, etc), clear any in-flight
+  // draft — vertices, dots and preview. The persistent layers are repainted
+  // by the next effect.
   useEffect(() => {
+    const map = mapRef.current;
+    if (map) {
+      if (addMode === 'barrier') map.doubleClickZoom.disable();
+      else map.doubleClickZoom.enable();
+    }
     if (addMode !== 'barrier') {
       const draft = barrierDraftRef.current;
-      if (draft?.preview) draft.preview.remove();
-      barrierDraftRef.current = null;
+      if (draft) {
+        if (draft.preview) draft.preview.remove();
+        for (const d of draft.dots) d.remove();
+        barrierDraftRef.current = null;
+      }
     }
   }, [addMode]);
 
@@ -814,11 +897,15 @@ export function MapView({
     const map = mapRef.current;
     const group = barriersGroupRef.current;
     if (!map || !group) return;
-    // Wipe everything except a live draft line — we re-add persistent
-    // segments from project.barriers.
+    // Wipe everything except a live draft — we re-add persistent segments
+    // from project.barriers, then restore the in-progress draft's preview
+    // line and vertex dots so a mid-draw selection change doesn't erase it.
     const draft = barrierDraftRef.current;
     group.clearLayers();
-    if (draft?.preview) draft.preview.addTo(group);
+    if (draft) {
+      if (draft.preview) draft.preview.addTo(group);
+      for (const d of draft.dots) d.addTo(group);
+    }
 
     // Endpoint drag handle — small yellow square, identical look to the
     // calc-area corners so the affordance reads consistently.
@@ -915,9 +1002,11 @@ export function MapView({
       });
       hit.addTo(group);
 
-      // Height label at the segment midpoint.
-      const a = b.polylineLatLng[0];
-      const c = b.polylineLatLng[1];
+      // Height label at the polyline's middle — for a multi-vertex wall this
+      // is the midpoint of the central segment, not the first one.
+      const midSeg = Math.max(0, Math.floor((b.polylineLatLng.length - 1) / 2));
+      const a = b.polylineLatLng[midSeg];
+      const c = b.polylineLatLng[midSeg + 1] ?? b.polylineLatLng[midSeg];
       const midLatLng = L.latLng((a[0] + c[0]) / 2, (a[1] + c[1]) / 2);
       L.marker(midLatLng, {
         icon: L.divIcon({

@@ -942,15 +942,18 @@ export function ProjectScreen() {
     });
   }
 
-  function handleAddBarrier(a: [number, number], b: [number, number]) {
+  function handleAddBarrierPolyline(polyline: Array<[number, number]>) {
     if (!project) return;
-    if (![a[0], a[1], b[0], b[1]].every(Number.isFinite)) return;
+    if (polyline.length < 2) return;
+    for (const [la, ln] of polyline) {
+      if (!Number.isFinite(la) || !Number.isFinite(ln)) return;
+    }
     const id = newId('B');
     const newBarrier: Barrier = {
       id,
       name: `Barrier ${project.barriers.length + 1}`,
       type: 'wall',
-      polylineLatLng: [a, b],
+      polylineLatLng: polyline,
       topHeightsM: [5],         // sensible default; user edits in the Barriers tab
       baseFromGroundM: 0,
       surfaceDensityKgM2: 20,   // reflective wall — only matters when reflections land
@@ -1360,7 +1363,7 @@ export function ProjectScreen() {
           dbDomain={dbDomain}
           onAddSource={handleAddSource}
           onAddReceiver={handleAddReceiver}
-          onAddBarrier={handleAddBarrier}
+          onAddBarrierPolyline={handleAddBarrierPolyline}
           onUpdateBarrier={handleUpdateBarrier}
           onMoveSource={handleMoveSource}
           onMoveReceiver={handleMoveReceiver}

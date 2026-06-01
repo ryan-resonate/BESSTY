@@ -1387,15 +1387,16 @@ function BarriersTab(props: Props) {
         </div>
         {addMode === 'barrier' && (
           <div className="hint">
-            Click two points on the map to draw a wall between them. Esc cancels mid-draw.
+            Click to drop each wall vertex; double-click or press Enter to
+            finish. Backspace removes the last vertex; Esc cancels mid-draw.
+            A two-click wall is just a straight segment.
           </div>
         )}
         <div className="hint">
-          Barriers are straight wall segments characterised by their top
-          height. The solver applies <code>Abar</code> (ISO 9613-2 §7.4)
-          along every source → receiver path that the wall intersects, with
-          the per-band Dz combined with Agr per the convention chosen in
-          Settings.
+          Barriers are polyline walls characterised by their top height. The
+          solver applies <code>Abar</code> (ISO 9613-2 §7.4) along every
+          source → receiver path that the wall intersects, with the per-band
+          Dz combined with Agr per the convention chosen in Settings.
         </div>
       </Card>
 
@@ -1438,16 +1439,21 @@ function BarriersTab(props: Props) {
   );
 }
 
-/// Approximate ground-distance between the first two points of a barrier
-/// polyline. Used purely for display in the barrier-list meta line.
+/// Approximate total ground-length of a barrier polyline (sum of every
+/// segment). Used purely for display in the barrier-list meta line.
 function segmentLengthM(poly: Array<[number, number]>): number {
   if (poly.length < 2) return 0;
-  const [a, b] = poly;
   const R = 6371008.8;
-  const lat0 = (a[0] * Math.PI) / 180;
-  const dLat = ((b[0] - a[0]) * Math.PI) / 180 * R;
-  const dLng = ((b[1] - a[1]) * Math.PI) / 180 * R * Math.cos(lat0);
-  return Math.sqrt(dLat * dLat + dLng * dLng);
+  let total = 0;
+  for (let i = 0; i + 1 < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[i + 1];
+    const lat0 = (a[0] * Math.PI) / 180;
+    const dLat = ((b[0] - a[0]) * Math.PI) / 180 * R;
+    const dLng = ((b[1] - a[1]) * Math.PI) / 180 * R * Math.cos(lat0);
+    total += Math.sqrt(dLat * dLat + dLng * dLng);
+  }
+  return total;
 }
 
 // -------------------- Settings --------------------
