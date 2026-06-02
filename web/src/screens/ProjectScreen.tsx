@@ -11,16 +11,9 @@ import { listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { gridDomain, type Palette } from '../lib/colormap';
 import { loadDemForBounds, type DemRaster } from '../lib/dem';
 import {
-  GRID_SNAPSHOT_BUDGET_BYTES,
-  estimateGridMemoryBytes,
   evaluateGridViaWorker,
-  extrapolateGrid,
-  extrapolateProject,
-  snapshotGrid,
-  snapshotProject,
+  evaluateProject,
   type GridResult,
-  type GridSnapshot,
-  type PointSnapshot,
   type ReceiverResult,
 } from '../lib/solver';
 import { useAuthState } from '../lib/auth';
@@ -162,14 +155,6 @@ function demFingerprint(d: DemRaster | null): string {
   return `${src}:${b.sw[0].toFixed(4)},${b.sw[1].toFixed(4)},${b.ne[0].toFixed(4)},${b.ne[1].toFixed(4)}`;
 }
 
-/// Master switch for the gradient (AD) grid path. When false (default), the
-/// contour grid ALWAYS uses the primal per-tile worker path —
-/// `evaluateGridViaWorker` — which is adaptively clustered, runs off the main
-/// thread, and builds no gradient tensor. The AD path (`snapshotGrid` +
-/// `extrapolateGrid`, kept intact below) only enabled live grid-drag
-/// extrapolation but ignored per-tile clustering and ran on the main thread,
-/// so it was the slow path for moderate grids. Flip to true to compare.
-const USE_GRID_GRADIENT_AD = false;
 
 export function ProjectScreen() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -453,23 +438,17 @@ export function ProjectScreen() {
     setDemStatus('idle');     // reload DEM for the new bounds
   }
 
-  // Cached point + grid snapshots (gradients) for fast Taylor extrapolation.
-  const pointSnapRef = useRef<PointSnapshot | null>(null);
-  const gridSnapRef = useRef<GridSnapshot | null>(null);
   // Mirrors `grid != null` so the structural-change effect can tell whether a
   // contour grid is currently on screen WITHOUT taking `grid` as a dependency
-  // (which would re-fire the effect on every recompute). Lets eval-only grids
-  // (large sims with no gradient pack) refresh when barriers/settings change.
+  // (which would re-fire the effect on every recompute). Lets a shown grid
+  // recompute when barriers/settings/sources change.
   const gridShownRef = useRef(false);
   useEffect(() => { gridShownRef.current = grid != null; }, [grid]);
-  // Generation counters: each new snapshot request bumps these. When an
-  // async result comes back we discard it if a newer request has fired in
-  // the meantime — stops a slow run from clobbering the latest geometry.
+  // Generation counters: each new solve request bumps these. When an async
+  // result comes back we discard it if a newer request has fired in the
+  // meantime — stops a slow run from clobbering the latest geometry.
   const pointGenRef = useRef(0);
   const gridGenRef = useRef(0);
-  // Bumps every time a snapshot is refreshed in the background, so the
-  // results-dependent UI re-renders against the new exact values.
-  const [, setSnapshotVersion] = useState(0);
 
   // Sync persisted project (from the hook) into the editor's working
   // state. Fires on initial load and on remote collaborator updates that
@@ -715,6 +694,17 @@ export function ProjectScreen() {
     });
   }, [project, dem, gridSpacingM]);
 
+  // Source-position key: every named source's rounded lat/lng. A drag changes
+  // this; the structural keys above deliberately exclude positions, so this is
+  // what makes a *settled* drag re-solve the points + grid.
+  const sourcePosKey = useMemo(() => {
+    if (!project) return '';
+    return project.sources.map((s) => `${s.id}:${s.latLng[0].toFixed(6)},${s.latLng[1].toFixed(6)}`).join('|');
+  }, [project]);
+
+  // Point-receiver solve — re-runs on any structural change OR a settled source
+  // drag. Primal (exact); the solve is fast enough to recompute directly, so
+  // there's no snapshot / Taylor-extrapolation layer anymore.
   useEffect(() => {
     if (!project) return;
     setComputing(true);
@@ -722,170 +712,50 @@ export function ProjectScreen() {
     const start = performance.now();
     const handle = setTimeout(() => {
       const gen = ++pointGenRef.current;
-      snapshotProject(project, dem)
-        .then(({ results, snapshot }) => {
+      evaluateProject(project, dem)
+        .then((results) => {
           if (gen !== pointGenRef.current) return;       // superseded
-          pointSnapRef.current = snapshot;
           setResults(results);
           setLastSolveMs(performance.now() - start);
-          setSnapshotVersion((v) => v + 1);
         })
         .catch((e) => { if (gen === pointGenRef.current) setError(String(e)); })
         .finally(() => { if (gen === pointGenRef.current) setComputing(false); });
     }, 80);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pointStructuralKey]);
+  }, [pointStructuralKey, sourcePosKey]);
 
-  // Grid recompute on grid-relevant changes (barriers, settings, sources, DEM).
-  // Receivers don't trigger. Handles BOTH modes: snapshot mode re-snapshots
-  // (keeps gradients for live drag); eval-only mode (large sims, no gradient
-  // pack) re-evaluates on the worker. If no grid has been run yet, do nothing.
+  // Contour-grid recompute on any grid-relevant change OR a settled source
+  // drag — but only when a grid is already on screen. Always the primal
+  // per-tile worker path. Longer debounce than the point solve so a continuous
+  // drag coalesces into a single regrid on settle (the grid is the heavier
+  // solve). Receivers never trigger this.
   useEffect(() => {
-    if (!project) return;
-    const hasSnap = gridSnapRef.current != null;
-    if (!hasSnap && !gridShownRef.current) return;
+    if (!project || !gridShownRef.current) return;
     const handle = setTimeout(() => {
       const gen = ++gridGenRef.current;
-      const start = performance.now();
       const height = project.settings?.general.defaultReceiverHeight ?? 1.5;
-      const p = hasSnap
-        ? snapshotGrid(project, dem, gridSpacingM, height).then((s) => {
-            if (gen !== gridGenRef.current) return;        // superseded
-            gridSnapRef.current = s;
-            const { grid: g } = extrapolateGrid(project, s, dem);
-            g.computedMs = performance.now() - start;
-            setGrid(g);
-          })
-        : evaluateGridViaWorker(project, dem, gridSpacingM, height).then((g) => {
-            if (gen !== gridGenRef.current) return;        // superseded
-            setGrid(g);
-          });
-      p.catch((e) => console.warn('grid recompute failed:', e));
-    }, 80);
-    return () => clearTimeout(handle);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gridStructuralKey]);
-
-  // Source-position changes (drag) → extrapolate immediately from snapshot.
-  // Cheap pure-JS arithmetic, no WASM call.
-  const sourcePosKey = useMemo(() => {
-    if (!project) return '';
-    return project.sources.map((s) => `${s.id}:${s.latLng[0].toFixed(6)},${s.latLng[1].toFixed(6)}`).join('|');
-  }, [project]);
-
-  // Tracks whether the most recent extrapolation breached the per-band/total
-  // dB caps. When set we kick a background re-snapshot to refresh gradients.
-  const [snapshotStale, setSnapshotStale] = useState(false);
-
-  useEffect(() => {
-    if (!project) return;
-    let staleHere = false;
-    const snap = pointSnapRef.current;
-    if (snap) {
-      const { results: r, stale } = extrapolateProject(project, snap);
-      setResults(r);
-      if (stale) staleHere = true;
-    }
-    const gridSnap = gridSnapRef.current;
-    if (gridSnap) {
-      const { grid: g, stale } = extrapolateGrid(project, gridSnap, dem);
-      setGrid(g);
-      if (stale) staleHere = true;
-    } else if (grid) {
-      // Eval-only mode (no gradient pack — gridSnapRef was never built).
-      // Mark stale so the debounced re-snapshot effect below kicks in and
-      // re-runs `evaluateGrid`. Without this, dragging a source after a
-      // memory-budget fallback would leave the visible grid out of date.
-      staleHere = true;
-    }
-    if (staleHere) setSnapshotStale(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourcePosKey]);
-
-  // When extrapolation breaches the caps, schedule a background re-snapshot
-  // so subsequent extrapolations are accurate. Debounced so a continuous
-  // drag doesn't fire snapshots faster than they complete.
-  useEffect(() => {
-    if (!project || !snapshotStale) return;
-    const handle = setTimeout(() => {
-      const pGen = ++pointGenRef.current;
-      const start = performance.now();
-      snapshotProject(project, dem)
-        .then(({ results, snapshot }) => {
-          if (pGen !== pointGenRef.current) return;
-          pointSnapRef.current = snapshot;
-          setResults(results);
-          setLastSolveMs(performance.now() - start);
-          setSnapshotVersion((v) => v + 1);
-          // Refresh the grid too, picking the same path Run-grid would take
-          // for the current memory budget. If we've previously been in
-          // snapshot mode (`gridSnapRef.current` is set) we re-snapshot;
-          // otherwise — and only if a grid is already on screen — we
-          // re-evaluate without gradients.
-          const heightAbove = project.settings?.general.defaultReceiverHeight ?? 1.5;
-          const refreshSnapshot = gridSnapRef.current != null;
-          const refreshEval = !refreshSnapshot && grid != null;
-          if (refreshSnapshot || refreshEval) {
-            const gGen = ++gridGenRef.current;
-            const gridStart = performance.now();
-            const promise = refreshSnapshot
-              ? snapshotGrid(project, dem, gridSpacingM, heightAbove).then((s) => {
-                  if (gGen !== gridGenRef.current) return;
-                  gridSnapRef.current = s;
-                  const { grid: g } = extrapolateGrid(project, s, dem);
-                  g.computedMs = performance.now() - gridStart;
-                  setGrid(g);
-                })
-              : evaluateGridViaWorker(project, dem, gridSpacingM, heightAbove).then((g) => {
-                  if (gGen !== gridGenRef.current) return;
-                  setGrid(g);
-                });
-            promise.catch((e) => console.warn('grid re-snapshot failed:', e));
-          }
+      evaluateGridViaWorker(project, dem, gridSpacingM, height)
+        .then((g) => {
+          if (gen !== gridGenRef.current) return;        // superseded
+          setGrid(g);
         })
-        .catch((e) => { if (pGen === pointGenRef.current) setError(String(e)); })
-        .finally(() => setSnapshotStale(false));
-    }, 200);
+        .catch((e) => console.warn('grid recompute failed:', e));
+    }, 150);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snapshotStale]);
+  }, [gridStructuralKey, sourcePosKey]);
 
   function runGrid() {
     if (!project) return;
     setGridStatus('computing');
-    // Memory pre-flight. The gradient pack scales as
-    //   cellCount × effective_sources × packLen × 4 bytes
-    // and is by far the largest allocation in the app. If it would exceed
-    // our soft budget (600 MB), drop straight to `evaluateGrid` — same
-    // visual result, no per-source gradients (so drag-extrapolation falls
-    // back to a fresh re-run instead of an instantaneous pure-JS update).
-    const est = estimateGridMemoryBytes(project, gridSpacingM);
     const heightAbove = project.settings?.general.defaultReceiverHeight ?? 1.5;
-    // Default path: primal, per-tile clustered, on the worker. Only take the
-    // AD/gradient path when explicitly enabled AND it fits the memory budget.
-    const useGradient = USE_GRID_GRADIENT_AD && est.snapshotBytes <= GRID_SNAPSHOT_BUDGET_BYTES;
+    // Primal, per-tile clustered, on the Web Worker.
     setTimeout(() => {
       const gen = ++gridGenRef.current;
-      gridSnapRef.current = null;
-
-      if (!useGradient) {
-        evaluateGridViaWorker(project, dem, gridSpacingM, heightAbove)
-          .then((g) => {
-            if (gen !== gridGenRef.current) return;
-            setGrid(g);
-            setGridStatus('ready');
-          })
-          .catch((e) => { if (gen === gridGenRef.current) { setError(String(e)); setGridStatus('idle'); } });
-        return;
-      }
-
-      snapshotGrid(project, dem, gridSpacingM, heightAbove)
-        .then((s) => {
+      evaluateGridViaWorker(project, dem, gridSpacingM, heightAbove)
+        .then((g) => {
           if (gen !== gridGenRef.current) return;
-          gridSnapRef.current = s;
-          const { grid: g } = extrapolateGrid(project, s, dem);
-          g.computedMs = s.computedMs;
           setGrid(g);
           setGridStatus('ready');
         })
@@ -1396,7 +1266,7 @@ export function ProjectScreen() {
           <ResultsDock
             project={project} results={results} grid={grid}
             computing={computing} lastSolveMs={lastSolveMs}
-            gridStatus={gridStatus} snapshotStale={snapshotStale}
+            gridStatus={gridStatus}
             onRunGrid={runGrid}
           />
         </div>

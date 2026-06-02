@@ -49,15 +49,11 @@ interface ResultsDockProps {
   computing: boolean;
   lastSolveMs: number | null;
   gridStatus: 'idle' | 'computing' | 'ready';
-  /// True when an extrapolation breached the cap and a background re-snapshot
-  /// is in flight — the displayed values are clamped to ±cap from the last
-  /// snapshot until the new one lands.
-  snapshotStale: boolean;
   onRunGrid(): void;
 }
 
 export function ResultsDock(props: ResultsDockProps) {
-  const { project, results, grid, computing, lastSolveMs, gridStatus, snapshotStale, onRunGrid } = props;
+  const { project, results, grid, computing, lastSolveMs, gridStatus, onRunGrid } = props;
   const exceedances = (results ?? []).filter((r) => {
     const rx = project.receivers.find((x) => x.id === r.receiverId);
     return rx && r.totalDbA > limitForPeriod(rx, project.scenario.period);
@@ -99,12 +95,6 @@ export function ResultsDock(props: ResultsDockProps) {
           {gridStatus === 'computing' ? 'Computing grid…' : grid ? '↻ Recompute grid' : '▶ Run grid'}
         </button>
       </div>
-      {snapshotStale && (
-        <div className="dock-row" style={{ background: 'rgba(245, 158, 11, 0.15)', padding: '4px 8px', borderRadius: 4, fontSize: 11 }}>
-          <span style={{ color: 'var(--amber)', fontWeight: 600 }}>● Refining…</span>
-          <span className="muted">drag exceeded cap, re-snapshotting</span>
-        </div>
-      )}
       <div className="dock-row dock-meta">
         {lastSolveMs != null && <span>solve: {lastSolveMs.toFixed(0)} ms</span>}
         {grid && <span>grid: {grid.cols}×{grid.rows} · {grid.computedMs.toFixed(0)} ms</span>}

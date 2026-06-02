@@ -1,20 +1,19 @@
 // Wraps the Rust + WASM solver into a typed, project-shaped API.
 //
-// Two evaluation modes per output (point receivers and contour grid):
+// Both outputs (point receivers and the contour grid) use the PRIMAL solver
+// path — a direct exact evaluation per source→receiver pair (points) or one
+// batched `GridEvaluator.eval_cell_dba` per cell (grid, on a Web Worker). The
+// solve is fast enough that source drags simply re-evaluate.
 //
-//   1. *Snapshot* — exact evaluation that ALSO returns ∂Lp/∂(src.{e,n,z})
-//      per source-receiver pair via forward-mode dual numbers in the Rust
-//      crate. Cached for fast extrapolation.
-//
-//   2. *Extrapolate* — given a cached snapshot, produce updated Lp values
-//      by first-order Taylor: Lp_new = Lp + ∇Lp·Δsrc. No WASM call needed —
-//      pure JS arithmetic over the cached gradients, fast enough to run on
-//      every drag tick. Refresh the snapshot in the background once the
-//      drag settles.
+// The Rust crate still carries the forward-mode automatic-differentiation
+// (dual-number) gradient path and its WASM exports (`evaluate_*_with_grad_*`),
+// but the front end no longer wires them in: there is no snapshot / Taylor-
+// extrapolation layer here anymore. The AD feature is retained in the solver
+// for possible future use; it is simply not called from the app.
 
 import init, {
-  evaluate_general_with_grad_src_octave,
-  evaluate_wtg_with_grad_src_octave,
+  evaluate_general_octave,
+  evaluate_wtg_octave,
   octave_a_weighting,
   octave_centres,
 } from '../wasm/beesty_solver.js';
@@ -28,7 +27,6 @@ import { lookupEntry, sourceHeightFor, spectrumFor } from './catalog';
 import { type DemRaster, type DemRegion, captureDemRegion } from './dem';
 import {
   concatBarriers,
-  effectiveSourcesFor,
   propagationSettings,
   type EffectiveSource,
 } from './propagation';
@@ -90,11 +88,6 @@ export function projectDOmegaDb(project: Project): number {
 export function bandCount(bs: 'octave' | 'oneThirdOctave'): number {
   return bs === 'oneThirdOctave' ? 31 : 10;
 }
-function packLen(bs: 'octave' | 'oneThirdOctave'): number {
-  const n = bandCount(bs);
-  return n + n * 3;
-}
-
 // A-weighting convention used throughout BESSTY:
 //
 //   - The Rust solver always works in Z-weighted (un-weighted) per-band
@@ -214,143 +207,6 @@ function sourceHagl(source: Source, project: Project): number | null {
   return sourceHeightFor(entry) + (source.elevationOffset ?? 0);
 }
 
-/// Source **absolute** z = local ground elevation (from the DEM) + HAG. This is
-/// what divergence + barrier geometry consume, and what the source-position
-/// gradient is taken w.r.t. (so the Taylor delta during a drag is in the
-/// absolute frame). Without a DEM, ground is 0 → abs z = HAG. See A1 in
-/// `docs/solver-review-2026-06.md`.
-function sourceAbsZ(source: Source, project: Project, dem: DemRaster | null): number | null {
-  const h = sourceHagl(source, project);
-  if (h == null) return null;
-  const ground = dem ? dem.elevation(source.latLng[0], source.latLng[1]) : 0;
-  return (Number.isFinite(ground) ? ground : 0) + h;
-}
-
-function snapshotPair(
-  source: Source,
-  rxLatLng: [number, number],
-  rxHeightAboveGround: number,
-  project: Project,
-  barriersFlat: Float64Array,
-  dem: DemRaster | null,
-  origin: [number, number],
-): { snapshot: Float64Array; srcAbsXyz: [number, number, number] } {
-  const [se, sn] = latLngToLocalMetres(source.latLng, origin);
-  const [re, rn] = latLngToLocalMetres(rxLatLng, origin);
-  const g = project.settings?.ground.defaultG ?? 0.5;
-  // Solver z convention (A1 fix): the engine takes BOTH an absolute z and a
-  // height-above-ground (HAG) for source and receiver. Absolute z (= DEM
-  // ground elevation + HAG) drives divergence + barrier diffraction geometry,
-  // which must share a datum with the (absolute) barrier tops. HAG drives the
-  // Table-3 ground shape functions. Conflating the two — the previous
-  // "pass HAG as the only z" workaround — made Adiv drop the source↔receiver
-  // ground-elevation difference and put barrier geometry in a mixed datum
-  // (barriers looked ~ground-elevation metres too tall). See
-  // `docs/solver-review-2026-06.md` A1/A2.
-  const groundSrcRaw = dem ? dem.elevation(source.latLng[0], source.latLng[1]) : 0;
-  const groundRxRaw = dem ? dem.elevation(rxLatLng[0], rxLatLng[1]) : 0;
-  const groundSrc = Number.isFinite(groundSrcRaw) ? groundSrcRaw : 0;
-  const groundRx = Number.isFinite(groundRxRaw) ? groundRxRaw : 0;
-  const rxZ = rxHeightAboveGround;        // receiver HAG
-  const rxZAbs = groundRx + rxZ;          // receiver absolute z
-
-  const entry = lookupEntry(project, source);
-  if (!entry) {
-    throw new Error(`Catalog entry not found: ${source.catalogScope}/${source.modelId}`);
-  }
-  const modeName = source.modeOverride ?? entry.defaultMode;
-  const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
-
-  const env = solverEnv(project);
-  if (source.kind === 'wtg') {
-    // sourceHeightFor() centralises the WTG fallback chain
-    // (sourceHeightM > hubHeights[0] > 100 m) so the catalog's
-    // library default is honoured.
-    const hubHeight = source.hubHeight ?? sourceHeightFor(entry);
-    const hubZ = hubHeight;              // hub HAG
-    const hubZAbs = groundSrc + hubZ;    // hub absolute z
-    // Topography barriers use ABSOLUTE z (the DEM ridge profile is sampled in
-    // the absolute frame, now consistent with the source/receiver z below).
-    const topoBars = topographyBarriers(
-      project.settings?.topography, source.latLng,
-      [se, sn, hubZAbs],
-      rxLatLng, [re, rn, rxZAbs], origin, dem,
-    );
-    const allBars = concatBarriers(barriersFlat, topoBars);
-    const rotorD = source.rotorDiameterM ?? entry.rotorDiameterM ?? 120;
-    // Annex D.5 concave-ground criterion (A3), evaluated from the DEM along
-    // this hub→receiver path.
-    const concave = concaveCorrectionMet(source.latLng, hubZAbs, rxLatLng, rxZAbs, hubZ, rxZ, dem);
-    const snap = evaluate_wtg_with_grad_src_octave(
-      lw, se, sn, hubZAbs, hubZ, re, rn, rxZAbs, rxZ, g, allBars,
-      rotorD, concave,
-      env.tC, env.rh, env.pKpa, env.barConv,
-    );
-    // srcAbsXyz is the ABSOLUTE source position — the gradient is taken w.r.t.
-    // it, so extrapolation deltas must be in the same frame.
-    return { snapshot: snap, srcAbsXyz: [se, sn, hubZAbs] };
-  }
-  // BESS / Aux: library-defined source height (sourceHeightM) plus
-  // the per-source elevation delta. Falls back to the kind default
-  // (1.5 m) when the catalog entry doesn't pin a sourceHeightM, so
-  // older projects + seed catalog entries keep their existing
-  // numbers.
-  const sourceZ = sourceHeightFor(entry) + (source.elevationOffset ?? 0); // HAG
-  const sourceZAbs = groundSrc + sourceZ;                                 // absolute z
-  // Topography barriers consume absolute z (DEM-aware ridge sampling).
-  const topoBars = topographyBarriers(
-    project.settings?.topography, source.latLng,
-    [se, sn, sourceZAbs],
-    rxLatLng, [re, rn, rxZAbs], origin, dem,
-  );
-  const allBars = concatBarriers(barriersFlat, topoBars);
-  const snap = evaluate_general_with_grad_src_octave(
-    lw, se, sn, sourceZAbs, sourceZ, re, rn, rxZAbs, rxZ, g, allBars,
-    env.tC, env.rh, env.pKpa, env.barConv, env.dzCap,
-  );
-  return { snapshot: snap, srcAbsXyz: [se, sn, sourceZAbs] };
-}
-
-/// Snapshot for a synthetic cluster (an EffectiveSource of kind 'cluster').
-// Note: snapshotClusterPair was removed when the receiver path stopped
-// using Barnes-Hut clustering. Clusters now only appear in the grid
-// snapshot path, which builds + evaluates them inline (see snapshotGrid).
-
-/// Linear Taylor extrapolation with a per-band clamp. Returns the new Lp
-/// values plus a `stale` flag set when any band's predicted change exceeded
-/// `capPerBandDb` — the orchestrator should schedule an exact re-snapshot
-/// for the affected pair before the displayed value drifts further.
-function extrapolateLpClamped(
-  snapshot: Float64Array,
-  srcAbsAtSnapshot: [number, number, number],
-  srcAbsNow: [number, number, number],
-  capPerBandDb: number,
-): { lp: Float64Array; stale: boolean } {
-  const dx = srcAbsNow[0] - srcAbsAtSnapshot[0];
-  const dy = srcAbsNow[1] - srcAbsAtSnapshot[1];
-  const dz = srcAbsNow[2] - srcAbsAtSnapshot[2];
-  // Pack layout is `n primal + n × 3 gradient`, so `snapshot.length = n + 3n = 4n`.
-  const n = snapshot.length / 4;
-  const out = new Float64Array(n);
-  let stale = false;
-  for (let band = 0; band < n; band++) {
-    const gIdx = n + band * 3;
-    const baseline = snapshot[band];
-    const predicted = baseline
-      + snapshot[gIdx] * dx
-      + snapshot[gIdx + 1] * dy
-      + snapshot[gIdx + 2] * dz;
-    const delta = predicted - baseline;
-    if (Math.abs(delta) > capPerBandDb) {
-      out[band] = baseline + Math.sign(delta) * capPerBandDb;
-      stale = true;
-    } else {
-      out[band] = predicted;
-    }
-  }
-  return { lp: out, stale };
-}
-
 /// Energy-sum Z-weighted per-band Lp values into one total LpA in dB(A),
 /// applying the IEC 61672-1 A-weighting offsets at sum time. Per-band Lp
 /// out of the WASM solver is Z-weighted — see the A-weighting note above.
@@ -376,26 +232,78 @@ function energySumPerBand(perSource: Array<{ perBandLp: Float64Array }>): Float6
   return out;
 }
 
-// ============== Receiver-point snapshot + extrapolation ==============
+// ============== Receiver-point evaluation (primal) ==============
 
-export interface PointSnapshot {
-  /// `${sourceId}|${rxId}` → snapshot data for that pair.
-  pairs: Map<string, { snapshot: Float64Array; srcAbsXyz: [number, number, number] }>;
-  /// Source absolute positions at snapshot time, by id.
-  srcAbsAtSnapshot: Map<string, [number, number, number]>;
-  origin: [number, number];
-  barriersFlat: Float64Array;
-  dem: DemRaster | null;
-  rxAbsAtSnapshot: Map<string, [number, number, number]>;
+/// Exact per-band Lp (Z-weighted, length = band count) for one source →
+/// receiver pair via the primal WASM solver. Mirrors the geometry the old
+/// gradient snapshot used (A1 z-datum split: absolute z for divergence +
+/// barrier geometry, height-above-ground for the Table-3 ground functions),
+/// minus the dual-number gradient. No DEM → ground 0 → abs z = HAG.
+function evaluatePair(
+  source: Source,
+  rxLatLng: [number, number],
+  rxHeightAboveGround: number,
+  project: Project,
+  barriersFlat: Float64Array,
+  dem: DemRaster | null,
+  origin: [number, number],
+): Float64Array {
+  const [se, sn] = latLngToLocalMetres(source.latLng, origin);
+  const [re, rn] = latLngToLocalMetres(rxLatLng, origin);
+  const g = project.settings?.ground.defaultG ?? 0.5;
+  const groundSrcRaw = dem ? dem.elevation(source.latLng[0], source.latLng[1]) : 0;
+  const groundRxRaw = dem ? dem.elevation(rxLatLng[0], rxLatLng[1]) : 0;
+  const groundSrc = Number.isFinite(groundSrcRaw) ? groundSrcRaw : 0;
+  const groundRx = Number.isFinite(groundRxRaw) ? groundRxRaw : 0;
+  const rxZ = rxHeightAboveGround;        // receiver HAG
+  const rxZAbs = groundRx + rxZ;          // receiver absolute z
+
+  const entry = lookupEntry(project, source);
+  if (!entry) {
+    throw new Error(`Catalog entry not found: ${source.catalogScope}/${source.modelId}`);
+  }
+  const modeName = source.modeOverride ?? entry.defaultMode;
+  const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
+  const env = solverEnv(project);
+
+  if (source.kind === 'wtg') {
+    const hubHeight = source.hubHeight ?? sourceHeightFor(entry);
+    const hubZ = hubHeight;              // hub HAG
+    const hubZAbs = groundSrc + hubZ;    // hub absolute z
+    const topoBars = topographyBarriers(
+      project.settings?.topography, source.latLng,
+      [se, sn, hubZAbs], rxLatLng, [re, rn, rxZAbs], origin, dem,
+    );
+    const allBars = concatBarriers(barriersFlat, topoBars);
+    const rotorD = source.rotorDiameterM ?? entry.rotorDiameterM ?? 120;
+    const concave = concaveCorrectionMet(source.latLng, hubZAbs, rxLatLng, rxZAbs, hubZ, rxZ, dem);
+    return evaluate_wtg_octave(
+      lw, se, sn, hubZAbs, hubZ, re, rn, rxZAbs, rxZ, g, allBars,
+      rotorD, concave, env.tC, env.rh, env.pKpa, env.barConv,
+    );
+  }
+  const sourceZ = sourceHeightFor(entry) + (source.elevationOffset ?? 0); // HAG
+  const sourceZAbs = groundSrc + sourceZ;                                 // absolute z
+  const topoBars = topographyBarriers(
+    project.settings?.topography, source.latLng,
+    [se, sn, sourceZAbs], rxLatLng, [re, rn, rxZAbs], origin, dem,
+  );
+  const allBars = concatBarriers(barriersFlat, topoBars);
+  return evaluate_general_octave(
+    lw, se, sn, sourceZAbs, sourceZ, re, rn, rxZAbs, rxZ, g, allBars,
+    env.tC, env.rh, env.pKpa, env.barConv, env.dzCap,
+  );
 }
 
-/// Exact evaluation that also captures ∂Lp/∂src for fast Taylor extrapolation
-/// on subsequent source moves. Use this on initial load and when re-snapping
-/// after a drag settles.
-export async function snapshotProject(
+/// Exact point-receiver solve. Every receiver sums every (in-cutoff) source
+/// directly — no Barnes-Hut clustering (per-source contribution rows need real
+/// source ids, and there are typically few named receivers). Replaces the old
+/// snapshot + Taylor-extrapolation path: the solve is fast enough to re-run on
+/// every settled source drag.
+export async function evaluateProject(
   project: Project,
   dem: DemRaster | null,
-): Promise<{ results: ReceiverResult[]; snapshot: PointSnapshot }> {
+): Promise<ReceiverResult[]> {
   await ensureSolverReady();
 
   const origin = project.calculationArea?.centerLatLng
@@ -404,54 +312,28 @@ export async function snapshotProject(
     ?? [0, 0];
   const barriersFlat = packBarriers(project.barriers, origin, dem);
   const aw = aWeights(project.scenario.bandSystem);
-
-  const pairs = new Map<string, { snapshot: Float64Array; srcAbsXyz: [number, number, number] }>();
-  const srcAbsAtSnapshot = new Map<string, [number, number, number]>();
-  const rxAbsAtSnapshot = new Map<string, [number, number, number]>();
-
   const n = bandCount(project.scenario.bandSystem);
-  // Point receivers always solve every source directly — no Barnes-Hut
-  // clustering. Per-source contribution rows in the receiver export need
-  // real source IDs (not "cluster-N" aggregates), and there are typically
-  // few enough named receivers (~5–500) that the O(R × S) cost is fine.
-  // Distance cutoff + topography barriers still apply via snapshotPair.
-  // The Barnes-Hut tree only kicks in for the dense grid path below.
   const cutoffM = propagationSettings(project).maxContributionDistanceM;
-  const results: ReceiverResult[] = project.receivers.map((rx) => {
-    // Skip receivers whose coords are non-finite (busted import / glitched
-    // group drag). They still appear in the receiver list with a "—"
-    // result, but we don't try to call into WASM with NaN inputs because
-    // that returns NaN per band and corrupts downstream sums.
+
+  return project.receivers.map((rx) => {
+    // Non-finite receiver coords (busted import / glitched group drag): show a
+    // "—" row rather than feeding NaN into WASM (which poisons downstream sums).
     if (!Number.isFinite(rx.latLng[0]) || !Number.isFinite(rx.latLng[1])) {
       return { receiverId: rx.id, perBandLp: new Float64Array(n), totalDbA: -Infinity, perSource: [] };
     }
-    const [re, rn] = latLngToLocalMetres(rx.latLng, origin);
-    const rxGround = dem ? dem.elevation(rx.latLng[0], rx.latLng[1]) : 0;
-    rxAbsAtSnapshot.set(rx.id, [re, rn, rxGround + rx.heightAboveGroundM]);
-
     const perSource: ReceiverResult['perSource'] = [];
     for (const src of project.sources) {
       if (!Number.isFinite(src.latLng[0]) || !Number.isFinite(src.latLng[1])) continue;
-      // Distance cutoff: skip sources that are over the project's max
-      // contribution distance from this receiver.
-      if (cutoffM > 0) {
-        const d = approxDistanceM(rx.latLng, src.latLng);
-        if (d > cutoffM) continue;
-      }
+      if (cutoffM > 0 && approxDistanceM(rx.latLng, src.latLng) > cutoffM) continue;
       try {
-        const { snapshot, srcAbsXyz } = snapshotPair(
-          src, rx.latLng, rx.heightAboveGroundM, project, barriersFlat, dem, origin,
-        );
-        pairs.set(`${src.id}|${rx.id}`, { snapshot, srcAbsXyz });
-        srcAbsAtSnapshot.set(src.id, srcAbsXyz);
+        const raw = evaluatePair(src, rx.latLng, rx.heightAboveGroundM, project, barriersFlat, dem, origin);
         const perBandLp = new Float64Array(n);
-        for (let i = 0; i < n; i++) perBandLp[i] = Number.isFinite(snapshot[i]) ? snapshot[i] : -Infinity;
+        for (let i = 0; i < n; i++) perBandLp[i] = Number.isFinite(raw[i]) ? raw[i] : -Infinity;
         perSource.push({ sourceId: src.id, perBandLp });
       } catch (e) {
-        console.warn(`snapshot pair ${src.id}|${rx.id} failed:`, e);
+        console.warn(`eval pair ${src.id}|${rx.id} failed:`, e);
       }
     }
-
     const summed = energySumPerBand(perSource);
     return {
       receiverId: rx.id,
@@ -460,454 +342,6 @@ export async function snapshotProject(
       perSource,
     };
   });
-
-  return {
-    results,
-    snapshot: { pairs, srcAbsAtSnapshot, origin, barriersFlat, dem, rxAbsAtSnapshot },
-  };
-}
-
-/// Apply Taylor extrapolation to obtain receiver results from the cached
-/// snapshot under the project's current (possibly moved) source positions.
-/// Returns a `stale` flag if any per-band or per-receiver-total change
-/// exceeded the configured caps — the orchestrator should re-snapshot.
-export function extrapolateProject(
-  project: Project,
-  snapshot: PointSnapshot,
-): { results: ReceiverResult[]; stale: boolean } {
-  const aw = aWeights(project.scenario.bandSystem);
-  const origin = snapshot.origin;
-  const capPerBand = project.settings?.extrapolation?.capPerBandDb ?? 6;
-  const capTotal = project.settings?.extrapolation?.capTotalDbA ?? 3;
-
-  const dem = snapshot.dem;
-  const srcAbsNow = new Map<string, [number, number, number]>();
-  for (const s of project.sources) {
-    const [se, sn] = latLngToLocalMetres(s.latLng, origin);
-    const z = sourceAbsZ(s, project, dem) ?? 0;
-    srcAbsNow.set(s.id, [se, sn, z]);
-  }
-
-  let stale = false;
-
-  const nb = bandCount(project.scenario.bandSystem);
-  const results = project.receivers.map((rx) => {
-    const perSource: ReceiverResult['perSource'] = [];
-    let totalSnapshotEnergy = 0;
-    // Walk every cached pair for this receiver — both real-source pairs
-    // (extrapolated against current source position) AND cluster pairs
-    // (frozen at snapshot value, since clusters have no individual
-    // gradient to follow).
-    for (const [pairKey, cached] of snapshot.pairs) {
-      const sep = pairKey.indexOf('|');
-      if (sep < 0) continue;
-      const sourceKey = pairKey.slice(0, sep);
-      const rxKey = pairKey.slice(sep + 1);
-      if (rxKey !== rx.id) continue;
-      const here = srcAbsNow.get(sourceKey);
-      let lp: Float64Array;
-      if (here) {
-        // Real source — extrapolate against current position.
-        const r = extrapolateLpClamped(cached.snapshot, cached.srcAbsXyz, here, capPerBand);
-        lp = r.lp;
-        if (r.stale) stale = true;
-      } else {
-        // Cluster (or source no longer in project) — use snapshot values
-        // verbatim.
-        lp = new Float64Array(nb);
-        for (let i = 0; i < nb; i++) lp[i] = cached.snapshot[i];
-      }
-      perSource.push({ sourceId: sourceKey, perBandLp: lp });
-      for (let i = 0; i < nb; i++) {
-        totalSnapshotEnergy += Math.pow(10, (cached.snapshot[i] + aw[i] + (projectDOmegaDb(project))) / 10);
-      }
-    }
-    if (perSource.length === 0) {
-      return { receiverId: rx.id, perBandLp: new Float64Array(nb), totalDbA: -Infinity, perSource };
-    }
-    const summed = energySumPerBand(perSource);
-    const total = aWeightedTotal(summed, aw, projectDOmegaDb(project));
-    const snapshotTotal = totalSnapshotEnergy > 0 ? 10 * Math.log10(totalSnapshotEnergy) : -Infinity;
-    if (isFinite(total) && isFinite(snapshotTotal) && Math.abs(total - snapshotTotal) > capTotal) {
-      stale = true;
-    }
-    return { receiverId: rx.id, perBandLp: summed, totalDbA: total, perSource };
-  });
-
-  return { results, stale };
-}
-
-/// Compatibility wrapper — kept for any callers that just want results
-/// without managing a snapshot. Internally still does a full snapshot.
-export async function evaluateProject(
-  project: Project,
-  dem: DemRaster | null,
-): Promise<ReceiverResult[]> {
-  return (await snapshotProject(project, dem)).results;
-}
-
-// ============== Grid snapshot + extrapolation ==============
-// (GridResult is defined in ./gridCore and re-exported above.)
-
-export interface GridSnapshot {
-  cols: number;
-  rows: number;
-  bounds: { sw: [number, number]; ne: [number, number] };
-  /// Effective-source ids in slot order: a mix of real source ids and
-  /// `cluster-…` synthetic ids. Used by `extrapolateGrid` to decide which
-  /// slots track current source positions vs. stay frozen.
-  sourceIds: string[];
-  /// True for slots backed by a real Source, false for clusters. Frozen
-  /// slots skip the per-source-position delta math during extrapolation.
-  realSourceFlags: Uint8Array;
-  srcAbsAtSnapshot: Float32Array;       // length sources × 3
-  /// Per (cell, source): n Lp values + 3n gradients (n bands × 3 axes).
-  /// Layout: cellIdx · sources · packLen + sourceIdx · packLen + (band|grad slot)
-  cells: Float32Array;
-  /// Per-cell precomputed origin-frame coords.
-  cellEnZ: Float32Array;                // cellIdx · 3 (e, n, z including DEM)
-  computedMs: number;
-}
-
-/// Build the per-grid effective source list (cutoff + clustering applied
-/// once at the grid centre). The list mixes real Sources and synthetic
-/// clusters; clusters are immobile and don't track source moves.
-function effectiveSourcesForGrid(
-  project: Project,
-  ca: NonNullable<Project['calculationArea']>,
-): EffectiveSource[] {
-  // Synthesise a "centre receiver" — used purely as the reference point for
-  // cutoff + cluster decisions. Real per-cell distance varies, but for a
-  // typical 5–10 km grid the difference is small relative to the cluster
-  // distance (1.5 km default). Bumping the cutoff by half the grid diagonal
-  // captures sources that contribute to a far corner.
-  const radius = Math.sqrt(ca.widthM * ca.widthM + ca.heightM * ca.heightM) / 2;
-  const cfg = propagationSettings(project);
-  // Clone settings with cutoff widened so corner cells aren't accidentally
-  // starved of sources at the edge of the cutoff sphere.
-  const widened: Project = {
-    ...project,
-    settings: {
-      ...project.settings!,
-      propagation: {
-        ...cfg,
-        maxContributionDistanceM: cfg.maxContributionDistanceM > 0
-          ? cfg.maxContributionDistanceM + radius
-          : 0,
-      },
-    },
-  };
-  const proxy = {
-    id: '__grid_centre__',
-    name: '__grid_centre__',
-    latLng: ca.centerLatLng,
-    heightAboveGroundM: project.settings?.general.defaultReceiverHeight ?? 1.5,
-    limitDayDbA: 0, limitEveningDbA: 0, limitNightDbA: 0,
-  };
-  return effectiveSourcesFor(
-    widened, proxy, project.scenario.bandSystem, project.scenario.windSpeed,
-  );
-}
-
-/// Memory estimate for a hypothetical grid snapshot, in bytes. Lets the
-/// caller decide whether to use the full `snapshotGrid` (with gradients
-/// for fast drag extrapolation) or the lightweight `evaluateGrid` (no
-/// gradients, smaller memory). The biggest single allocation is the
-/// gradient cells buffer — `cellCount × effective_sources × PACK × 4`.
-export function estimateGridMemoryBytes(
-  project: Project,
-  spacingM: number,
-): { snapshotBytes: number; evalBytes: number; cells: number; effectiveSources: number } {
-  const ca = project.calculationArea;
-  if (!ca) return { snapshotBytes: 0, evalBytes: 0, cells: 0, effectiveSources: 0 };
-  const cols = Math.max(2, Math.round(ca.widthM / spacingM));
-  const rows = Math.max(2, Math.round(ca.heightM / spacingM));
-  const cellCount = cols * rows;
-  const eff = effectiveSourcesForGrid(project, ca);
-  const PACK = packLen(project.scenario.bandSystem);
-  return {
-    snapshotBytes: cellCount * eff.length * PACK * 4,
-    // Eval-only mode keeps just one Float32 per cell (the summed dB(A)).
-    // The cellEnZ helper buffer adds ~12 B/cell — still negligible.
-    evalBytes: cellCount * 4 + cellCount * 12,
-    cells: cellCount,
-    effectiveSources: eff.length,
-  };
-}
-
-/// Soft budget for the gradient-pack snapshot. Above this, callers should
-/// fall back to `evaluateGrid` (eval-only) — the grid still renders, but
-/// drag-time extrapolation degrades to "drop the marker, recompute the
-/// grid". Picked at 600 MB to leave headroom for the rest of the heap.
-export const GRID_SNAPSHOT_BUDGET_BYTES = 600 * 1024 * 1024;
-
-/// Exact grid evaluation that also captures per-cell-per-source gradients.
-export async function snapshotGrid(
-  project: Project,
-  dem: DemRaster | null,
-  spacingM: number,
-  rxHeightAboveGround: number,
-): Promise<GridSnapshot> {
-  await ensureSolverReady();
-  const t0 = performance.now();
-
-  const ca = project.calculationArea;
-  if (!ca) throw new Error('calculationArea not set; cannot compute grid');
-
-  const origin = ca.centerLatLng;
-  // Cell-centred sampling: `cols` cells of width `ca.widthM / cols`, with
-  // the cell-centre formula `(col - (cols-1)/2) * dxM` placing cell 0
-  // half-a-pixel inside the SW corner and cell (cols-1) half-a-pixel
-  // inside the NE corner. The overall bounds [sw, ne] still enclose the
-  // calc-area rectangle exactly. This matches the convention used by the
-  // GeoTIFF exporter (RasterPixelIsArea) and how Leaflet positions
-  // canvas pixels inside `imageOverlay` bounds — without it, the rendered
-  // raster and contours sat half-a-pixel NE of the actual data because
-  // the corner-sampled values were being treated as centre-sampled by
-  // every downstream consumer.
-  const cols = Math.max(2, Math.round(ca.widthM / spacingM));
-  const rows = Math.max(2, Math.round(ca.heightM / spacingM));
-  const dxM = ca.widthM / cols;
-  const dyM = ca.heightM / rows;
-
-  const R = 6371008.8;
-  const lat0 = (origin[0] * Math.PI) / 180;
-  const dLat = (ca.heightM / 2 / R) * (180 / Math.PI);
-  const dLng = (ca.widthM / 2 / (R * Math.cos(lat0))) * (180 / Math.PI);
-  const sw: [number, number] = [origin[0] - dLat, origin[1] - dLng];
-  const ne: [number, number] = [origin[0] + dLat, origin[1] + dLng];
-
-  const userBarriers = packBarriers(project.barriers, origin, dem);
-  const g = project.settings?.ground.defaultG ?? 0.5;
-  const cutoffM = propagationSettings(project).maxContributionDistanceM;
-  const env = solverEnv(project);
-
-  const eff = effectiveSourcesForGrid(project, ca);
-  const sourceIds = eff.map((es) => es.id);
-  const realSourceFlags = new Uint8Array(eff.length);
-  const srcLocal: Array<[number, number]> = [];
-  const srcHagl: number[] = [];   // height above local ground (ground attenuation)
-  const srcZAbs: number[] = [];   // absolute z (geometry + gradient frame)
-  for (let i = 0; i < eff.length; i++) {
-    const es = eff[i];
-    realSourceFlags[i] = es.kind === 'real' ? 1 : 0;
-    srcLocal.push(latLngToLocalMetres(es.latLng, origin));
-    const groundRaw = dem ? dem.elevation(es.latLng[0], es.latLng[1]) : 0;
-    const ground = Number.isFinite(groundRaw) ? groundRaw : 0;
-    const hagl = es.kind === 'real'
-      ? (sourceHagl(es.source!, project) ?? 0)
-      : (es.zAboveGround ?? 1.5); // cluster: HAG mean by construction
-    srcHagl.push(hagl);
-    srcZAbs.push(ground + hagl);
-  }
-  // Snapshot positions are ABSOLUTE — the source-position gradient is taken
-  // w.r.t. (e, n, z_abs), so extrapolation deltas must match this frame.
-  const srcAbsAtSnapshot = new Float32Array(eff.length * 3);
-  for (let i = 0; i < eff.length; i++) {
-    srcAbsAtSnapshot[i * 3] = srcLocal[i][0];
-    srcAbsAtSnapshot[i * 3 + 1] = srcLocal[i][1];
-    srcAbsAtSnapshot[i * 3 + 2] = srcZAbs[i];
-  }
-
-  const cellCount = cols * rows;
-  const PACK = packLen(project.scenario.bandSystem);
-  // Pre-flight memory check. The cells buffer is by far the largest
-  // allocation in the app (cellCount × effective_sources × PACK floats).
-  // If it would exceed the budget, throw a friendly error pointing the
-  // user at the four levers that drive the size — instead of letting the
-  // browser blow up with a generic "Array buffer allocation failed".
-  // Budget chosen at 1.2 GB: most desktop browsers cap a single typed
-  // array around 1–2 GB, and we still need headroom for everything else.
-  const cellsBytes = cellCount * eff.length * PACK * 4;
-  const HARD_LIMIT_BYTES = 1.2 * 1024 * 1024 * 1024;
-  if (cellsBytes > HARD_LIMIT_BYTES) {
-    throw new Error(
-      `Grid would need ${(cellsBytes / 1024 / 1024 / 1024).toFixed(2)} GB of memory ` +
-      `(${cellCount.toLocaleString()} cells × ${eff.length} sources × ${PACK} floats). ` +
-      `Try a coarser spacing, smaller calc area, octave (not ⅓-octave) bands, ` +
-      `or a higher Barnes-Hut θ to cluster more aggressively.`,
-    );
-  }
-  let cells: Float32Array;
-  try {
-    cells = new Float32Array(cellCount * eff.length * PACK);
-  } catch (e) {
-    // Even under the hard limit the OS / browser may refuse if heap is
-    // fragmented or a previous huge buffer is still live. Re-throw with
-    // the same actionable hints.
-    throw new Error(
-      `Browser couldn't allocate the ${(cellsBytes / 1024 / 1024).toFixed(0)} MB grid buffer. ` +
-      `Close other tabs, then try a coarser spacing / smaller area / octave bands. (${String(e)})`,
-    );
-  }
-  const cellEnZ = new Float32Array(cellCount * 3);
-
-  // Pre-compute per-source metadata once (was previously looked up inside
-  // the per-cell loop, which is equivalent to N_cells × N_sources catalog
-  // lookups for no good reason).
-  type EffMeta = { lw: Float64Array; isWtg: boolean; rotorD: number } | null;
-  const effMeta: EffMeta[] = eff.map((es): EffMeta => {
-    if (es.kind === 'real') {
-      const entry = lookupEntry(project, es.source!);
-      if (!entry) return null;
-      const modeName = es.source!.modeOverride ?? entry.defaultMode;
-      const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
-      // Per-source rotorDiameterM override beats the catalog entry.
-      const rotorD = es.source!.rotorDiameterM ?? entry.rotorDiameterM ?? 120;
-      return { lw, isWtg: es.source!.kind === 'wtg', rotorD };
-    }
-    return { lw: es.lwOverride!, isWtg: false, rotorD: 120 };
-  });
-
-  for (let row = 0; row < rows; row++) {
-    const n = (row - (rows - 1) / 2) * dyM;
-    const lat = origin[0] + (n / R) * (180 / Math.PI);
-    for (let col = 0; col < cols; col++) {
-      const cellIdx = row * cols + col;
-      const e = (col - (cols - 1) / 2) * dxM;
-      const lng = origin[1] + (e / (R * Math.cos(lat0))) * (180 / Math.PI);
-      const groundZRaw = dem ? dem.elevation(lat, lng) : 0;
-      const groundZ = Number.isFinite(groundZRaw) ? groundZRaw : 0;
-      const rxZ = rxHeightAboveGround;      // receiver HAG
-      const rxZAbs = groundZ + rxZ;         // receiver absolute z
-      cellEnZ[cellIdx * 3] = e;
-      cellEnZ[cellIdx * 3 + 1] = n;
-      cellEnZ[cellIdx * 3 + 2] = rxZAbs;
-
-      for (let si = 0; si < eff.length; si++) {
-        const meta = effMeta[si];
-        if (!meta) continue;
-        const es = eff[si];
-        const [se, sn] = srcLocal[si];
-        // Per-cell distance cutoff: cheap pre-filter before the WASM call.
-        if (cutoffM > 0) {
-          const dx = se - e;
-          const dy = sn - n;
-          if (dx * dx + dy * dy > cutoffM * cutoffM) continue;
-        }
-        // Per-cell topography barriers (DEM-derived ridges between source
-        // and this cell), in the ABSOLUTE frame — now consistent with the
-        // absolute source/receiver z passed below. Clusters skip topo.
-        const allBars = es.kind === 'real'
-          ? concatBarriers(
-              userBarriers,
-              topographyBarriers(
-                project.settings?.topography, es.source!.latLng,
-                [se, sn, srcZAbs[si]],
-                [lat, lng], [e, n, rxZAbs], origin, dem,
-              ),
-            )
-          : userBarriers;
-
-        const { lw, isWtg, rotorD } = meta;
-        const concave = isWtg
-          && concaveCorrectionMet(es.latLng, srcZAbs[si], [lat, lng], rxZAbs, srcHagl[si], rxZ, dem);
-        const snap = isWtg
-          ? evaluate_wtg_with_grad_src_octave(
-              lw, se, sn, srcZAbs[si], srcHagl[si], e, n, rxZAbs, rxZ, g, allBars, rotorD, concave,
-              env.tC, env.rh, env.pKpa, env.barConv,
-            )
-          : evaluate_general_with_grad_src_octave(
-              lw, se, sn, srcZAbs[si], srcHagl[si], e, n, rxZAbs, rxZ, g, allBars,
-              env.tC, env.rh, env.pKpa, env.barConv, env.dzCap,
-            );
-        const base = (cellIdx * eff.length + si) * PACK;
-        for (let k = 0; k < PACK; k++) cells[base + k] = snap[k];
-      }
-    }
-  }
-
-  return {
-    cols, rows, bounds: { sw, ne },
-    sourceIds, realSourceFlags, srcAbsAtSnapshot, cells, cellEnZ,
-    computedMs: performance.now() - t0,
-  };
-}
-
-/// Build a fresh GridResult by Taylor-extrapolating the cached snapshot
-/// against the current source positions. Returns a `stale` flag if the
-/// extrapolated dB(A) at any cell drifted past the configured cap from the
-/// snapshot baseline — same semantics as `extrapolateProject`.
-export function extrapolateGrid(
-  project: Project,
-  snapshot: GridSnapshot,
-  dem: DemRaster | null,
-): { grid: GridResult; stale: boolean } {
-  const t0 = performance.now();
-  const aw = aWeights(project.scenario.bandSystem);
-  const dOmegaDb = projectDOmegaDb(project);
-  const cols = snapshot.cols;
-  const rows = snapshot.rows;
-  const cellCount = cols * rows;
-  const dbA = new Float32Array(cellCount);
-  const capPerBand = project.settings?.extrapolation?.capPerBandDb ?? 6;
-  const capTotal = project.settings?.extrapolation?.capTotalDbA ?? 3;
-  let stale = false;
-
-  const ca = project.calculationArea!;
-  const origin = ca.centerLatLng;
-  // The snapshot's effective source list contains a mix of real sources
-  // (which we extrapolate against current latLng) and clusters (frozen at
-  // snapshot value). For each slot, compute the position delta — clusters
-  // get a zero delta so the predicted value equals the baseline.
-  const sourcesInSnap = snapshot.sourceIds.length;
-  const slotDelta = new Float32Array(sourcesInSnap * 3);
-  const realById = new Map<string, Source>();
-  for (const s of project.sources) realById.set(s.id, s);
-  for (let slot = 0; slot < sourcesInSnap; slot++) {
-    const isReal = snapshot.realSourceFlags?.[slot] === 1;
-    if (!isReal) continue;     // cluster: zero delta (already set)
-    const s = realById.get(snapshot.sourceIds[slot]);
-    if (!s) continue;          // source deleted since snapshot — leave at baseline
-    const [se, sn] = latLngToLocalMetres(s.latLng, origin);
-    const z = sourceAbsZ(s, project, dem) ?? 0;
-    slotDelta[slot * 3] = se - snapshot.srcAbsAtSnapshot[slot * 3];
-    slotDelta[slot * 3 + 1] = sn - snapshot.srcAbsAtSnapshot[slot * 3 + 1];
-    slotDelta[slot * 3 + 2] = z - snapshot.srcAbsAtSnapshot[slot * 3 + 2];
-  }
-
-  const PACK = packLen(project.scenario.bandSystem);
-  const NB = bandCount(project.scenario.bandSystem);
-  for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
-    let aSum = 0;
-    let aSumBaseline = 0;
-    for (let slot = 0; slot < sourcesInSnap; slot++) {
-      const base = (cellIdx * sourcesInSnap + slot) * PACK;
-      const dx = slotDelta[slot * 3];
-      const dy = slotDelta[slot * 3 + 1];
-      const dz = slotDelta[slot * 3 + 2];
-      for (let band = 0; band < NB; band++) {
-        const gIdx = base + NB + band * 3;
-        const baseline = snapshot.cells[base + band];
-        const predicted = baseline
-          + snapshot.cells[gIdx] * dx
-          + snapshot.cells[gIdx + 1] * dy
-          + snapshot.cells[gIdx + 2] * dz;
-        const delta = predicted - baseline;
-        let lp: number;
-        if (Math.abs(delta) > capPerBand) {
-          lp = baseline + Math.sign(delta) * capPerBand;
-          stale = true;
-        } else {
-          lp = predicted;
-        }
-        aSum += Math.pow(10, (lp + aw[band] + dOmegaDb) / 10);
-        aSumBaseline += Math.pow(10, (baseline + aw[band] + dOmegaDb) / 10);
-      }
-    }
-    const totalNew = aSum > 0 ? 10 * Math.log10(aSum) : -120;
-    const totalBaseline = aSumBaseline > 0 ? 10 * Math.log10(aSumBaseline) : -120;
-    if (Math.abs(totalNew - totalBaseline) > capTotal) stale = true;
-    dbA[cellIdx] = totalNew;
-  }
-
-  return {
-    grid: {
-      cols: snapshot.cols, rows: snapshot.rows, bounds: snapshot.bounds,
-      dbA, computedMs: performance.now() - t0,
-    },
-    stale,
-  };
 }
 
 // ============== Batched grid evaluation (S2) ==============
