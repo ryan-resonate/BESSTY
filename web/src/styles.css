@@ -782,18 +782,26 @@ header.app-header nav a:hover { background: var(--slate-1); }
   left: calc(100% + 6px);
   top: 0;
   /* The popover sits to the RIGHT of the 36px layers button, so its `left`
-     exceeds the positioned-ancestor width and the auto shrink-to-fit width
-     collapses — the box then renders narrower than its labels, clipping
-     "OpenStreetMap" and wrapping "Open 3D view". Sizing to `max-content`
-     (floored/capped) makes the box grow to fit its widest label instead. */
-  width: max-content;
-  min-width: 160px;
-  max-width: 240px;
+     exceeds the positioned ancestor's width and an `auto`/shrink-to-fit width
+     collapses — clipping the labels. Use an explicit width so it reads as a
+     clean, consistent menu list. */
+  width: 188px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
-.map-layer-popover .btn { font-size: 12px; padding: 5px 9px; white-space: nowrap; }
+/* Align the "Base map" title with the left edge of the item labels (box
+   padding 12px + button padding 10px). */
+.map-layer-popover .chrome-title { padding-left: 10px; }
+.map-layer-popover .btn {
+  font-size: 12px;
+  padding: 6px 10px;
+  white-space: nowrap;
+  /* Left-align every item — .btn.block centres by default, which made the
+     long labels hug the edge while short ones floated to the middle. */
+  justify-content: flex-start;
+  text-align: left;
+}
 .map-layer-popover .btn.active { background: var(--yellow); border-color: var(--ink); color: var(--ink); }
 
 .back-link { left: 60px; }    /* shifted right to clear the new controls */
