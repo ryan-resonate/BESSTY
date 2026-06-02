@@ -781,12 +781,19 @@ header.app-header nav a:hover { background: var(--slate-1); }
   position: absolute;
   left: calc(100% + 6px);
   top: 0;
+  /* The popover sits to the RIGHT of the 36px layers button, so its `left`
+     exceeds the positioned-ancestor width and the auto shrink-to-fit width
+     collapses — the box then renders narrower than its labels, clipping
+     "OpenStreetMap" and wrapping "Open 3D view". Sizing to `max-content`
+     (floored/capped) makes the box grow to fit its widest label instead. */
+  width: max-content;
   min-width: 160px;
+  max-width: 240px;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.map-layer-popover .btn { font-size: 12px; padding: 5px 9px; }
+.map-layer-popover .btn { font-size: 12px; padding: 5px 9px; white-space: nowrap; }
 .map-layer-popover .btn.active { background: var(--yellow); border-color: var(--ink); color: var(--ink); }
 
 .back-link { left: 60px; }    /* shifted right to clear the new controls */
