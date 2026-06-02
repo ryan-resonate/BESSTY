@@ -57,7 +57,7 @@ export function topographyBarriers(
   dem: DemRaster | null,
 ): Float64Array {
   if (!dem) return new Float64Array(0);
-  const samples = topo?.pathSamples ?? 12;
+  const samples = topo?.pathSamples ?? 48;
   const minH = topo?.virtualBarrierMinHeightM ?? 2;
   if (samples <= 0) return new Float64Array(0);
 

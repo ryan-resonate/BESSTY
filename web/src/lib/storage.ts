@@ -108,7 +108,7 @@ export function loadProject(id: string): Project | null {
     }
     if (p.settings && !p.settings.topography) {
       p.settings.topography = {
-        pathSamples: 12,
+        pathSamples: 48,
         virtualBarrierMinHeightM: 2,
       };
     }
@@ -205,7 +205,7 @@ function makeEmptyProject(name: string): Project {
         treeAcceptanceTheta: 0.25,
       },
       topography: {
-        pathSamples: 12,
+        pathSamples: 48,
         virtualBarrierMinHeightM: 2,
       },
     },

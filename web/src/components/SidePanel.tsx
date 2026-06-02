@@ -1490,7 +1490,7 @@ function SettingsTab(props: Props) {
   }
 
   const propagation = settings.propagation ?? { maxContributionDistanceM: 20000, treeAcceptanceTheta: 0.25 };
-  const topography = settings.topography ?? { pathSamples: 12, virtualBarrierMinHeightM: 2 };
+  const topography = settings.topography ?? { pathSamples: 48, virtualBarrierMinHeightM: 2 };
   const extrapolation = settings.extrapolation ?? { capPerBandDb: 6, capTotalDbA: 3 };
 
   return (
@@ -1728,9 +1728,9 @@ function SettingsTab(props: Props) {
       <section className="sp-section">
         <h3><span>Topography (DEM)</span></h3>
         <div className="grid-2">
-          <Field label="Path samples per source-receiver pair">
-            <NumericInput min={0} max={64} step={1}
-              value={topography.pathSamples} fallback={12}
+          <Field label="Terrain samples per source→receiver path">
+            <NumericInput min={0} max={200} step={1}
+              value={topography.pathSamples} fallback={48}
               onChange={(v) => update({
                 topography: { ...topography, pathSamples: Math.max(0, Math.round(v)) },
               })}
@@ -1746,10 +1746,15 @@ function SettingsTab(props: Props) {
           </Field>
         </div>
         <div className="hint">
-          When a DEM is loaded, the solver samples ground heights along the
-          source→receiver line. Ridges that pierce the line of sight by more
-          than the threshold become virtual barriers. Set samples to <b>0</b>
-          to fall back to flat ground.
+          With a DEM loaded, the solver reads ground heights at this many evenly
+          spaced points along each source→receiver line; where the terrain
+          pierces the line of sight by more than the threshold, it inserts a
+          virtual barrier (so hills shield like a wall). More samples resolve
+          narrow ridges more faithfully — aim for a spacing finer than your DEM
+          (e.g. a 1&nbsp;km path at 48 samples ≈ 21&nbsp;m spacing, close to a
+          10&nbsp;m DEM) — but each extra sample adds work to every grid cell, so
+          large contour grids solve more slowly. Default <b>48</b>. Set to
+          <b> 0</b> to ignore the DEM (flat ground).
         </div>
       </section>
 

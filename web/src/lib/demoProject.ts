@@ -44,7 +44,7 @@ function commonSettings(): ProjectSettings {
       treeAcceptanceTheta: 0.25,
     },
     topography: {
-      pathSamples: 12,
+      pathSamples: 48,
       virtualBarrierMinHeightM: 2,
     },
   };
