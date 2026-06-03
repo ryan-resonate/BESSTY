@@ -79,13 +79,15 @@ interface PlacedUnit {
   /// Local-frame centre of the unit (m), before rotation + centring.
   centreX: number;
   centreY: number;
-  /// Footprint -- used for bounding-box calc + downstream rendering.
-  /// These are already orientation-adjusted (swapped for 'across').
+  /// Axis-aligned bounding-box extents (m) of the unit AFTER its in-row
+  /// rotation — `widthM` along the row, `lengthM` across it. Used for packing
+  /// (x-advance), row depth, and the group bounding box. (The map renders the
+  /// native catalog footprint rotated by `yawDeg`, so these are extents, not
+  /// the drawn rectangle.)
   widthM: number;
   lengthM: number;
-  /// Source-of-truth for the unit's segment orientation, so the
-  /// materialiser can fold it into yawDeg when stamping the Source.
-  orientation: 'along' | 'across';
+  /// The unit's in-row rotation (deg), folded into yawDeg by the materialiser.
+  rotationDeg: number;
 }
 
 /// Convert a BessGroup into Sources. Pure function -- the caller
@@ -199,17 +201,11 @@ export function materialiseBessGroup(
       catalogScope: ref.catalogScope,
       groupId: group.id,
       slotKey: p.slotKey,
-      // Stamp the effective on-screen rotation: group rotation +
-      // 90° for 'across' segments. This is mathematically equivalent
-      // to swapping the rect's width/length (which the placement step
-      // already does), so the renderer can always draw the catalog
-      // footprint (widthM × lengthM) rotated by yawDeg without needing
-      // to know the segment's orientation. Previously yawDeg held only
-      // the group rotation, which made 'across' units render with
-      // their long axis along the row direction (wrong) -- only
-      // invisible at the old pixel-icon scale because the icon was
-      // fixed 18x12 px.
-      yawDeg: group.rotationDeg + (p.orientation === 'across' ? 90 : 0),
+      // Stamp the effective on-screen rotation: group rotation + the unit's
+      // in-row rotation. The placement step packs by the rotated bounding box,
+      // so the renderer draws the native catalog footprint (widthM × lengthM)
+      // rotated by yawDeg and it lines up with the reserved cell.
+      yawDeg: group.rotationDeg + p.rotationDeg,
     };
     // Mode override priority: per-slot override > segment-level
     // modeOverride > catalog default. We surface the SEGMENT value
@@ -238,6 +234,33 @@ export function materialiseBessGroup(
 
 // ===== Internal helpers =====
 
+/// Per-segment in-row rotation (deg). New field `rotationDeg`; falls back to
+/// the legacy `orientation` toggle (across → 90, along → 0).
+function segRotationDeg(seg: BessSegment): number {
+  if (typeof seg.rotationDeg === 'number' && Number.isFinite(seg.rotationDeg)) {
+    return seg.rotationDeg;
+  }
+  return seg.orientation === 'across' ? 90 : 0;
+}
+
+/// Per-segment alignment across the row depth band. Defaults to 'middle'.
+function segAlignment(seg: BessSegment): 'top' | 'middle' | 'bottom' {
+  return seg.alignment ?? 'middle';
+}
+
+/// Axis-aligned bounding box of a (widthM × lengthM) rectangle rotated by
+/// `deg`. `widthM` is the unit's long axis (along the row at 0°). Returns the
+/// extent along the row (x) and across it (y). At 0° → (w, l); at 90° → (l, w).
+function rotatedExtent(widthM: number, lengthM: number, deg: number): { along: number; across: number } {
+  const r = (deg * Math.PI) / 180;
+  const c = Math.abs(Math.cos(r));
+  const s = Math.abs(Math.sin(r));
+  return {
+    along: widthM * c + lengthM * s,
+    across: widthM * s + lengthM * c,
+  };
+}
+
 function placeRow(
   row: BessRow,
   rowIdx: number,
@@ -247,6 +270,9 @@ function placeRow(
   lookup: CatalogLookup,
 ): { units: PlacedUnit[]; rowLengthM: number } {
   const units: PlacedUnit[] = [];
+  // Per-unit alignment, recorded during the first pass so centreY can be set
+  // once the row's full depth is known.
+  const aligns: Array<'top' | 'middle' | 'bottom'> = [];
   let x = 0;
   let maxLengthInRow = 0;
   const segments = row.segments ?? [];
@@ -272,9 +298,13 @@ function placeRow(
       // long axis along the row direction (so we lay them widthM
       // along x); "across" rotates 90° (lay lengthM along x).
       const fp = entry ? footprintFor(entry) : { widthM: 5.1, lengthM: 1.7 };
-      const orientedWidthM = seg.orientation === 'across' ? fp.lengthM : fp.widthM;
-      const orientedLengthM = seg.orientation === 'across' ? fp.widthM : fp.lengthM;
-      if (orientedLengthM > maxLengthInRow) maxLengthInRow = orientedLengthM;
+      const rotDeg = segRotationDeg(seg);
+      const align = segAlignment(seg);
+      // Bounding box of the unit AFTER its in-row rotation: `along` packs it
+      // along the row (x); `across` sets the row depth (y). Generalises the
+      // old 0/90 width↔length swap to any angle, with no overlap.
+      const ext = rotatedExtent(fp.widthM, fp.lengthM, rotDeg);
+      if (ext.across > maxLengthInRow) maxLengthInRow = ext.across;
       for (let u = 0; u < count; u++) {
         units.push({
           // Slot key gains the segment-sequence index (k) so per-unit
@@ -288,13 +318,14 @@ function placeRow(
             modelId: seg.modelId,
             modeOverride: seg.modeOverride,
           },
-          centreX: x + orientedWidthM / 2,
-          centreY: y + orientedLengthM / 2,
-          widthM: orientedWidthM,
-          lengthM: orientedLengthM,
-          orientation: seg.orientation,
+          centreX: x + ext.along / 2,
+          centreY: y + ext.across / 2,   // provisional (top); fixed in pass 2
+          widthM: ext.along,
+          lengthM: ext.across,
+          rotationDeg: rotDeg,
         });
-        x += orientedWidthM;
+        aligns.push(align);
+        x += ext.along;
         // Intra-segment spacing applies between consecutive units in the
         // same segment only. The LAST unit in the segment gets the
         // segment's gapAfterM appended (handled below).
@@ -306,6 +337,19 @@ function placeRow(
     }
     // Gap between sequence copies (skipped after the final copy).
     if (segSeqIdx < segSeqReps - 1) x += segSeqGap;
+  }
+  // Pass 2: now the row's full depth (maxLengthInRow) is known, place each
+  // unit across the row band per its segment alignment. 'top' keeps the
+  // provisional top-aligned centre; 'middle' centres it in the band; 'bottom'
+  // pushes the unit's bottom edge to the band's bottom. (For a uniform-depth
+  // row all three coincide, so existing single-model rows are unchanged.)
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i];
+    switch (aligns[i]) {
+      case 'middle': u.centreY = y + maxLengthInRow / 2; break;
+      case 'bottom': u.centreY = y + maxLengthInRow - u.lengthM / 2; break;
+      default: break; // 'top' already set to y + u.lengthM/2
+    }
   }
   return { units, rowLengthM: maxLengthInRow };
 }
@@ -360,7 +404,8 @@ export function migrateLegacyRow(row: BessRow): BessRow {
       // Legacy spacing was uniform across the entire row, so the
       // gap-after between segments also matches.
       gapAfterM: spacing,
-      orientation: 'along',
+      rotationDeg: 0,
+      alignment: 'middle',
     });
     i += count;
   }
@@ -431,7 +476,8 @@ export function newBessGroupTemplate(
               count: 8,
               spacingWithinM: 1.5,
               gapAfterM: 0,
-              orientation: 'along',
+              rotationDeg: 0,
+              alignment: 'middle',
             }]
           : [],
         rowRepeat: 1,

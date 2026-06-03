@@ -169,14 +169,22 @@ export interface BessSegment {
   /// Edge-to-edge gap between this segment's last unit and the next
   /// segment's first unit. Ignored for the row's final segment.
   gapAfterM: number;
-  /// Orientation of the unit's long axis within the row:
-  ///   - 'along'  : long axis parallel to the row direction.
-  ///   - 'across' : long axis perpendicular to the row direction
-  ///                (i.e. units "stand on end"). Useful for narrow
-  ///                BESS cabinets that pack tighter end-on.
-  /// Set per-segment so inverters can sit differently from the BESS
-  /// they punctuate.
-  orientation: 'along' | 'across';
+  /// Rotation of each unit in this segment, in degrees clockwise, added on
+  /// top of the group rotation. 0 = long axis along the row; 90 = long axis
+  /// across the row ("standing on end"). Any value is allowed (packing uses
+  /// the rotated bounding box) but 0 and 90 are the common cases. Replaces the
+  /// legacy `orientation` toggle; when absent it's derived from `orientation`
+  /// (across → 90, along → 0).
+  rotationDeg?: number;
+  /// How units sit across the row's depth band when units in the row have
+  /// different depths (mixed models / rotations): 'top' aligns their top
+  /// edges, 'middle' centres them, 'bottom' aligns their bottom edges.
+  /// Defaults to 'middle'. Set per-segment so e.g. inverters can bottom-align
+  /// while the BESS they punctuate stay centred.
+  alignment?: 'top' | 'middle' | 'bottom';
+  /// Legacy binary orientation, kept so older projects round-trip. New code
+  /// reads `rotationDeg`/`alignment` (with this as the fallback).
+  orientation?: 'along' | 'across';
 }
 
 // Legacy unit reference (pre-segment model). Kept so old projects

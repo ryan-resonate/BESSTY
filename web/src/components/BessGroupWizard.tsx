@@ -135,7 +135,8 @@ export function BessGroupWizard(props: Props) {
             count: 8,
             spacingWithinM: 1.5,
             gapAfterM: 0,
-            orientation: 'along' as const,
+            rotationDeg: 0,
+            alignment: 'middle' as const,
           }]
         : [],
       rowRepeat: 1,
@@ -195,7 +196,8 @@ export function BessGroupWizard(props: Props) {
           count: 1,
           spacingWithinM: 1.5,
           gapAfterM: 0,   // last segment -- ignored anyway
-          orientation: 'along',
+          rotationDeg: 0,
+          alignment: 'middle',
         };
         // The previously-last segment was the last in the row, so its
         // gapAfterM was ignored by the materialiser and quite possibly
@@ -569,9 +571,12 @@ function SegmentChip(p: SegmentChipProps) {
         title={current?.displayName ?? `Missing: ${p.segment.modelId}`}
       >
         {isBess ? 'B · ' : isAux ? 'A · ' : '? '}{label}
-        {p.segment.orientation === 'across' && (
-          <span style={{ marginLeft: 4, fontSize: 9, opacity: 0.7 }}>↕</span>
-        )}
+        {(() => {
+          const rot = p.segment.rotationDeg ?? (p.segment.orientation === 'across' ? 90 : 0);
+          return rot ? (
+            <span style={{ marginLeft: 4, fontSize: 9, opacity: 0.7 }}>{rot}°</span>
+          ) : null;
+        })()}
       </button>
       {isEditing && (
         <div style={segmentMenuStyle} onClick={(e) => e.stopPropagation()}>
@@ -644,17 +649,31 @@ function SegmentChip(p: SegmentChipProps) {
             </label>
           )}
 
-          <label style={menuFieldStyle}>
-            <span style={fieldLabelStyle}>Orientation within row</span>
-            <select
-              value={p.segment.orientation}
-              onChange={(e) => p.onChange({ orientation: e.target.value as 'along' | 'across' })}
-              style={{ ...inputStyle, fontSize: 12 }}
-            >
-              <option value="along">Lengthwise (long axis along the row)</option>
-              <option value="across">Widthwise (long axis across the row)</option>
-            </select>
-          </label>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+            <label style={menuFieldStyle}>
+              <span style={fieldLabelStyle}>Rotation (°)</span>
+              <NumberDraft
+                value={p.segment.rotationDeg ?? (p.segment.orientation === 'across' ? 90 : 0)}
+                min={0} step={5}
+                onCommit={(v) => p.onChange({ rotationDeg: v })} />
+            </label>
+            <label style={menuFieldStyle}>
+              <span style={fieldLabelStyle}>Align in row</span>
+              <select
+                value={p.segment.alignment ?? 'middle'}
+                onChange={(e) => p.onChange({ alignment: e.target.value as 'top' | 'middle' | 'bottom' })}
+                style={{ ...inputStyle, fontSize: 12 }}
+              >
+                <option value="top">Top</option>
+                <option value="middle">Middle</option>
+                <option value="bottom">Bottom</option>
+              </select>
+            </label>
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--ink-soft)', marginTop: -2 }}>
+            0° = long axis along the row, 90° = across. Align sets how units sit
+            when a row mixes depths.
+          </div>
 
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
             <button type="button" onClick={() => { p.onRemove(); p.setEditingKey(null); }}
@@ -716,10 +735,15 @@ function PreviewSvg({ materialised, rotationDeg, catalogLookup }: PreviewProps) 
   // Bbox in local metres
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const p of pts) {
-    minX = Math.min(minX, p.x - p.fp.widthM / 2);
-    maxX = Math.max(maxX, p.x + p.fp.widthM / 2);
-    minY = Math.min(minY, p.y - p.fp.lengthM / 2);
-    maxY = Math.max(maxY, p.y + p.fp.lengthM / 2);
+    // Each rect is drawn rotated by its yaw, so fit the viewBox to the rotated
+    // bounding box (otherwise a 90°-rotated unit clips at the edges).
+    const yaw = ((p.source.yawDeg ?? rotationDeg) * Math.PI) / 180;
+    const ex = Math.abs(p.fp.widthM * Math.cos(yaw)) + Math.abs(p.fp.lengthM * Math.sin(yaw));
+    const ey = Math.abs(p.fp.widthM * Math.sin(yaw)) + Math.abs(p.fp.lengthM * Math.cos(yaw));
+    minX = Math.min(minX, p.x - ex / 2);
+    maxX = Math.max(maxX, p.x + ex / 2);
+    minY = Math.min(minY, p.y - ey / 2);
+    maxY = Math.max(maxY, p.y + ey / 2);
   }
   // Padding
   const padM = Math.max(1, (maxX - minX) * 0.08);
@@ -739,9 +763,11 @@ function PreviewSvg({ materialised, rotationDeg, catalogLookup }: PreviewProps) 
         const kind = entry?.kind ?? 'bess';
         const fill = kind === 'auxiliary' ? '#fed7aa' : '#dbeafe';
         const stroke = kind === 'auxiliary' ? '#7c2d12' : '#1e3a8a';
-        // Rotate the rect about its own centre to match the group rotation.
+        // Rotate the rect about its own centre by the unit's full yaw (group
+        // rotation + the segment's in-row rotation) so per-segment rotation
+        // shows in the preview, matching what the map draws.
         return (
-          <g key={i} transform={`translate(${p.x} ${p.y}) rotate(${rotationDeg})`}>
+          <g key={i} transform={`translate(${p.x} ${p.y}) rotate(${p.source.yawDeg ?? rotationDeg})`}>
             <rect
               x={-p.fp.widthM / 2} y={-p.fp.lengthM / 2}
               width={p.fp.widthM} height={p.fp.lengthM}
