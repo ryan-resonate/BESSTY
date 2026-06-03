@@ -90,6 +90,16 @@ interface PlacedUnit {
   lengthM: number;
   /// The unit's in-row rotation (deg), folded into yawDeg by the materialiser.
   rotationDeg: number;
+  /// Horizontal alignment carried from the owning row, applied as a global
+  /// post-process (`applyRowAlignment`) once the full base block is known.
+  /// Absent / 'left' + 0 offset → no shift (the historic behaviour).
+  align?: 'left' | 'center' | 'right';
+  alignOffsetM?: number;
+  /// Stable id of the physical ROW INSTANCE this unit belongs to. All units of
+  /// one row (and its vertical rowRepeat copies, which share x-extent) carry the
+  /// same key so they shift together during alignment. Set in `layoutItem`;
+  /// preserved verbatim by `offsetUnits`/`tile2D` (they spread `...u`).
+  alignKey?: string;
 }
 
 /// Convert a BessGroup into Sources. Pure function -- the caller
@@ -272,6 +282,19 @@ function segRotationDeg(seg: BessSegment): number {
 /// Per-segment alignment across the row depth band. Defaults to 'middle'.
 function segAlignment(seg: BessSegment): 'top' | 'middle' | 'bottom' {
   return seg.alignment ?? 'middle';
+}
+
+/// Per-row horizontal alignment within the group bounding box. Defaults to
+/// 'left' (the pre-feature behaviour — every row flush at x=0).
+function rowAlign(row: BessRow): 'left' | 'center' | 'right' {
+  return row.align ?? 'left';
+}
+
+/// Per-row signed horizontal nudge (m, +right) applied after the anchor.
+function rowAlignOffset(row: BessRow): number {
+  return typeof row.alignOffsetM === 'number' && Number.isFinite(row.alignOffsetM)
+    ? row.alignOffsetM
+    : 0;
 }
 
 /// Axis-aligned bounding box of a (widthM × lengthM) rectangle rotated by
@@ -464,15 +487,27 @@ function layoutItem(item: BessSeqItem, lookup: CatalogLookup): LayoutBlock {
   if (item.kind === 'row') {
     const r = migrateLegacyRow(item.row);
     const base = layoutRowBlock(r, lookup);
+    // Tag every unit with the row's alignment + a stable per-row-instance key
+    // (`a{item.id}`) so the global `applyRowAlignment` pass can shift the whole
+    // row together later. The key survives tiling (tile2D/offsetUnits spread
+    // `...u`), so vertical rowRepeat copies — which share x-extent — shift
+    // identically.
+    const align = rowAlign(r);
+    const alignOffsetM = rowAlignOffset(r);
+    const alignKey = `a${item.id}`;
+    const tagged: LayoutBlock = {
+      ...base,
+      units: base.units.map((u) => ({ ...u, align, alignOffsetM, alignKey })),
+    };
     // A row item still honours its own `rowRepeat` (a row-local vertical
     // repeat) — a convenience equivalent to wrapping it in a down-group, so the
     // existing per-row "Repeat row ×N" control keeps working. The item id tags
     // the keys so sibling rows of the same model don't collide.
     const rr = Math.max(1, Math.floor(r.rowRepeat ?? 1));
     if (rr > 1) {
-      return tile2D(base, rr, r.gapBetweenCopiesM ?? 2, 1, 0, `i${item.id}.`);
+      return tile2D(tagged, rr, r.gapBetweenCopiesM ?? 2, 1, 0, `i${item.id}.`);
     }
-    return { ...base, units: base.units.map((u) => ({ ...u, slotKey: `i${item.id}.${u.slotKey}` })) };
+    return { ...tagged, units: tagged.units.map((u) => ({ ...u, slotKey: `i${item.id}.${u.slotKey}` })) };
   }
   return layoutGroupItem(item, lookup);
 }
@@ -486,6 +521,60 @@ function layoutGroupItem(g: BessGroupItem, lookup: CatalogLookup): LayoutBlock {
   return tile2D(inner, g.repeatDown ?? 1, g.gapDownM ?? 0, g.repeatRight ?? 1, g.gapRightM ?? 0, `g${g.id}.`);
 }
 
+/// Apply per-row horizontal alignment to the base sequence block, in place.
+///
+/// The reference is the WHOLE base block: its width `block.width` is the widest
+/// row anywhere in the group (nested groups included, since they're already
+/// stacked into the block). Every row instance sits left-aligned at x∈[0,w]
+/// after `stackDown`; here we shift each instance so its chosen edge lands on
+/// the box edge, plus a signed offset.
+///
+/// Grouping is by `alignKey` (one key per physical row instance). Vertical
+/// rowRepeat copies share a key and the same x-extent, so they shift together
+/// and identically — correct. We run this on the BASE block, BEFORE the top-
+/// level whole-sequence repeat, so each replicated tile is aligned the same way
+/// rather than every copy snapping to the far edge of the replicated strip.
+///
+/// Reference width is frozen at the pre-shift `block.width`, so offsets that
+/// push a row past the edge don't feed back into other rows' anchors.
+function applyRowAlignment(block: LayoutBlock): void {
+  const W = block.width;
+  // Bucket units by row instance, skipping plain left/0 rows (the no-op
+  // majority) and any untagged units (e.g. the legacy flat path).
+  const groups = new Map<string, PlacedUnit[]>();
+  for (const u of block.units) {
+    if (!u.alignKey) continue;
+    const align = u.align ?? 'left';
+    const offset = u.alignOffsetM ?? 0;
+    if (align === 'left' && offset === 0) continue;
+    let g = groups.get(u.alignKey);
+    if (!g) { g = []; groups.set(u.alignKey, g); }
+    g.push(u);
+  }
+  for (const units of groups.values()) {
+    let minLeft = Infinity;
+    let maxRight = -Infinity;
+    for (const u of units) {
+      const l = u.centreX - u.widthM / 2;
+      const r = u.centreX + u.widthM / 2;
+      if (l < minLeft) minLeft = l;
+      if (r > maxRight) maxRight = r;
+    }
+    const w = maxRight - minLeft;
+    const align = units[0].align ?? 'left';
+    const offset = units[0].alignOffsetM ?? 0;
+    let targetLeft: number;
+    switch (align) {
+      case 'right': targetLeft = W - w; break;
+      case 'center': targetLeft = (W - w) / 2; break;
+      default: targetLeft = 0; break; // 'left'
+    }
+    const shift = (targetLeft + offset) - minLeft;
+    if (shift === 0) continue;
+    for (const u of units) u.centreX += shift;
+  }
+}
+
 /// Recursive layout for sequence-based groups: lay out the top-level sequence,
 /// then apply the group's top-level 2-D repeat. Units stay in a 0-origin frame;
 /// `finishPlacement` recentres + rotates + projects.
@@ -495,6 +584,9 @@ function layoutSequenceUnits(group: BessGroup, lookup: CatalogLookup): PlacedUni
     items.map((it) => layoutItem(it, lookup)),
     items.map((it) => it.gapAfterM ?? 0),
   );
+  // Per-row horizontal alignment is resolved against the full base-block width
+  // (the group bounding box) before the whole-sequence repeat tiles it.
+  applyRowAlignment(inner);
   return tile2D(
     inner,
     group.repeatDown ?? 1, group.gapDownM ?? 5,

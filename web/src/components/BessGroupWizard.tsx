@@ -662,6 +662,27 @@ function BessRowCard(p: RowCardProps) {
                 disabled={row.rowRepeat <= 1}
                 onCommit={(v) => p.onChange({ gapBetweenCopiesM: v })} />
             </label>
+            <label style={fieldStyleSm}>
+              <span style={fieldLabelStyle} title="Horizontal alignment of this row within the group's bounding box (the widest row sets the edges). Right-align several rows to flush them to the right edge.">
+                Row alignment
+              </span>
+              <select
+                value={row.align ?? 'left'}
+                onChange={(e) => p.onChange({ align: e.target.value as 'left' | 'center' | 'right' })}
+                style={{ ...inputStyle, fontSize: 12 }}
+              >
+                <option value="left">Left</option>
+                <option value="center">Centre</option>
+                <option value="right">Right</option>
+              </select>
+            </label>
+            <label style={fieldStyleSm}>
+              <span style={fieldLabelStyle} title="Signed nudge from the alignment anchor: +ve moves the row right (east), −ve moves it left. e.g. Right align with −5 sits the row 5 m inside the right edge.">
+                Alignment offset (m, +right)
+              </span>
+              <NumberDraft value={row.alignOffsetM ?? 0} step={0.1}
+                onCommit={(v) => p.onChange({ alignOffsetM: v })} />
+            </label>
           </div>
           <div style={rowCardActionsStyle}>
             <button type="button" onClick={p.onDuplicate} style={ghostBtnTinyStyle}>⧉ duplicate template</button>
@@ -680,7 +701,12 @@ function describeRow(row: BessRow): string {
   const totalUnits = row.segments.reduce((acc, s) => acc + Math.max(0, Math.floor(s.count)), 0);
   const repeatTxt = row.rowRepeat > 1 ? ` · row × ${row.rowRepeat}` : '';
   const segDesc = row.segments.map((s) => `${s.count}×${s.catalogScope.charAt(0).toUpperCase()}`).join(' + ');
-  return `${segDesc} (${totalUnits} unit${totalUnits === 1 ? '' : 's'})${repeatTxt}`;
+  const align = row.align ?? 'left';
+  const off = row.alignOffsetM ?? 0;
+  const alignTxt = (align !== 'left' || off !== 0)
+    ? ` · ${align === 'right' ? '⇥ right' : align === 'center' ? '↔ centre' : '⇤ left'}${off ? ` ${off > 0 ? '+' : ''}${off}m` : ''}`
+    : '';
+  return `${segDesc} (${totalUnits} unit${totalUnits === 1 ? '' : 's'})${repeatTxt}${alignTxt}`;
 }
 
 // ===== Inter-row gap control (rendered between row cards) =====

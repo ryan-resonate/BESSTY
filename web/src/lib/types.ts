@@ -192,6 +192,21 @@ export interface BessRow {
   /// (Distinct from the inter-template gap on the parent group.)
   /// Ignored when rowRepeat <= 1.
   gapBetweenCopiesM: number;
+  /// Horizontal alignment of this row within the group's overall
+  /// bounding box (the base sequence block, BEFORE the top-level
+  /// whole-sequence repeat, but INCLUDING any nested groups). The box
+  /// width is the widest row anywhere in the group.
+  ///   'left'   → row's left edge at the box left edge (the default; how
+  ///              every row behaved before this field existed).
+  ///   'center' → row centred in the box.
+  ///   'right'  → row's right edge flush with the box right edge.
+  /// Absent = 'left'.
+  align?: 'left' | 'center' | 'right';
+  /// Signed horizontal nudge (m) applied AFTER `align`: +ve shifts the
+  /// row right (east in the group's local frame), -ve shifts it left.
+  /// e.g. align:'right', alignOffsetM:-5 sits the row 5 m inside the
+  /// box's right edge. Absent = 0.
+  alignOffsetM?: number;
 
   // ===== Legacy fields, kept for backward-compat read-side only =====
   // Older projects stored a flat unit pattern + uniform spacing. We
