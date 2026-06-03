@@ -38,8 +38,11 @@
 import { footprintFor } from './catalog';
 import type {
   BessGroup,
+  BessGroupItem,
   BessRow,
+  BessRowItem,
   BessSegment,
+  BessSeqItem,
   CatalogEntry,
   CatalogScope,
   Source,
@@ -98,6 +101,19 @@ export function materialiseBessGroup(
   lookup: CatalogLookup,
   opts: { existingOverrides?: BessGroup['unitOverrides'] } = {},
 ): MaterialisedGroup {
+  // Two layout engines share one placement tail. Groups that opt into the
+  // recursive `sequence` model use the new nested/2-D engine; everything else
+  // keeps the original flat path byte-for-byte (so legacy layouts + per-unit
+  // overrides are untouched).
+  const placed = group.sequence && group.sequence.length > 0
+    ? layoutSequenceUnits(group, lookup)
+    : layoutFlatUnits(group, lookup);
+  return finishPlacement(placed, group, lookup, opts);
+}
+
+/// Legacy flat layout — stamp rows × rowRepeat × sequenceRepeat top-to-bottom.
+/// Unchanged from the original materialiser.
+function layoutFlatUnits(group: BessGroup, lookup: CatalogLookup): PlacedUnit[] {
   // Normalise rows: migrate any legacy pattern-based rows to the
   // segment model up front so the walker below only deals with one
   // shape. This is pure (no mutation of the input group).
@@ -144,7 +160,18 @@ export function materialiseBessGroup(
       }
     }
   }
+  return placed;
+}
 
+/// Shared placement tail — recentre on the bbox, rotate by the group rotation,
+/// project to lat/lng, apply per-slot overrides, and stamp Sources. Used by
+/// both the flat and the recursive layouts.
+function finishPlacement(
+  placed: PlacedUnit[],
+  group: BessGroup,
+  lookup: CatalogLookup,
+  opts: { existingOverrides?: BessGroup['unitOverrides'] },
+): MaterialisedGroup {
   // ----- Step 2: bounding box + recentre so (0,0) is the group's centre -----
   const bbox = boundingBox(placed);
   const cx = (bbox.minX + bbox.maxX) / 2;
@@ -261,14 +288,18 @@ function rotatedExtent(widthM: number, lengthM: number, deg: number): { along: n
   };
 }
 
-function placeRow(
-  row: BessRow,
-  rowIdx: number,
-  rowCopyIdx: number,
-  seqIdx: number,
-  y: number,
-  lookup: CatalogLookup,
-): { units: PlacedUnit[]; rowLengthM: number } {
+interface LayoutBlock {
+  units: PlacedUnit[];
+  width: number;   // extent along the row (x)
+  height: number;  // extent across the row / depth (y)
+}
+
+/// Lay out one row's segments into a 0-origin block (unit centres relative to
+/// the row's top-left). Base slot keys are the per-row part
+/// `k{segSeqIdx}-s{segId}-u{u}`; callers prefix them with their tiling path.
+/// Single source of truth for in-row geometry (segment packing + per-segment
+/// rotation + top/mid/bottom alignment), shared by the flat and recursive paths.
+function layoutRowBlock(row: BessRow, lookup: CatalogLookup): LayoutBlock {
   const units: PlacedUnit[] = [];
   // Per-unit alignment, recorded during the first pass so centreY can be set
   // once the row's full depth is known.
@@ -312,14 +343,14 @@ function placeRow(
           // keys (without k) continue to work via existingOverrides
           // lookup; they just won't match any post-rewrite slots, which
           // is the correct behaviour for a structural change.
-          slotKey: `q${seqIdx}-r${rowIdx}-c${rowCopyIdx}-k${segSeqIdx}-s${seg.id}-u${u}`,
+          slotKey: `k${segSeqIdx}-s${seg.id}-u${u}`,
           segRef: {
             catalogScope: seg.catalogScope,
             modelId: seg.modelId,
             modeOverride: seg.modeOverride,
           },
           centreX: x + ext.along / 2,
-          centreY: y + ext.across / 2,   // provisional (top); fixed in pass 2
+          centreY: ext.across / 2,   // provisional (top); fixed in pass 2
           widthM: ext.along,
           lengthM: ext.across,
           rotationDeg: rotDeg,
@@ -346,12 +377,165 @@ function placeRow(
   for (let i = 0; i < units.length; i++) {
     const u = units[i];
     switch (aligns[i]) {
-      case 'middle': u.centreY = y + maxLengthInRow / 2; break;
-      case 'bottom': u.centreY = y + maxLengthInRow - u.lengthM / 2; break;
-      default: break; // 'top' already set to y + u.lengthM/2
+      case 'middle': u.centreY = maxLengthInRow / 2; break;
+      case 'bottom': u.centreY = maxLengthInRow - u.lengthM / 2; break;
+      default: break; // 'top' already set to u.lengthM/2
     }
   }
-  return { units, rowLengthM: maxLengthInRow };
+  return { units, width: x, height: maxLengthInRow };
+}
+
+/// Legacy flat-path row placement: lay out at 0-origin, then prefix the base
+/// slot keys with `q{seq}-r{row}-c{copy}` and offset by `y`. Produces the SAME
+/// slot keys + positions as before, so flat-group overrides are unaffected.
+function placeRow(
+  row: BessRow,
+  rowIdx: number,
+  rowCopyIdx: number,
+  seqIdx: number,
+  y: number,
+  lookup: CatalogLookup,
+): { units: PlacedUnit[]; rowLengthM: number } {
+  const block = layoutRowBlock(row, lookup);
+  const prefix = `q${seqIdx}-r${rowIdx}-c${rowCopyIdx}-`;
+  const units = block.units.map((u) => ({
+    ...u,
+    slotKey: prefix + u.slotKey,
+    centreY: u.centreY + y,
+  }));
+  return { units, rowLengthM: block.height };
+}
+
+// ===== Recursive (nested + 2-D) layout engine =====
+
+function offsetUnits(units: PlacedUnit[], dx: number, dy: number): PlacedUnit[] {
+  return units.map((u) => ({ ...u, centreX: u.centreX + dx, centreY: u.centreY + dy }));
+}
+
+/// Stack item blocks top-to-bottom, left-aligned at x=0, with `gaps[i]` between
+/// item i and i+1. Returns the combined block.
+function stackDown(blocks: LayoutBlock[], gaps: number[]): LayoutBlock {
+  const units: PlacedUnit[] = [];
+  let y = 0;
+  let width = 0;
+  for (let i = 0; i < blocks.length; i++) {
+    units.push(...offsetUnits(blocks[i].units, 0, y));
+    width = Math.max(width, blocks[i].width);
+    y += blocks[i].height;
+    if (i < blocks.length - 1) y += gaps[i] ?? 0;
+  }
+  return { units, width, height: y };
+}
+
+/// Tile a block in 2-D: `nDown` copies stacked vertically (gapDown between),
+/// `nRight` copies along x (gapRight between). Each copy's slot keys are
+/// prefixed with its (down,right) indices so they stay unique + stable.
+function tile2D(
+  b: LayoutBlock,
+  nDown: number, gapDown: number,
+  nRight: number, gapRight: number,
+  keyPrefix: string,
+): LayoutBlock {
+  const down = Math.max(1, Math.floor(nDown));
+  const right = Math.max(1, Math.floor(nRight));
+  const units: PlacedUnit[] = [];
+  for (let d = 0; d < down; d++) {
+    for (let r = 0; r < right; r++) {
+      const dx = r * (b.width + gapRight);
+      const dy = d * (b.height + gapDown);
+      for (const u of b.units) {
+        units.push({
+          ...u,
+          centreX: u.centreX + dx,
+          centreY: u.centreY + dy,
+          slotKey: `${keyPrefix}D${d}R${r}.${u.slotKey}`,
+        });
+      }
+    }
+  }
+  return {
+    units,
+    width: right * b.width + (right - 1) * gapRight,
+    height: down * b.height + (down - 1) * gapDown,
+  };
+}
+
+/// Lay out a sequence item (row or nested group) into a 0-origin block.
+function layoutItem(item: BessSeqItem, lookup: CatalogLookup): LayoutBlock {
+  if (item.kind === 'row') {
+    const block = layoutRowBlock(migrateLegacyRow(item.row), lookup);
+    // Tag with the item id so sibling rows of the same model don't collide.
+    return { ...block, units: block.units.map((u) => ({ ...u, slotKey: `i${item.id}.${u.slotKey}` })) };
+  }
+  return layoutGroupItem(item, lookup);
+}
+
+/// Lay out a nested group: stack its items top-to-bottom, then tile 2-D.
+function layoutGroupItem(g: BessGroupItem, lookup: CatalogLookup): LayoutBlock {
+  const inner = stackDown(
+    g.items.map((it) => layoutItem(it, lookup)),
+    g.items.map((it) => it.gapAfterM ?? 0),
+  );
+  return tile2D(inner, g.repeatDown ?? 1, g.gapDownM ?? 0, g.repeatRight ?? 1, g.gapRightM ?? 0, `g${g.id}.`);
+}
+
+/// Recursive layout for sequence-based groups: lay out the top-level sequence,
+/// then apply the group's top-level 2-D repeat. Units stay in a 0-origin frame;
+/// `finishPlacement` recentres + rotates + projects.
+function layoutSequenceUnits(group: BessGroup, lookup: CatalogLookup): PlacedUnit[] {
+  const items = group.sequence ?? [];
+  const inner = stackDown(
+    items.map((it) => layoutItem(it, lookup)),
+    items.map((it) => it.gapAfterM ?? 0),
+  );
+  return tile2D(
+    inner,
+    group.repeatDown ?? 1, group.gapDownM ?? 5,
+    group.repeatRight ?? 1, group.gapRightM ?? 5,
+    'top.',
+  ).units;
+}
+
+/// Convert a legacy flat BessGroup into the recursive sequence model, preserving
+/// layout exactly. `rowRepeat` → a wrapping group (down ×rowRepeat);
+/// `sequenceRepeat` → the top-level `repeatDown`. Used by the wizard to upgrade
+/// an old group the first time it's edited in the nested UI. Idempotent — a
+/// group that already has a `sequence` is returned as-is.
+export function groupToSequence(
+  group: BessGroup,
+): Pick<BessGroup, 'sequence' | 'repeatDown' | 'gapDownM' | 'repeatRight' | 'gapRightM'> {
+  if (group.sequence && group.sequence.length > 0) {
+    return {
+      sequence: group.sequence,
+      repeatDown: group.repeatDown ?? 1,
+      gapDownM: group.gapDownM ?? 5,
+      repeatRight: group.repeatRight ?? 1,
+      gapRightM: group.gapRightM ?? 5,
+    };
+  }
+  const rows = group.rows.map(migrateLegacyRow);
+  const interGaps = group.interRowGapsM ?? [];
+  const items: BessSeqItem[] = rows.map((row, i): BessSeqItem => {
+    const gapAfter = i < rows.length - 1 ? (interGaps[i] ?? 2) : 0;
+    const rowItem: BessRowItem = { kind: 'row', id: row.id, row: { ...row, rowRepeat: 1 }, gapAfterM: 0 };
+    const rr = row.rowRepeat ?? 1;
+    if (rr > 1) {
+      return {
+        kind: 'group', id: `${row.id}-rep`,
+        repeatDown: rr, gapDownM: row.gapBetweenCopiesM ?? 2,
+        repeatRight: 1, gapRightM: 0,
+        gapAfterM: gapAfter, items: [rowItem],
+      };
+    }
+    return { ...rowItem, gapAfterM: gapAfter };
+  });
+  return {
+    sequence: items,
+    repeatDown: group.sequenceRepeat ?? 1,
+    gapDownM: group.gapBetweenSequencesM ?? 5,
+    repeatRight: 1,
+    gapRightM: 0,
+  };
 }
 
 /// Translate a legacy pattern-based row into the segment model. Pure;

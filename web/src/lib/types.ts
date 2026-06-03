@@ -75,6 +75,49 @@ export interface Source {
 /// Editing flow: user opens the wizard, tweaks parameters, hits Apply.
 /// `materialiseBessGroup` regenerates the slot table; per-slot
 /// `unitOverrides` are re-applied so hand-edits survive.
+/// ===== Recursive sequence model (supersedes the flat rows[] layout) =====
+///
+/// A group's content is an ordered list of items, each either a single row or
+/// a nested repeat-group. Each repeat-group tiles its content in 2-D: `down`
+/// copies stacked vertically (more rows) and `right` copies along the row
+/// direction. The whole `BessGroup` is the implicit outermost group, with its
+/// own top-level 2-D repeat (`repeatDown`/`repeatRight`).
+///
+/// Only groups that carry a `sequence` use this path; legacy `rows`-based
+/// groups keep the original flat materialiser untouched (so existing layouts
+/// and per-unit overrides are unaffected) until converted in the wizard.
+export type BessSeqItem = BessRowItem | BessGroupItem;
+
+export interface BessRowItem {
+  kind: 'row';
+  /// Stable id for this item (drives slot keys + drag identity).
+  id: string;
+  /// The row content (segments). `rowRepeat` is NOT used here — repeating a
+  /// row is expressed by wrapping it in a group with `repeatDown > 1`.
+  row: BessRow;
+  /// Edge-to-edge gap (m) to the next sibling item. Ignored for the last item.
+  gapAfterM: number;
+}
+
+export interface BessGroupItem {
+  kind: 'group';
+  id: string;
+  /// Optional label shown on the group header.
+  name?: string;
+  /// Vertical replication: `repeatDown` copies of the group's content stacked
+  /// top-to-bottom, `gapDownM` between copies. 1 = no vertical tiling.
+  repeatDown: number;
+  gapDownM: number;
+  /// Horizontal replication: `repeatRight` copies along the row direction,
+  /// `gapRightM` between copies. 1 = no horizontal tiling.
+  repeatRight: number;
+  gapRightM: number;
+  /// Edge-to-edge gap (m) to the next sibling item.
+  gapAfterM: number;
+  /// Recursive content — rows and/or nested groups.
+  items: BessSeqItem[];
+}
+
 export interface BessGroup {
   id: string;
   name: string;
@@ -83,6 +126,15 @@ export interface BessGroup {
   centerLatLng: [number, number];
   /// Clockwise from north, in degrees.
   rotationDeg: number;
+  /// Recursive sequence content. When present this is the source of truth and
+  /// the flat `rows`/`sequenceRepeat`/`interRowGapsM` fields are ignored.
+  sequence?: BessSeqItem[];
+  /// Top-level 2-D repeat of the whole sequence (the "Repeat whole sequence"
+  /// control). `repeatDown` subsumes the legacy `sequenceRepeat`.
+  repeatDown?: number;
+  gapDownM?: number;
+  repeatRight?: number;
+  gapRightM?: number;
   rows: BessRow[];
   /// Inter-row-template gaps (m, edge-to-edge), rendered in the wizard
   /// as editable controls between the row cards. Length is
