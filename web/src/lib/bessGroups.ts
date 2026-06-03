@@ -40,7 +40,6 @@ import type {
   BessGroup,
   BessGroupItem,
   BessRow,
-  BessRowItem,
   BessSegment,
   BessSeqItem,
   CatalogEntry,
@@ -105,7 +104,7 @@ export function materialiseBessGroup(
   // recursive `sequence` model use the new nested/2-D engine; everything else
   // keeps the original flat path byte-for-byte (so legacy layouts + per-unit
   // overrides are untouched).
-  const placed = group.sequence && group.sequence.length > 0
+  const placed = Array.isArray(group.sequence)
     ? layoutSequenceUnits(group, lookup)
     : layoutFlatUnits(group, lookup);
   return finishPlacement(placed, group, lookup, opts);
@@ -463,9 +462,17 @@ function tile2D(
 /// Lay out a sequence item (row or nested group) into a 0-origin block.
 function layoutItem(item: BessSeqItem, lookup: CatalogLookup): LayoutBlock {
   if (item.kind === 'row') {
-    const block = layoutRowBlock(migrateLegacyRow(item.row), lookup);
-    // Tag with the item id so sibling rows of the same model don't collide.
-    return { ...block, units: block.units.map((u) => ({ ...u, slotKey: `i${item.id}.${u.slotKey}` })) };
+    const r = migrateLegacyRow(item.row);
+    const base = layoutRowBlock(r, lookup);
+    // A row item still honours its own `rowRepeat` (a row-local vertical
+    // repeat) — a convenience equivalent to wrapping it in a down-group, so the
+    // existing per-row "Repeat row ×N" control keeps working. The item id tags
+    // the keys so sibling rows of the same model don't collide.
+    const rr = Math.max(1, Math.floor(r.rowRepeat ?? 1));
+    if (rr > 1) {
+      return tile2D(base, rr, r.gapBetweenCopiesM ?? 2, 1, 0, `i${item.id}.`);
+    }
+    return { ...base, units: base.units.map((u) => ({ ...u, slotKey: `i${item.id}.${u.slotKey}` })) };
   }
   return layoutGroupItem(item, lookup);
 }
@@ -504,7 +511,7 @@ function layoutSequenceUnits(group: BessGroup, lookup: CatalogLookup): PlacedUni
 export function groupToSequence(
   group: BessGroup,
 ): Pick<BessGroup, 'sequence' | 'repeatDown' | 'gapDownM' | 'repeatRight' | 'gapRightM'> {
-  if (group.sequence && group.sequence.length > 0) {
+  if (Array.isArray(group.sequence)) {
     return {
       sequence: group.sequence,
       repeatDown: group.repeatDown ?? 1,
@@ -515,20 +522,16 @@ export function groupToSequence(
   }
   const rows = group.rows.map(migrateLegacyRow);
   const interGaps = group.interRowGapsM ?? [];
-  const items: BessSeqItem[] = rows.map((row, i): BessSeqItem => {
-    const gapAfter = i < rows.length - 1 ? (interGaps[i] ?? 2) : 0;
-    const rowItem: BessRowItem = { kind: 'row', id: row.id, row: { ...row, rowRepeat: 1 }, gapAfterM: 0 };
-    const rr = row.rowRepeat ?? 1;
-    if (rr > 1) {
-      return {
-        kind: 'group', id: `${row.id}-rep`,
-        repeatDown: rr, gapDownM: row.gapBetweenCopiesM ?? 2,
-        repeatRight: 1, gapRightM: 0,
-        gapAfterM: gapAfter, items: [rowItem],
-      };
-    }
-    return { ...rowItem, gapAfterM: gapAfter };
-  });
+  // Each row becomes a row item, keeping its own `rowRepeat` (the recursive
+  // engine honours it as a row-local down-repeat — see `layoutItem`). No need
+  // to wrap repeated rows in a group, so the migration stays 1:1 with the
+  // original row list.
+  const items: BessSeqItem[] = rows.map((row, i): BessSeqItem => ({
+    kind: 'row',
+    id: row.id,
+    row,
+    gapAfterM: i < rows.length - 1 ? (interGaps[i] ?? 2) : 0,
+  }));
   return {
     sequence: items,
     repeatDown: group.sequenceRepeat ?? 1,

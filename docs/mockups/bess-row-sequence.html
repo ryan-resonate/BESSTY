@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BESS group — nested groups + 2D repeat (mockup v2)</title>
+<style>
+  :root{
+    --ink:#1f2937; --ink-soft:#6b7280; --line:#e5e7eb; --line2:#d1d5db;
+    --panel:#ffffff; --rowbar:#eef2f7; --rowbar-line:#dbe3ec;
+    --accent:#F2CB00; --accent-deep:#caa800; --blue:#1e3a8a; --blue-soft:#dbeafe;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --ui:'Inter',system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#f3f4f6;color:var(--ink);font-family:var(--ui);font-size:13px;line-height:1.4;
+       padding:24px;display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap;justify-content:center}
+  .panel{width:460px;background:var(--panel);border:1px solid var(--line);border-radius:10px;
+         box-shadow:0 6px 24px rgba(0,0,0,.10);overflow:hidden}
+  .panel-head{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}
+  .panel-head h1{font-size:15px;margin:0;font-weight:700}
+  .panel-body{padding:14px 16px}
+  .field-label{font-size:11px;color:var(--ink-soft);font-weight:600;margin-bottom:4px;display:block}
+  .num{font-family:var(--mono);border:1px solid var(--line2);border-radius:6px;padding:5px 7px;width:46px;font-size:12.5px;
+       font-variant-numeric:tabular-nums;background:#fff;text-align:center}
+  .hint{font-size:11px;color:var(--ink-soft)}
+
+  /* top-level whole-sequence repeat */
+  .whole{display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:#f6f8fb;border:1px solid #e2e8f0;
+         border-radius:8px;padding:9px 12px;margin:10px 0 6px}
+  .whole .lab{font-weight:700;font-size:12px}
+  .axis{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#475569;font-weight:600}
+  .axis .ar{font-family:var(--mono);font-weight:800;color:#334155}
+
+  .seq-head{display:flex;align-items:center;gap:8px;margin:14px 0 8px}
+  .seq-head .t{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-soft);font-weight:700}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{background:#eef2f7;border:1px solid #dbe3ec;border-radius:999px;padding:1px 8px;font-size:10.5px;color:#475569;font-family:var(--mono)}
+
+  /* row card */
+  .row{border:1px solid var(--rowbar-line);border-radius:8px;background:var(--rowbar);overflow:hidden}
+  .row-bar{display:flex;align-items:center;gap:8px;padding:8px 11px}
+  .drag{color:#9aa6b2;cursor:grab;font-size:13px;line-height:1}
+  .row-name{font-weight:700;font-size:13px}
+  .row-sum{margin-left:auto;font-family:var(--mono);font-size:11px;color:#64748b;font-variant-numeric:tabular-nums}
+  .mini-btn{border:1px solid var(--line2);background:#fff;border-radius:6px;padding:3px 8px;font-size:11px;color:var(--ink);
+            cursor:pointer;display:inline-flex;align-items:center;gap:4px}
+  .mini-btn:hover{background:#f8fafc}
+  .mini-btn.warn{color:#b91c1c;border-color:#f0c9c9}
+
+  .gap{display:flex;align-items:center;gap:8px;padding:5px 0 5px 26px;position:relative}
+  .gap::before{content:"";position:absolute;left:18px;top:0;bottom:0;width:0;border-left:1px dashed #cbd5e1}
+  .gap label{font-size:11px;color:var(--ink-soft);display:inline-flex;align-items:center;gap:5px}
+
+  /* repeat group */
+  .group{position:relative;border:1px solid #ecd24d;border-radius:9px;background:#fffdf2;overflow:hidden}
+  .group::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--accent)}
+  .group-head{display:flex;align-items:center;gap:9px;padding:8px 11px 8px 14px;background:#fdf6cf;border-bottom:1px solid #f0e08a;flex-wrap:wrap}
+  .group-title{font-weight:800;font-size:12px;display:inline-flex;align-items:center;gap:6px;color:#6a5a00}
+  .group-axes{margin-left:auto;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .gaxis{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#6a5a00;font-weight:700}
+  .gaxis .ar{font-family:var(--mono);font-size:13px}
+  .group-body{padding:9px 10px 10px 14px;display:flex;flex-direction:column;gap:0}
+  .group-foot{font-size:10.5px;color:#9a8800;padding:0 11px 8px 14px;font-family:var(--mono)}
+
+  /* nested group: thinner rail + inner tint */
+  .group .group{border-color:#e7c98a;background:#fffaf0}
+  .group .group::before{width:4px;background:#e3b94a}
+  .group .group .group-head{background:#fbf0c8}
+
+  .dropzone{border:1.5px dashed var(--accent-deep);border-radius:7px;background:#fffce0;color:#8a7500;
+            font-size:11px;text-align:center;padding:7px;margin-top:6px}
+
+  .addbar{display:flex;gap:8px;margin-top:12px}
+  .add{flex:1;border:1px dashed var(--line2);background:#fff;border-radius:8px;padding:9px;font-size:12px;color:var(--ink);cursor:pointer;text-align:center}
+  .add.group{border-color:var(--accent-deep);color:#6a5a00;background:#fffdf2}
+
+  /* 2D expands-to schematic */
+  .expand{margin-top:14px;border:1px solid var(--line);border-radius:8px;background:#fbfdff;padding:11px 12px}
+  .expand .t{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);font-weight:700;margin-bottom:9px;display:flex;justify-content:space-between}
+  .plan{display:flex;flex-direction:column;gap:7px}
+  .blockcopy{border:1px solid #c7d7f5;border-radius:6px;background:#eef4ff;padding:6px;display:flex;flex-direction:column;gap:4px}
+  .barrow{display:flex;gap:4px;align-items:center}
+  .bbar{height:11px;border-radius:3px;background:var(--blue-soft);border:1px solid #c7d7f5;flex:1}
+  .bbar.inv{flex:none;width:13px;height:11px;background:#fed7aa;border-color:#f6b87a}
+  .invrow{display:flex;gap:3px}
+  .tag{font-family:var(--mono);font-size:9.5px;color:#5b6b8c}
+
+  .notes{width:330px;font-size:13px}
+  .notes h2{font-size:14px;margin:0 0 10px}
+  .callout{border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:8px;background:#fff;padding:11px 13px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.10)}
+  .callout h3{margin:0 0 5px;font-size:12.5px}
+  .callout p{margin:0;color:#374151;font-size:12px}
+  code{font-family:var(--mono);background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:11px}
+</style>
+</head>
+<body>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h1>BESS group — New</h1>
+      <span class="hint">mockup v2 · nested + 2D</span>
+    </div>
+    <div class="panel-body">
+
+      <div>
+        <label class="field-label">Rotation (° from north)</label>
+        <input class="num" style="width:70px" value="0" />
+      </div>
+
+      <!-- top-level whole-sequence repeat, now 2-axis -->
+      <div class="whole">
+        <span class="lab">⟳ Repeat whole sequence</span>
+        <span class="axis"><span class="ar">↓</span> down ×<input class="num" value="1" /> gap <input class="num" value="10" />m</span>
+        <span class="axis"><span class="ar">→</span> right ×<input class="num" value="1" /> gap <input class="num" value="10" />m</span>
+      </div>
+      <div class="hint" style="margin-bottom:4px">Tiles the entire sequence in a grid — stacked down and/or repeated across. (1 × 1 = no tiling.)</div>
+
+      <div class="seq-head">
+        <span class="t">Row sequence</span>
+        <span class="chips"><span class="chip">5 templates</span><span class="chip">24 physical rows</span><span class="chip">152 units</span></span>
+      </div>
+
+      <!-- Row 1 standalone -->
+      <div class="row">
+        <div class="row-bar"><span class="drag">⠿</span><span class="row-name">Row 1</span><span class="row-sum">1×INV (1 unit)</span><button class="mini-btn" title="Start a repeat group from this row, then drag rows/groups in">⟳ group</button></div>
+      </div>
+      <div class="gap"><label>↕ gap to next (m)</label><input class="num" style="width:56px" value="3" /></div>
+
+      <!-- OUTER repeat group: down ×3 -->
+      <div class="group">
+        <div class="group-head">
+          <span class="drag">⠿</span>
+          <span class="group-title">⟳ Block</span>
+          <span class="group-axes">
+            <span class="gaxis"><span class="ar">↓</span> ×<input class="num" value="3" /> gap <input class="num" value="2" />m</span>
+            <span class="gaxis"><span class="ar">→</span> ×<input class="num" value="1" /> gap <input class="num" value="3" />m</span>
+            <button class="mini-btn warn">ungroup</button>
+          </span>
+        </div>
+        <div class="group-body">
+          <div class="row"><div class="row-bar"><span class="drag">⠿</span><span class="row-name">Row 2</span><span class="row-sum">8×BESS (8 units)</span></div></div>
+          <div class="gap"><label>↕ gap to next (m)</label><input class="num" style="width:56px" value="2" /></div>
+          <div class="row"><div class="row-bar"><span class="drag">⠿</span><span class="row-name">Row 3</span><span class="row-sum">8×BESS (8 units)</span></div></div>
+          <div class="gap"><label>↕ gap to next (m)</label><input class="num" style="width:56px" value="2" /></div>
+
+          <!-- NESTED repeat group: right ×4 -->
+          <div class="group">
+            <div class="group-head">
+              <span class="drag">⠿</span>
+              <span class="group-title">⟳ Inverters</span>
+              <span class="group-axes">
+                <span class="gaxis"><span class="ar">↓</span> ×<input class="num" value="1" /> gap <input class="num" value="2" />m</span>
+                <span class="gaxis"><span class="ar">→</span> ×<input class="num" value="4" /> gap <input class="num" value="1" />m</span>
+                <button class="mini-btn warn">ungroup</button>
+              </span>
+            </div>
+            <div class="group-body">
+              <div class="row"><div class="row-bar"><span class="drag">⠿</span><span class="row-name">Row 4</span><span class="row-sum">1×INV (1 unit)</span></div></div>
+            </div>
+            <div class="group-foot">nested · expands right: INV · INV · INV · INV</div>
+          </div>
+        </div>
+        <div class="group-foot">Block ×3 down → 3 stacked copies, each = Row 2 · Row 3 · (4× INV across)</div>
+      </div>
+
+      <div class="gap"><label>↕ gap to next (m)</label><input class="num" style="width:56px" value="3" /></div>
+
+      <!-- Row 5 standalone, with a drop zone illustrating "drag into group" -->
+      <div class="row">
+        <div class="row-bar"><span class="drag">⠿</span><span class="row-name">Row 5</span><span class="row-sum">8×BESS (8 units)</span><button class="mini-btn">⟳ group</button></div>
+      </div>
+      <div class="dropzone">⠿ drag a row or group here to nest it · or drop onto a group header</div>
+
+      <div class="addbar">
+        <button class="add">+ Add row template</button>
+        <button class="add group">+ Add repeat group</button>
+      </div>
+
+      <!-- 2D physical-layout schematic -->
+      <div class="expand">
+        <div class="t"><span>Physical layout · top→bottom, left→right</span><span style="color:#94a3b8">schematic</span></div>
+        <div class="plan">
+          <div class="tag">Row 1 · 1 inverter</div>
+          <div class="bbar inv" style="width:13px"></div>
+          <div class="tag" style="margin-top:3px">Block × 3 down ↓</div>
+          <div class="blockcopy">
+            <div class="bbar"></div><div class="bbar"></div>
+            <div class="invrow"><div class="bbar inv"></div><div class="bbar inv"></div><div class="bbar inv"></div><div class="bbar inv"></div></div>
+          </div>
+          <div class="blockcopy">
+            <div class="bbar"></div><div class="bbar"></div>
+            <div class="invrow"><div class="bbar inv"></div><div class="bbar inv"></div><div class="bbar inv"></div><div class="bbar inv"></div></div>
+          </div>
+          <div class="blockcopy">
+            <div class="bbar"></div><div class="bbar"></div>
+            <div class="invrow"><div class="bbar inv"></div><div class="bbar inv"></div><div class="bbar inv"></div><div class="bbar inv"></div></div>
+          </div>
+          <div class="tag" style="margin-top:3px">Row 5 · 8 batteries</div>
+          <div class="bbar"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="notes">
+    <h2>What changed in v2</h2>
+
+    <div class="callout">
+      <h3>① Nested groups</h3>
+      <p>A repeat group can now contain <b>other groups</b>, to any depth. Here <b>Inverters</b> (repeat
+        right ×4) lives inside <b>Block</b> (repeat down ×3) — so each of the 3 stacked blocks gets its own
+        row of 4 inverters. Uncommon, but it makes complex arrays buildable.</p>
+    </div>
+
+    <div class="callout">
+      <h3>② Create by grouping, then drag in</h3>
+      <p><b>⟳ group</b> on a row starts a group around it. Then <b>drag</b> other rows — or whole groups — onto
+        the group (header or its drop zone) to pull them inside. <b>ungroup</b> dissolves a group, lifting its
+        contents back out one level.</p>
+    </div>
+
+    <div class="callout">
+      <h3>③ 2-axis replication (down &amp; right)</h3>
+      <p>Every group — and the top-level <b>Repeat whole sequence</b> — has two independent counts:
+        <b>↓ down</b> (stacks copies as more rows) and <b>→ right</b> (tiles copies along the row direction),
+        each with its own gap. Set either to 1 to disable that axis; set both to tile a 2-D grid.</p>
+    </div>
+
+    <div class="callout">
+      <h3>Physical-layout preview</h3>
+      <p>The schematic shows the actual 2-D result (batteries blue, inverters orange) so nesting + tiling read
+        at a glance instead of as a flat list.</p>
+    </div>
+
+    <p class="hint" style="margin-top:12px">
+      Data model (recursive): <code>item = row | group</code>, where
+      <code>group{ repeatDown, gapDownM, repeatRight, gapRightM, gapToNextM, items:item[] }</code>. The
+      top-level sequence is an implicit outermost group. Today's “repeat sequence ×N” = that group's
+      <code>repeatDown</code>. Materialiser becomes a recursive block layout: lay out a group's items into a
+      block, then tile the block down×right.
+    </p>
+  </div>
+
+</body>
+</html>

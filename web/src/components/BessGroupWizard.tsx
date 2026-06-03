@@ -8,8 +8,9 @@
 // it (preserving per-slot hand-edits via the existing
 // `unitOverrides` map on the group itself).
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState, type DragEvent } from 'react';
 import {
+  groupToSequence,
   materialiseBessGroup,
   newBessGroupTemplate,
   type CatalogLookup,
@@ -19,6 +20,7 @@ import type {
   BessGroup,
   BessRow,
   BessSegment,
+  BessSeqItem,
   CatalogScope,
   Project,
   SourceKind,
@@ -51,19 +53,22 @@ export function BessGroupWizard(props: Props) {
   // in `group` state -- we never re-derive from props mid-edit.
   const isEdit = Boolean(props.initialGroup);
   const initial = useMemo<BessGroup>(() => {
-    if (props.initialGroup) return clone(props.initialGroup);
-    const defaultBess = defaultBessRef(project);
-    return newBessGroupTemplate(
-      `bg-${Date.now().toString(36)}`,
-      'New BESS group',
-      newGroupCentre,
-      defaultBess,
-    );
+    const base = props.initialGroup
+      ? clone(props.initialGroup)
+      : newBessGroupTemplate(
+          `bg-${Date.now().toString(36)}`,
+          'New BESS group',
+          newGroupCentre,
+          defaultBessRef(project),
+        );
+    // Always edit in the recursive sequence model; convert legacy flat groups
+    // on open (layout-preserving, see groupToSequence).
+    return { ...base, ...groupToSequence(base) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const [group, setGroup] = useState<BessGroup>(initial);
-  const [expandedRowIdx, setExpandedRowIdx] = useState<number>(0);
+  const [expandedId, setExpandedId] = useState<string | null>(initial.sequence?.[0]?.id ?? null);
   const [editingChipKey, setEditingChipKey] = useState<string | null>(null);
 
   // Debounced copy for the preview so typing doesn't churn the SVG.
@@ -83,152 +88,72 @@ export function BessGroupWizard(props: Props) {
   const setName = (name: string) => setGroup((g) => ({ ...g, name }));
   const setRotation = (deg: number) =>
     setGroup((g) => ({ ...g, rotationDeg: Number.isFinite(deg) ? deg : 0 }));
-  const setSequenceRepeat = (n: number) =>
-    setGroup((g) => ({ ...g, sequenceRepeat: Math.max(1, Math.floor(n)) }));
-  const setSequenceGap = (m: number) =>
-    setGroup((g) => ({ ...g, gapBetweenSequencesM: Math.max(0, m) }));
+  // Top-level 2-D repeat of the whole sequence ("Repeat whole sequence").
+  const setTop = (patch: Partial<Pick<BessGroup, 'repeatDown' | 'gapDownM' | 'repeatRight' | 'gapRightM'>>) =>
+    setGroup((g) => ({ ...g, ...patch }));
 
-  // ----- Row-level mutators -----
-
-  const updateRow = useCallback((idx: number, patch: Partial<BessRow>) => {
-    setGroup((g) => ({
-      ...g,
-      rows: g.rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)),
-    }));
-  }, []);
-  const deleteRow = (idx: number) => setGroup((g) => {
-    const rows = g.rows.filter((_, i) => i !== idx);
-    // Drop the corresponding inter-row gap (the gap AFTER the removed
-    // row, which becomes obsolete). If the removed row was the last
-    // one, the trailing gap was already unused -- safe to drop too.
-    const gaps = (g.interRowGapsM ?? []).filter((_, i) => i !== idx);
-    return { ...g, rows, interRowGapsM: gaps };
-  });
-  const duplicateRow = (idx: number) => setGroup((g) => {
-    const src = g.rows[idx];
-    const cloned: BessRow = {
-      ...src,
-      id: `${g.id}-row-${Date.now().toString(36)}`,
-      // Also clone segment ids so the materialiser's slot keys stay
-      // unique across the original + the copy.
-      segments: src.segments.map((s, k) => ({
-        ...s,
-        id: `${g.id}-row-${Date.now().toString(36)}-seg${k}`,
-      })),
-    };
-    const rows = [...g.rows.slice(0, idx + 1), cloned, ...g.rows.slice(idx + 1)];
-    // Insert a 2 m default gap after the original (the new row sits
-    // right after it).
-    const gaps = [...(g.interRowGapsM ?? [])];
-    gaps.splice(idx, 0, 2);
-    return { ...g, rows, interRowGapsM: gaps };
-  });
-  const addRow = () => setGroup((g) => {
-    const defaultBess = defaultBessRef(project);
-    const newRow: BessRow = {
-      id: `${g.id}-row-${Date.now().toString(36)}`,
-      segments: defaultBess
-        ? [{
-            id: `${g.id}-row-${Date.now().toString(36)}-seg1`,
-            catalogScope: defaultBess.catalogScope,
-            modelId: defaultBess.modelId,
-            count: 8,
-            spacingWithinM: 1.5,
-            gapAfterM: 0,
-            rotationDeg: 0,
-            alignment: 'middle' as const,
-          }]
-        : [],
-      rowRepeat: 1,
-      gapBetweenCopiesM: 2,
-    };
-    // New row appended -- need a new gap between the previous last
-    // row and this one (defaulted to 2 m).
-    const gaps = [...(g.interRowGapsM ?? [])];
-    if (g.rows.length > 0) gaps.push(2);
-    return { ...g, rows: [...g.rows, newRow], interRowGapsM: gaps };
-  });
-  const moveRow = (from: number, to: number) => setGroup((g) => {
-    if (from === to || to < 0 || to >= g.rows.length) return g;
-    const rows = [...g.rows];
-    const [moved] = rows.splice(from, 1);
-    rows.splice(to, 0, moved);
-    // Inter-row gaps belong to row PAIRS, so moving rows around
-    // shuffles which gaps live where. Cheapest correct behaviour:
-    // preserve the gap values in their original order rather than
-    // trying to track them per pair. Users can re-tune in the new
-    // position; matches how most CAD-style row-reorder works.
-    return { ...g, rows };
-  });
-
-  // Inter-row gap mutator. gapIdx is between row gapIdx and gapIdx+1.
-  const setInterRowGap = (gapIdx: number, value: number) => setGroup((g) => {
-    const gaps = [...(g.interRowGapsM ?? [])];
-    // Ensure the array is long enough; freshly-loaded legacy groups
-    // may have a shorter or missing array.
-    while (gaps.length <= gapIdx) gaps.push(2);
-    gaps[gapIdx] = value;
-    return { ...g, interRowGapsM: gaps };
-  });
-
-  // ----- Segment-level mutators -----
-
-  const updateSegment = (rowIdx: number, segIdx: number, patch: Partial<BessSegment>) =>
-    setGroup((g) => ({
-      ...g,
-      rows: g.rows.map((r, i) => i !== rowIdx ? r : ({
-        ...r,
-        segments: r.segments.map((s, j) => j === segIdx ? { ...s, ...patch } : s),
-      })),
-    }));
-  const addSegment = (rowIdx: number) =>
-    setGroup((g) => ({
-      ...g,
-      rows: g.rows.map((r, i) => {
-        if (i !== rowIdx) return r;
-        const def = defaultBessRef(project)
-          ?? defaultRefForKind(project, 'bess')
-          ?? { catalogScope: 'global' as const, modelId: '' };
-        const newSeg: BessSegment = {
-          id: `${r.id}-seg-${Date.now().toString(36)}`,
-          catalogScope: def.catalogScope,
-          modelId: def.modelId,
-          count: 1,
-          spacingWithinM: 1.5,
-          gapAfterM: 0,   // last segment -- ignored anyway
-          rotationDeg: 0,
-          alignment: 'middle',
-        };
-        // The previously-last segment was the last in the row, so its
-        // gapAfterM was ignored by the materialiser and quite possibly
-        // sat at 0 (the constructor default). It's NOW meaningful (gap
-        // to the new segment), so bump 0 to a sensible default --
-        // otherwise [BESS] + [INV] render edge-to-edge with no gap.
-        // Don't clobber an explicit non-zero value (could be a user
-        // tweak that's about to matter).
-        const prevSegs = r.segments.length > 0
-          ? r.segments.map((s, idx) =>
-              idx === r.segments.length - 1 && (s.gapAfterM === 0 || s.gapAfterM === undefined)
-                ? { ...s, gapAfterM: 3 }
-                : s)
-          : r.segments;
-        return { ...r, segments: [...prevSegs, newSeg] };
-      }),
-    }));
-  const removeSegment = (rowIdx: number, segIdx: number) =>
-    setGroup((g) => ({
-      ...g,
-      rows: g.rows.map((r, i) => i !== rowIdx ? r : ({
-        ...r,
-        segments: r.segments.filter((_, j) => j !== segIdx),
-      })),
-    }));
-
-  const totalRows = group.rows.reduce((acc, r) => acc + r.rowRepeat, 0);
-  const totalUnits = group.rows.reduce(
-    (acc, r) => acc + r.rowRepeat * r.segments.reduce((s, sg) => s + Math.max(0, Math.floor(sg.count)), 0),
-    0,
+  // Sequence-tree mutator (functional, so it always reads the latest tree).
+  const setSeq = useCallback(
+    (fn: (s: BessSeqItem[]) => BessSeqItem[]) => setGroup((g) => ({ ...g, sequence: fn(g.sequence ?? []) })),
+    [],
   );
+  const mkId = (p: string) => `${group.id}-${p}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const newRowItem = (): BessSeqItem => {
+    const def = defaultBessRef(project);
+    return {
+      kind: 'row', id: mkId('row'), gapAfterM: 2,
+      row: {
+        id: mkId('row'),
+        segments: def ? [{
+          id: mkId('seg'), catalogScope: def.catalogScope, modelId: def.modelId,
+          count: 8, spacingWithinM: 1.5, gapAfterM: 0, rotationDeg: 0, alignment: 'middle',
+        }] : [],
+        rowRepeat: 1, gapBetweenCopiesM: 2,
+      },
+    };
+  };
+  const newGroupItem = (): BessSeqItem => ({
+    kind: 'group', id: mkId('grp'), name: '',
+    repeatDown: 1, gapDownM: 2, repeatRight: 1, gapRightM: 2, gapAfterM: 2, items: [],
+  });
+
+  const ops: SeqOps = {
+    project, expandedId, setExpandedId, editingChipKey, setEditingChipKey,
+    patchItem: (id, patch) => setSeq((s) => patchItemById(s, id, patch)),
+    patchRow: (id, patch) => setSeq((s) => mapItemById(s, id, (it) =>
+      it.kind === 'row' ? { ...it, row: { ...it.row, ...patch } } : it)),
+    updateSegment: (id, segIdx, patch) => setSeq((s) => mapItemById(s, id, (it) =>
+      it.kind === 'row'
+        ? { ...it, row: { ...it.row, segments: it.row.segments.map((sg, j) => (j === segIdx ? { ...sg, ...patch } : sg)) } }
+        : it)),
+    addSegment: (id) => setSeq((s) => mapItemById(s, id, (it) => {
+      if (it.kind !== 'row') return it;
+      const def = defaultBessRef(project) ?? defaultRefForKind(project, 'bess') ?? { catalogScope: 'global' as const, modelId: '' };
+      const newSeg: BessSegment = { id: mkId('seg'), catalogScope: def.catalogScope, modelId: def.modelId, count: 1, spacingWithinM: 1.5, gapAfterM: 0, rotationDeg: 0, alignment: 'middle' };
+      const prev = it.row.segments.map((sg, idx) =>
+        idx === it.row.segments.length - 1 && (sg.gapAfterM === 0 || sg.gapAfterM === undefined) ? { ...sg, gapAfterM: 3 } : sg);
+      return { ...it, row: { ...it.row, segments: [...prev, newSeg] } };
+    })),
+    removeSegment: (id, segIdx) => setSeq((s) => mapItemById(s, id, (it) =>
+      it.kind === 'row' ? { ...it, row: { ...it.row, segments: it.row.segments.filter((_, j) => j !== segIdx) } } : it)),
+    duplicateItem: (id) => setSeq((s) => {
+      const orig = findItem(s, id);
+      return orig ? insertRelative(s, cloneItem(orig, () => mkId('dup')), { mode: 'after', id }) : s;
+    }),
+    removeItem: (id) => setSeq((s) => removeItemById(s, id).items),
+    wrapInGroup: (id) => setSeq((s) => mapItemById(s, id, (it) => ({
+      kind: 'group', id: mkId('grp'), name: '',
+      repeatDown: 1, gapDownM: 2, repeatRight: 1, gapRightM: 2,
+      gapAfterM: it.gapAfterM, items: [{ ...it, gapAfterM: 0 }],
+    }))),
+    ungroup: (id) => setSeq((s) => ungroupById(s, id)),
+    addRow: (containerId) => setSeq((s) => insertRelative(s, newRowItem(), containerId ? { mode: 'into', id: containerId } : { mode: 'root-end' })),
+    addGroup: (containerId) => setSeq((s) => insertRelative(s, newGroupItem(), containerId ? { mode: 'into', id: containerId } : { mode: 'root-end' })),
+    move: (dId, target) => setSeq((s) => moveItem(s, dId, target)),
+  };
+
+  const seq = group.sequence ?? [];
+  const rowCount = countRows(seq);
   const droppedOverrideCount = materialised.droppedOverrideKeys.length;
 
   return (
@@ -264,24 +189,22 @@ export function BessGroupWizard(props: Props) {
                 </div>
               </div>
 
-              {/* Sequence repeat: stamps the entire row sequence N times
-                  top-to-bottom. Distinct from per-row Repeat row × N. */}
-              <div style={{ display: 'flex', gap: 8 }}>
-                <label style={{ ...fieldStyle, flex: '0 0 160px' }}>
-                  <span style={fieldLabelStyle}>Repeat row sequence × N</span>
-                  <NumberDraft value={group.sequenceRepeat ?? 1} min={1} step={1} integer
-                    onCommit={(v) => setSequenceRepeat(v)} />
-                </label>
-                <label style={{ ...fieldStyle, flex: '0 0 160px' }}>
-                  <span style={fieldLabelStyle}>Gap between sequences (m)</span>
-                  <NumberDraft value={group.gapBetweenSequencesM ?? 5} min={0} step={0.1}
-                    disabled={(group.sequenceRepeat ?? 1) <= 1}
-                    onCommit={(v) => setSequenceGap(v)} />
-                </label>
-                <div style={{ flex: 1, alignSelf: 'flex-end', paddingBottom: 8, fontSize: 11, color: 'var(--ink-soft)' }}>
-                  Stamps the WHOLE row sequence (every row + every inter-row gap) this many times,
-                  with the inter-sequence gap between copies.
-                </div>
+              {/* Top-level 2-D repeat of the whole sequence. */}
+              <span style={fieldLabelStyle}>Repeat whole sequence</span>
+              <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', marginTop: 2 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>↓</span> down ×
+                  <NumberDraft value={group.repeatDown ?? 1} min={1} step={1} integer onCommit={(v) => setTop({ repeatDown: Math.max(1, Math.round(v)) })} />
+                  gap <NumberDraft value={group.gapDownM ?? 5} min={0} step={0.1} disabled={(group.repeatDown ?? 1) <= 1} onCommit={(v) => setTop({ gapDownM: Math.max(0, v) })} /> m
+                </span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>→</span> right ×
+                  <NumberDraft value={group.repeatRight ?? 1} min={1} step={1} integer onCommit={(v) => setTop({ repeatRight: Math.max(1, Math.round(v)) })} />
+                  gap <NumberDraft value={group.gapRightM ?? 5} min={0} step={0.1} disabled={(group.repeatRight ?? 1) <= 1} onCommit={(v) => setTop({ gapRightM: Math.max(0, v) })} /> m
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--ink-soft)', marginTop: 4 }}>
+                Tiles the entire sequence in a grid — stacked down and/or repeated across. 1 × 1 = no tiling.
               </div>
             </section>
 
@@ -289,61 +212,25 @@ export function BessGroupWizard(props: Props) {
               <h4 style={sectionTitleStyle}>
                 Row sequence
                 <span style={badgeStyle}>
-                  {group.rows.length} template{group.rows.length === 1 ? '' : 's'} ·
-                  {' '}{totalRows} physical row{totalRows === 1 ? '' : 's'} ·
-                  {' '}{totalUnits} unit{totalUnits === 1 ? '' : 's'}
+                  {rowCount} row{rowCount === 1 ? '' : 's'} ·
+                  {' '}{materialised.sources.length} unit{materialised.sources.length === 1 ? '' : 's'}
                 </span>
               </h4>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {group.rows.map((row, idx) => (
-                  <Fragment key={row.id}>
-                    <BessRowCard
-                      row={row}
-                      idx={idx}
-                      isLast={idx === group.rows.length - 1}
-                      isExpanded={expandedRowIdx === idx}
-                      project={project}
-                      editingChipKey={editingChipKey}
-                      setEditingChipKey={setEditingChipKey}
-                      onToggleExpand={() => setExpandedRowIdx(expandedRowIdx === idx ? -1 : idx)}
-                      onChange={(patch) => updateRow(idx, patch)}
-                      onUpdateSegment={(sIdx, patch) => updateSegment(idx, sIdx, patch)}
-                      onAddSegment={() => addSegment(idx)}
-                      onRemoveSegment={(sIdx) => removeSegment(idx, sIdx)}
-                      onDuplicate={() => duplicateRow(idx)}
-                      onDelete={() => deleteRow(idx)}
-                      onMoveUp={() => moveRow(idx, idx - 1)}
-                      onMoveDown={() => moveRow(idx, idx + 1)}
-                    />
-                    {/* Inter-row gap control: appears BETWEEN cards, not on
-                        them. Renders for every gap (one less than the
-                        number of rows). Per fix #3 -- gap is a property
-                        of the space between rows, not of either row. */}
-                    {idx < group.rows.length - 1 && (
-                      <InterRowGap
-                        valueM={group.interRowGapsM?.[idx] ?? 2}
-                        onChange={(v) => setInterRowGap(idx, v)}
-                      />
-                    )}
-                  </Fragment>
-                ))}
-                <button type="button" onClick={addRow} style={addRowBtnStyle}>
-                  + Add row template
-                </button>
-                <p style={hintStyle}>
-                  Reuse: <em>duplicate template</em> clones a row inline for tweaking.
-                  For an exactly-identical row repeated N times, set <em>Repeat row × N</em>
-                  on the row card. Empty rows act as pure spacers.
-                </p>
+              <p style={hintStyle}>
+                Build rows in order; wrap a run in a <em>repeat group</em> (⟳) to repeat it — groups can
+                nest and tile down/across. Drag the ⠿ handle to reorder, or drop a row/group onto a group
+                to nest it. Empty rows act as pure spacers.
+              </p>
+              <div style={{ marginTop: 6 }}>
+                <SeqList items={seq} containerId={null} ops={ops} depth={0} />
               </div>
             </section>
 
             <section style={sectionStyle}>
               <h4 style={sectionTitleStyle}>Summary</h4>
               <div style={summaryTileStyle}>
-                <Stat k="Row templates" v={group.rows.length} />
-                <Stat k="Physical rows" v={totalRows} />
+                <Stat k="Rows" v={rowCount} />
+                <Stat k="Total units" v={materialised.sources.length} />
                 <Stat k="BESS units" v={materialised.counts.bess} />
                 <Stat k="Auxiliary units" v={materialised.counts.auxiliary} />
                 <Stat k="Bounding box" v={`${materialised.bboxWidthM.toFixed(1)} × ${materialised.bboxLengthM.toFixed(1)} m`} />
@@ -389,6 +276,294 @@ export function BessGroupWizard(props: Props) {
         </footer>
       </div>
     </div>
+  );
+}
+
+// ===== Recursive sequence tree: pure helpers =====
+
+function findItem(items: BessSeqItem[], id: string): BessSeqItem | null {
+  for (const it of items) {
+    if (it.id === id) return it;
+    if (it.kind === 'group') {
+      const found = findItem(it.items, id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function containsItem(item: BessSeqItem, id: string): boolean {
+  if (item.id === id) return true;
+  return item.kind === 'group' && item.items.some((c) => containsItem(c, id));
+}
+
+function removeItemById(items: BessSeqItem[], id: string): { items: BessSeqItem[]; removed: BessSeqItem | null } {
+  let removed: BessSeqItem | null = null;
+  const walk = (list: BessSeqItem[]): BessSeqItem[] =>
+    list.flatMap((it): BessSeqItem[] => {
+      if (it.id === id) { removed = it; return []; }
+      if (it.kind === 'group') return [{ ...it, items: walk(it.items) }];
+      return [it];
+    });
+  return { items: walk(items), removed };
+}
+
+/// Shallow-merge a patch into the item with `id` (anywhere in the tree).
+function patchItemById(items: BessSeqItem[], id: string, patch: Record<string, unknown>): BessSeqItem[] {
+  return items.map((it): BessSeqItem => {
+    if (it.id === id) return { ...it, ...patch } as BessSeqItem;
+    if (it.kind === 'group') return { ...it, items: patchItemById(it.items, id, patch) };
+    return it;
+  });
+}
+
+/// Replace the item with `id` via `fn` (anywhere in the tree).
+function mapItemById(items: BessSeqItem[], id: string, fn: (it: BessSeqItem) => BessSeqItem): BessSeqItem[] {
+  return items.map((it): BessSeqItem => {
+    if (it.id === id) return fn(it);
+    if (it.kind === 'group') return { ...it, items: mapItemById(it.items, id, fn) };
+    return it;
+  });
+}
+
+/// Dissolve the group with `id`, lifting its children up one level in place.
+function ungroupById(items: BessSeqItem[], id: string): BessSeqItem[] {
+  return items.flatMap((it): BessSeqItem[] => {
+    if (it.id === id && it.kind === 'group') return it.items;
+    if (it.kind === 'group') return [{ ...it, items: ungroupById(it.items, id) }];
+    return [it];
+  });
+}
+
+/// Deep-clone an item with fresh ids (item id, and for rows the row + segment
+/// ids) so a duplicate gets its own stable slot keys.
+function cloneItem(item: BessSeqItem, mkId: () => string): BessSeqItem {
+  if (item.kind === 'group') {
+    return { ...item, id: mkId(), items: item.items.map((c) => cloneItem(c, mkId)) };
+  }
+  return {
+    ...item, id: mkId(),
+    row: { ...item.row, id: mkId(), segments: item.row.segments.map((s) => ({ ...s, id: mkId() })) },
+  };
+}
+
+/// Count row items in the tree (for the summary badge).
+function countRows(items: BessSeqItem[]): number {
+  return items.reduce((n, it) => n + (it.kind === 'row' ? 1 : countRows(it.items)), 0);
+}
+
+type DropTarget =
+  | { mode: 'before' | 'after'; id: string }
+  | { mode: 'into'; id: string }
+  | { mode: 'root-end' };
+
+function insertRelative(items: BessSeqItem[], item: BessSeqItem, target: DropTarget): BessSeqItem[] {
+  if (target.mode === 'root-end') return [...items, item];
+  const walk = (list: BessSeqItem[]): BessSeqItem[] => {
+    const out: BessSeqItem[] = [];
+    for (const it of list) {
+      if (target.mode === 'into' && it.id === target.id && it.kind === 'group') {
+        out.push({ ...it, items: [...it.items, item] });
+        continue;
+      }
+      if ((target.mode === 'before' || target.mode === 'after') && it.id === target.id) {
+        const self = it.kind === 'group' ? { ...it, items: walk(it.items) } : it;
+        if (target.mode === 'before') { out.push(item, self); } else { out.push(self, item); }
+        continue;
+      }
+      out.push(it.kind === 'group' ? { ...it, items: walk(it.items) } : it);
+    }
+    return out;
+  };
+  return walk(items);
+}
+
+/// Move the item `dragId` to `target` (drag-and-drop). Rejected if the target
+/// is inside the dragged item's own subtree (can't nest into yourself).
+function moveItem(items: BessSeqItem[], dragId: string, target: DropTarget): BessSeqItem[] {
+  if ('id' in target && target.id === dragId) return items;
+  const dragged = findItem(items, dragId);
+  if (!dragged) return items;
+  if ('id' in target && containsItem(dragged, target.id)) return items;
+  const { items: without, removed } = removeItemById(items, dragId);
+  if (!removed) return items;
+  return insertRelative(without, removed, target);
+}
+
+// ===== Recursive sequence tree: UI =====
+
+/// Everything the recursive tree needs to render + mutate, passed down once so
+/// the cards don't prop-drill a dozen callbacks each.
+interface SeqOps {
+  project: Project;
+  expandedId: string | null;
+  setExpandedId: (id: string | null) => void;
+  editingChipKey: string | null;
+  setEditingChipKey: (k: string | null) => void;
+  patchItem: (id: string, patch: Record<string, unknown>) => void;
+  patchRow: (id: string, patch: Partial<BessRow>) => void;
+  updateSegment: (rowItemId: string, segIdx: number, patch: Partial<BessSegment>) => void;
+  addSegment: (rowItemId: string) => void;
+  removeSegment: (rowItemId: string, segIdx: number) => void;
+  duplicateItem: (id: string) => void;
+  removeItem: (id: string) => void;
+  wrapInGroup: (id: string) => void;
+  ungroup: (groupId: string) => void;
+  addRow: (containerId: string | null) => void;
+  addGroup: (containerId: string | null) => void;
+  move: (dragId: string, target: DropTarget) => void;
+}
+
+function dragId(e: DragEvent): string {
+  return e.dataTransfer.getData('text/plain');
+}
+
+/// A thin drop strip between / around items. Highlights on drag-over.
+function DropLine(p: { onDrop: (id: string) => void; end?: boolean }) {
+  const [over, setOver] = useState(false);
+  return (
+    <div
+      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setOver(true); }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); const id = dragId(e); if (id) p.onDrop(id); }}
+      style={{
+        height: over ? 14 : (p.end ? 8 : 6),
+        margin: '1px 0',
+        borderRadius: 4,
+        background: over ? 'rgba(242,203,0,.35)' : 'transparent',
+        border: over ? '1px dashed var(--accent-deep, #caa800)' : '1px dashed transparent',
+        transition: 'height 80ms',
+      }}
+    />
+  );
+}
+
+function SeqList(p: { items: BessSeqItem[]; containerId: string | null; ops: SeqOps; depth: number }) {
+  const { items, containerId, ops, depth } = p;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
+      {items.map((it, i) => (
+        <Fragment key={it.id}>
+          <DropLine onDrop={(id) => ops.move(id, { mode: 'before', id: it.id })} />
+          {it.kind === 'row'
+            ? <RowItemCard item={it} index={i} count={items.length}
+                prevId={items[i - 1]?.id} nextId={items[i + 1]?.id} ops={ops} />
+            : <GroupCard item={it} ops={ops} depth={depth} />}
+          {i < items.length - 1 && (
+            <InterRowGap valueM={it.gapAfterM ?? 2} onChange={(v) => ops.patchItem(it.id, { gapAfterM: v })} />
+          )}
+        </Fragment>
+      ))}
+      <DropLine end onDrop={(id) => ops.move(id, containerId ? { mode: 'into', id: containerId } : { mode: 'root-end' })} />
+      <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+        <button type="button" onClick={() => ops.addRow(containerId)} style={addRowBtnStyle}>+ Add row</button>
+        <button type="button" onClick={() => ops.addGroup(containerId)} style={addGroupBtnStyle}>+ Add repeat group</button>
+      </div>
+    </div>
+  );
+}
+
+/// Drag handle + group action shared by row + group cards.
+function ItemHandle(p: { id: string; onGroup?: () => void }) {
+  return (
+    <div
+      draggable
+      onDragStart={(e) => { e.dataTransfer.setData('text/plain', p.id); e.dataTransfer.effectAllowed = 'move'; }}
+      style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '2px 2px 0' }}
+    >
+      <span title="Drag to reorder / nest" style={{ cursor: 'grab', color: '#9aa6b2', fontSize: 13, lineHeight: 1 }}>⠿</span>
+      {p.onGroup && (
+        <button type="button" title="Wrap in a repeat group" onClick={p.onGroup}
+          style={{ border: '1px solid var(--line2, #d1d5db)', background: '#fff', borderRadius: 5, fontSize: 10, padding: '1px 4px', cursor: 'pointer', color: '#6a5a00' }}>⟳</button>
+      )}
+    </div>
+  );
+}
+
+function RowItemCard(p: { item: BessSeqItem & { kind: 'row' }; index: number; count: number; prevId?: string; nextId?: string; ops: SeqOps }) {
+  const { item, index, count, prevId, nextId, ops } = p;
+  return (
+    <div style={{ display: 'flex', alignItems: 'stretch', gap: 4 }}>
+      <ItemHandle id={item.id} onGroup={() => ops.wrapInGroup(item.id)} />
+      <div style={{ flex: 1 }}>
+        <BessRowCard
+          row={item.row}
+          idx={index}
+          isLast={index === count - 1}
+          isExpanded={ops.expandedId === item.id}
+          project={ops.project}
+          editingChipKey={ops.editingChipKey}
+          setEditingChipKey={ops.setEditingChipKey}
+          onToggleExpand={() => ops.setExpandedId(ops.expandedId === item.id ? null : item.id)}
+          onChange={(patch) => ops.patchRow(item.id, patch)}
+          onUpdateSegment={(sIdx, patch) => ops.updateSegment(item.id, sIdx, patch)}
+          onAddSegment={() => ops.addSegment(item.id)}
+          onRemoveSegment={(sIdx) => ops.removeSegment(item.id, sIdx)}
+          onDuplicate={() => ops.duplicateItem(item.id)}
+          onDelete={() => ops.removeItem(item.id)}
+          onMoveUp={() => prevId && ops.move(item.id, { mode: 'before', id: prevId })}
+          onMoveDown={() => nextId && ops.move(item.id, { mode: 'after', id: nextId })}
+        />
+      </div>
+    </div>
+  );
+}
+
+function GroupCard(p: { item: BessSeqItem & { kind: 'group' }; ops: SeqOps; depth: number }) {
+  const { item, ops, depth } = p;
+  const railShade = depth % 2 === 0 ? '#F2CB00' : '#e3b94a';
+  return (
+    <div style={{ display: 'flex', alignItems: 'stretch', gap: 4 }}>
+      <ItemHandle id={item.id} />
+      <div
+        onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }}
+        onDrop={(e) => { e.stopPropagation(); const id = dragId(e); if (id) ops.move(id, { mode: 'into', id: item.id }); }}
+        style={{ flex: 1, position: 'relative', border: '1px solid #ecd24d', borderRadius: 9, background: depth % 2 === 0 ? '#fffdf2' : '#fffaf0', overflow: 'hidden' }}
+      >
+        <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: railShade }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '7px 9px 7px 13px', background: '#fdf6cf', borderBottom: '1px solid #f0e08a' }}>
+          <input
+            value={item.name ?? ''}
+            placeholder="Repeat group"
+            onChange={(e) => ops.patchItem(item.id, { name: e.target.value })}
+            style={{ fontWeight: 800, fontSize: 12, color: '#6a5a00', border: '1px solid transparent', background: 'transparent', borderRadius: 4, padding: '2px 4px', width: 110 }}
+          />
+          <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <AxisCtrl arrow="↓" rep={item.repeatDown ?? 1} gap={item.gapDownM ?? 2}
+              onRep={(v) => ops.patchItem(item.id, { repeatDown: Math.max(1, Math.round(v)) })}
+              onGap={(v) => ops.patchItem(item.id, { gapDownM: Math.max(0, v) })} />
+            <AxisCtrl arrow="→" rep={item.repeatRight ?? 1} gap={item.gapRightM ?? 2}
+              onRep={(v) => ops.patchItem(item.id, { repeatRight: Math.max(1, Math.round(v)) })}
+              onGap={(v) => ops.patchItem(item.id, { gapRightM: Math.max(0, v) })} />
+            <button type="button" title="Ungroup" onClick={() => ops.ungroup(item.id)}
+              style={{ border: '1px solid #f0c9c9', background: '#fff', color: '#b91c1c', borderRadius: 5, fontSize: 11, padding: '3px 7px', cursor: 'pointer' }}>ungroup</button>
+            <button type="button" title="Delete group + contents" onClick={() => ops.removeItem(item.id)}
+              style={{ border: '1px solid var(--line2,#d1d5db)', background: '#fff', borderRadius: 5, fontSize: 11, padding: '3px 7px', cursor: 'pointer' }}>✕</button>
+          </span>
+        </div>
+        <div style={{ padding: '8px 9px 9px 13px' }}>
+          {item.items.length === 0 && (
+            <div style={{ fontSize: 11, color: '#9a8800', fontStyle: 'italic', padding: '2px 0 6px' }}>
+              Empty group — drag rows here, or add below.
+            </div>
+          )}
+          <SeqList items={item.items} containerId={item.id} ops={ops} depth={depth + 1} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/// Compact "↓ ×N gap M" axis control for a group's down/right replication.
+function AxisCtrl(p: { arrow: string; rep: number; gap: number; onRep: (v: number) => void; onGap: (v: number) => void }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#6a5a00', fontWeight: 700 }}>
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13 }}>{p.arrow}</span>×
+      <NumberDraft value={p.rep} min={1} step={1} integer onCommit={p.onRep} />
+      <span style={{ fontWeight: 500 }}>gap</span>
+      <NumberDraft value={p.gap} min={0} step={0.1} onCommit={p.onGap} />
+      <span style={{ fontWeight: 500 }}>m</span>
+    </span>
   );
 }
 
@@ -1056,8 +1231,12 @@ const menuFieldStyle: React.CSSProperties = {
   display: 'flex', flexDirection: 'column', gap: 3,
 };
 const addRowBtnStyle: React.CSSProperties = {
-  width: '100%', padding: 10, border: '1px dashed var(--light)', borderRadius: 6,
-  background: 'transparent', color: 'var(--ink-soft)', fontSize: 13, fontWeight: 500, cursor: 'pointer',
+  flex: 1, padding: 9, border: '1px dashed var(--light)', borderRadius: 6,
+  background: 'transparent', color: 'var(--ink-soft)', fontSize: 12.5, fontWeight: 500, cursor: 'pointer',
+};
+const addGroupBtnStyle: React.CSSProperties = {
+  flex: 1, padding: 9, border: '1px dashed #caa800', borderRadius: 6,
+  background: '#fffdf2', color: '#6a5a00', fontSize: 12.5, fontWeight: 500, cursor: 'pointer',
 };
 const hintStyle: React.CSSProperties = {
   margin: '6px 0 0', fontSize: 11, color: 'var(--ink-soft)', lineHeight: 1.5,
