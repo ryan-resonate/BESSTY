@@ -69,6 +69,7 @@ interface Props {
   onDeleteGroup(id: string): void;
   onSetGroupMembers(id: string, memberIds: string[]): void;
   onBulkUpdateSources(patch: Partial<Source>): void;
+  onBulkUpdateSourcesByIds(ids: string[], patch: Partial<Source>): void;
   onBulkUpdateReceivers(patch: Partial<Receiver>): void;
   onBulkDeleteSelected(): void;
   addMode: AddMode;
@@ -245,7 +246,7 @@ function SelectionCard(props: Props) {
   const {
     project, selectedIds, selectedGroupId, onClearSelection, onCreateGroup,
     onRenameGroup, onRecolorGroup, onDeleteGroup,
-    onBulkUpdateSources, onBulkUpdateReceivers, onBulkDeleteSelected,
+    onBulkUpdateSources, onBulkUpdateSourcesByIds, onBulkUpdateReceivers, onBulkDeleteSelected,
   } = props;
 
   if (selectedIds.size === 0) return null;
@@ -296,6 +297,7 @@ function SelectionCard(props: Props) {
           selectedSources={selectedSources}
           selectedReceivers={selectedReceivers}
           onBulkUpdateSources={onBulkUpdateSources}
+          onBulkUpdateSourcesByIds={onBulkUpdateSourcesByIds}
           onBulkUpdateReceivers={onBulkUpdateReceivers}
         />
       )}
@@ -357,22 +359,58 @@ function GroupEditor(props: {
   );
 }
 
+interface ModelGroup {
+  key: string;
+  kind: Source['kind'];
+  modelId: string;
+  ids: string[];
+  sample: Source;
+  entry: ReturnType<typeof lookupEntry>;
+}
+type ModelDraft = { catalogScope?: Source['catalogScope']; modelId?: string; modeOverride?: string | null };
+
 function BulkEditPanel(props: {
   project: Project;
   selectedSources: Source[];
   selectedReceivers: Receiver[];
   onBulkUpdateSources(patch: Partial<Source>): void;
+  onBulkUpdateSourcesByIds(ids: string[], patch: Partial<Source>): void;
   onBulkUpdateReceivers(patch: Partial<Receiver>): void;
 }) {
-  const { project, selectedSources, selectedReceivers, onBulkUpdateSources, onBulkUpdateReceivers } = props;
+  const { project, selectedSources, selectedReceivers, onBulkUpdateSourcesByIds, onBulkUpdateReceivers } = props;
 
-  // Buffer the bulk-edit changes locally; the user pushes "Apply" to commit.
-  // Until then, no project-state writes (and therefore no recompute) fire.
-  const [srcDraft, setSrcDraft] = useState<Partial<Source>>({});
+  // Group the selection by (kind, current model) so a mixed multi-type
+  // selection can retarget each type independently — e.g. all BESS → model X,
+  // all transformers → model Y, all inverters → model Z. (A single shared
+  // model is just one group, so the common case is unchanged.)
+  const modelGroups: ModelGroup[] = (() => {
+    const map = new Map<string, ModelGroup>();
+    for (const s of selectedSources) {
+      const key = `${s.kind}::${s.catalogScope}:${s.modelId}`;
+      let g = map.get(key);
+      if (!g) {
+        g = { key, kind: s.kind, modelId: s.modelId, ids: [], sample: s, entry: lookupEntry(project, s) };
+        map.set(key, g);
+      }
+      g.ids.push(s.id);
+    }
+    return [...map.values()];
+  })();
+  const wtgIds = selectedSources.filter((s) => s.kind === 'wtg').map((s) => s.id);
+
+  // Buffered drafts (committed on Apply, so no recompute fires mid-edit):
+  //  - one model/mode draft per (kind,model) group, keyed by group.key
+  //  - one WTG-only draft (hub height / rotor) applied to the WTG subset
+  //  - one receiver draft applied to all selected receivers
+  const [modelDrafts, setModelDrafts] = useState<Record<string, ModelDraft>>({});
+  const [wtgDraft, setWtgDraft] = useState<Partial<Source>>({});
   const [rxDraft, setRxDraft] = useState<Partial<Receiver>>({});
 
-  function setSrc<K extends keyof Source>(k: K, v: Source[K] | undefined) {
-    setSrcDraft((d) => {
+  function setModel(key: string, patch: ModelDraft) {
+    setModelDrafts((d) => ({ ...d, [key]: { ...d[key], ...patch } }));
+  }
+  function setWtg<K extends keyof Source>(k: K, v: Source[K] | undefined) {
+    setWtgDraft((d) => {
       const next: Partial<Source> = { ...d };
       if (v === undefined) delete next[k];
       else next[k] = v;
@@ -387,110 +425,71 @@ function BulkEditPanel(props: {
       return next;
     });
   }
+  const modelDirty = Object.values(modelDrafts).some(
+    (d) => d && (d.modelId != null || d.modeOverride !== undefined),
+  );
+  const dirty = modelDirty || Object.keys(wtgDraft).length > 0 || Object.keys(rxDraft).length > 0;
+
   function apply() {
-    if (Object.keys(srcDraft).length > 0) onBulkUpdateSources(srcDraft);
+    for (const g of modelGroups) {
+      const d = modelDrafts[g.key];
+      if (!d) continue;
+      const patch: Partial<Source> = {};
+      if (d.modelId != null && d.catalogScope != null) {
+        patch.modelId = d.modelId;
+        patch.catalogScope = d.catalogScope;
+      }
+      if (d.modeOverride !== undefined) patch.modeOverride = d.modeOverride;
+      if (Object.keys(patch).length > 0) onBulkUpdateSourcesByIds(g.ids, patch);
+    }
+    if (wtgIds.length > 0 && Object.keys(wtgDraft).length > 0) onBulkUpdateSourcesByIds(wtgIds, wtgDraft);
     if (Object.keys(rxDraft).length > 0) onBulkUpdateReceivers(rxDraft);
-    setSrcDraft({});
+    setModelDrafts({});
+    setWtgDraft({});
     setRxDraft({});
   }
   function reset() {
-    setSrcDraft({});
+    setModelDrafts({});
+    setWtgDraft({});
     setRxDraft({});
   }
-  const dirty = Object.keys(srcDraft).length + Object.keys(rxDraft).length > 0;
-
-  const allSourceKinds = new Set(selectedSources.map((s) => s.kind));
-  const allWtg = selectedSources.length > 0 && [...allSourceKinds].every((k) => k === 'wtg');
-  const allSameKind = selectedSources.length >= 2 && allSourceKinds.size === 1;
-  const sharedKind = allSameKind ? [...allSourceKinds][0] : null;
-
-  const sharedKey = selectedSources.length > 0
-    ? `${selectedSources[0].catalogScope}:${selectedSources[0].modelId}`
-    : null;
-  const allSameModel = sharedKey != null
-    && selectedSources.every((s) => `${s.catalogScope}:${s.modelId}` === sharedKey);
-  const baselineEntry = allSameModel ? lookupEntry(project, selectedSources[0]) : null;
-
-  // Model picker is offered when all selected sources share a kind (not
-  // necessarily the same model). All choices are catalog entries of that
-  // kind, scoped local-then-global.
-  const modelChoices = sharedKind ? listEntriesByKind(project, sharedKind) : [];
-
-  // While the user has a pending model swap in the draft, the mode dropdown
-  // should reflect the *target* model's modes — not the current selection's.
-  // Fall back to the shared entry of the existing selection when no swap
-  // is pending.
-  const draftEntry = (() => {
-    if (!srcDraft.modelId || !srcDraft.catalogScope) return null;
-    const sample = selectedSources[0] ?? null;
-    if (!sample) return null;
-    return lookupEntry(project, {
-      ...sample,
-      modelId: srcDraft.modelId,
-      catalogScope: srcDraft.catalogScope,
-    });
-  })();
-  const sharedEntry = draftEntry ?? baselineEntry;
 
   return (
     <div className="bulk-edit">
-      {sharedKind && modelChoices.length > 0 && (
-        <Field label={`Model — ${selectedSources.length} ${sharedKind}${selectedSources.length === 1 ? '' : 's'}`}>
-          <select
-            value={srcDraft.catalogScope && srcDraft.modelId ? `${srcDraft.catalogScope}:${srcDraft.modelId}` : ''}
-            onChange={(e) => {
-              if (!e.target.value) return;
-              const [scope, ...rest] = e.target.value.split(':');
-              const modelId = rest.join(':');
-              const picked = modelChoices.find((c) => c._scope === scope && c.id === modelId);
-              setSrc('catalogScope', scope as 'global' | 'local' | 'personal');
-              setSrc('modelId', modelId);
-              setSrc('modeOverride', picked?.defaultMode ?? null);
-            }}
-          >
-            <option value="" disabled>Choose model…</option>
-            {modelChoices.map((m) => (
-              <option key={`${m._scope}:${m.id}`} value={`${m._scope}:${m.id}`}>
-                {m.displayName}{scopeSuffix(m._scope)}
-              </option>
-            ))}
-          </select>
-        </Field>
+      {modelGroups.length > 1 && (
+        <div className="meta-line" style={{ marginBottom: 4 }}>
+          <b>{modelGroups.length} source types selected</b> — change each below.
+        </div>
       )}
+      {modelGroups.map((g) => (
+        <ModelGroupEditor
+          key={g.key}
+          project={project}
+          group={g}
+          draft={modelDrafts[g.key] ?? {}}
+          onSet={(patch) => setModel(g.key, patch)}
+        />
+      ))}
 
-      {sharedEntry && (
-        <Field label={`Mode (${selectedSources.length} × ${sharedEntry.displayName})`}>
-          <select
-            value={srcDraft.modeOverride ?? ''}
-            onChange={(e) => setSrc('modeOverride', e.target.value || null)}
-          >
-            <option value="" disabled>Choose mode…</option>
-            {sharedEntry.modes.map((m) => (
-              <option key={m.name} value={m.name}>{m.name}</option>
-            ))}
-          </select>
-        </Field>
-      )}
-
-      {allWtg && (
-        <>
-          <Field label={`Hub height — ${selectedSources.length} WTGs (m)`}>
+      {wtgIds.length > 0 && (
+        <div className="grid-2">
+          <Field label={`Hub height — ${wtgIds.length} WTG${wtgIds.length === 1 ? '' : 's'} (m)`}>
             <NumericInput min={50} max={250} step={1} placeholder="—"
-              value={srcDraft.hubHeight}
+              value={wtgDraft.hubHeight}
               allowEmpty
               onChange={() => undefined}
-              onChangeOptional={(v) => setSrc('hubHeight', v)}
+              onChangeOptional={(v) => setWtg('hubHeight', v)}
             />
           </Field>
-          <Field label={`Rotor diameter — ${selectedSources.length} WTGs (m)`}>
+          <Field label={`Rotor diameter — ${wtgIds.length} WTG${wtgIds.length === 1 ? '' : 's'} (m)`}>
             <NumericInput min={50} max={300} step={1} placeholder="—"
-              value={srcDraft.rotorDiameterM}
+              value={wtgDraft.rotorDiameterM}
               allowEmpty
               onChange={() => undefined}
-              onChangeOptional={(v) => setSrc('rotorDiameterM', v)}
+              onChangeOptional={(v) => setWtg('rotorDiameterM', v)}
             />
           </Field>
-        </>
+        </div>
       )}
 
       {selectedReceivers.length >= 2 && (
@@ -539,6 +538,73 @@ function BulkEditPanel(props: {
         <button className="btn small" disabled={!dirty} onClick={reset}>Reset</button>
       </div>
       <div className="hint">Tip: drag any selected marker to move them all.</div>
+    </div>
+  );
+}
+
+/// One model/mode bulk editor for a single (kind, current-model) slice of the
+/// selection. Buffered: writes into the parent's per-group draft; nothing
+/// commits until the panel's shared Apply. Blank = leave untouched.
+function ModelGroupEditor(props: {
+  project: Project;
+  group: ModelGroup;
+  draft: ModelDraft;
+  onSet(patch: ModelDraft): void;
+}) {
+  const { project, group, draft, onSet } = props;
+  const choices = listEntriesByKind(project, group.kind);
+  // Mode list reflects the TARGET model when a swap is pending, else current.
+  const targetEntry = (draft.modelId && draft.catalogScope)
+    ? lookupEntry(project, { ...group.sample, catalogScope: draft.catalogScope, modelId: draft.modelId })
+    : group.entry;
+  const kindLabel = group.kind === 'wtg' ? 'WTG' : group.kind === 'bess' ? 'BESS' : 'Aux';
+  const currentName = group.entry?.displayName ?? group.modelId ?? '(unknown model)';
+  const modelValue = draft.catalogScope && draft.modelId ? `${draft.catalogScope}:${draft.modelId}` : '';
+
+  return (
+    <div style={{ borderTop: '1px dashed var(--light)', paddingTop: 6, marginTop: 6 }}>
+      <div className="meta-line" style={{ fontSize: 11 }}>
+        <b>{kindLabel}</b> · {currentName} <span className="muted">× {group.ids.length}</span>
+      </div>
+      <Field label="Change model to">
+        <select
+          value={modelValue}
+          onChange={(e) => {
+            if (!e.target.value) {
+              onSet({ catalogScope: undefined, modelId: undefined, modeOverride: undefined });
+              return;
+            }
+            const [scope, ...rest] = e.target.value.split(':');
+            const modelId = rest.join(':');
+            const picked = choices.find((c) => c._scope === scope && c.id === modelId);
+            onSet({
+              catalogScope: scope as Source['catalogScope'],
+              modelId,
+              modeOverride: picked?.defaultMode ?? null,
+            });
+          }}
+        >
+          <option value="">(no change)</option>
+          {choices.map((c) => (
+            <option key={`${c._scope}:${c.id}`} value={`${c._scope}:${c.id}`}>
+              {c.displayName}{scopeSuffix(c._scope)}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {targetEntry && targetEntry.modes.length > 0 && (
+        <Field label="Change mode to">
+          <select
+            value={draft.modeOverride ?? ''}
+            onChange={(e) => onSet({ modeOverride: e.target.value || undefined })}
+          >
+            <option value="">(no change)</option>
+            {targetEntry.modes.map((md) => (
+              <option key={md.name} value={md.name}>{md.name}</option>
+            ))}
+          </select>
+        </Field>
+      )}
     </div>
   );
 }

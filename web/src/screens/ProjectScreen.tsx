@@ -1010,6 +1010,18 @@ export function ProjectScreen() {
       sources: p.sources.map((s) => (selectedIds.has(s.id) ? { ...s, ...patch } : s)),
     });
   }
+  /// Bulk-update a property on a SUBSET of sources (by id). Powers the
+  /// per-kind/per-model bulk editor, where a mixed selection retargets each
+  /// type independently (e.g. all BESS → model X, all transformers → model Y).
+  function bulkUpdateSourcesByIds(ids: string[], patch: Partial<Source>) {
+    if (!project || ids.length === 0) return;
+    const idSet = new Set(ids);
+    const p = project;
+    setProject({
+      ...p,
+      sources: p.sources.map((s) => (idSet.has(s.id) ? { ...s, ...patch } : s)),
+    });
+  }
   function bulkUpdateReceivers(patch: Partial<Receiver>) {
     if (!project) return;
     const p = project;
@@ -1155,6 +1167,7 @@ export function ProjectScreen() {
         onDeleteGroup={deleteGroup}
         onSetGroupMembers={setGroupMembers}
         onBulkUpdateSources={bulkUpdateSources}
+        onBulkUpdateSourcesByIds={bulkUpdateSourcesByIds}
         onBulkUpdateReceivers={bulkUpdateReceivers}
         onBulkDeleteSelected={bulkDeleteSelected}
         addMode={addMode}
