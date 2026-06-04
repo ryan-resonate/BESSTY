@@ -518,10 +518,14 @@ function GroupCard(p: { item: BessSeqItem & { kind: 'group' }; ops: SeqOps; dept
       <div
         onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }}
         onDrop={(e) => { e.stopPropagation(); const id = dragId(e); if (id) ops.move(id, { mode: 'into', id: item.id }); }}
-        style={{ flex: 1, position: 'relative', border: '1px solid #ecd24d', borderRadius: 9, background: depth % 2 === 0 ? '#fffdf2' : '#fffaf0', overflow: 'hidden' }}
+        // overflow MUST stay visible so a segment-edit popover opened on a row
+        // inside this group can extend past the card's lower edge (the modal's
+        // left column scrolls to reveal it). The rail + header below round their
+        // own corners so dropping the clip doesn't square off the card.
+        style={{ flex: 1, position: 'relative', border: '1px solid #ecd24d', borderRadius: 9, background: depth % 2 === 0 ? '#fffdf2' : '#fffaf0', overflow: 'visible' }}
       >
-        <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: railShade }} />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '7px 9px 7px 13px', background: '#fdf6cf', borderBottom: '1px solid #f0e08a' }}>
+        <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: railShade, borderTopLeftRadius: 8, borderBottomLeftRadius: 8 }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '7px 9px 7px 13px', background: '#fdf6cf', borderBottom: '1px solid #f0e08a', borderTopLeftRadius: 8, borderTopRightRadius: 8 }}>
           <input
             value={item.name ?? ''}
             placeholder="Repeat group"
@@ -1246,6 +1250,10 @@ const segmentMenuStyle: React.CSSProperties = {
   background: 'var(--paper)', border: '1px solid var(--light)', borderRadius: 6,
   padding: 10, display: 'flex', flexDirection: 'column', gap: 8,
   width: 320, maxWidth: 'calc(100vw - 40px)',
+  // Cap height to the viewport and scroll internally so the lower fields stay
+  // reachable on short screens even when the popover can't fully fit below the
+  // chip. (The group card no longer clips it; this just handles the viewport.)
+  maxHeight: 'calc(100vh - 120px)', overflowY: 'auto',
   boxShadow: 'var(--shadow-2)',
 };
 const menuHeaderStyle: React.CSSProperties = {
