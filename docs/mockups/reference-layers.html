@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BEESTY — Reference layers (mockup)</title>
+<style>
+  :root{
+    --ink:#1f2937; --ink-soft:#374151; --soft:#6b7280; --light:#d9dde2;
+    --paper:#fff; --paper-2:#f5f7fa; --slate-1:#eef1f5; --red:#d32f2f;
+    --yellow:#F2CB00; --green:#16a34a; --blue:#2563eb;
+    --shadow-1:0 1px 2px rgba(15,23,42,.05);
+    --shadow-2:0 4px 12px rgba(15,23,42,.08),0 1px 3px rgba(15,23,42,.06);
+    --font-ui:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    --font-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper-2);color:var(--ink);font-family:var(--font-ui);font-size:13px;line-height:1.45}
+  .wrap{max-width:1180px;margin:0 auto;padding:22px}
+  h1{font-size:18px;margin:0 0 2px}
+  .sub{color:var(--soft);margin:0 0 18px;font-size:12.5px}
+  .cols{display:grid;grid-template-columns:380px 1fr;gap:18px;align-items:start}
+  .panel{background:var(--paper);border:1px solid var(--light);border-radius:10px;box-shadow:var(--shadow-1);overflow:hidden}
+  .panel h3{margin:0;padding:11px 14px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-soft);border-bottom:1px solid var(--light);display:flex;align-items:center;gap:8px;background:var(--paper-2)}
+  .panel .body{padding:13px 14px}
+  .field{display:flex;flex-direction:column;gap:4px;margin-bottom:11px}
+  .field label{font-size:11px;color:var(--ink-soft);font-weight:600}
+  .ctrl,.btn{font-family:inherit;font-size:12.5px;border:1px solid var(--light);border-radius:7px;background:var(--paper);color:var(--ink);padding:7px 9px}
+  .file{display:flex;align-items:center;gap:9px;border:1px dashed #c3c9d2;border-radius:8px;padding:11px;background:var(--paper-2)}
+  .file .pick{font-size:12px;border:1px solid var(--light);border-radius:6px;background:#fff;padding:5px 9px;font-weight:600;cursor:pointer}
+  .file .fn{font-family:var(--font-mono);font-size:11.5px;color:var(--ink-soft)}
+  .detected{display:flex;gap:7px;margin:10px 0 4px;flex-wrap:wrap}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;background:var(--slate-1);border-radius:999px;padding:4px 10px;font-weight:600}
+  .chip .dot{width:9px;height:9px;border-radius:50%}
+  .swrow{display:flex;gap:8px;align-items:center}
+  .sw{width:22px;height:22px;border-radius:6px;border:1px solid rgba(0,0,0,.18);cursor:pointer}
+  .btn.primary{background:var(--ink);color:#fff;border-color:var(--ink);font-weight:700;cursor:pointer;width:100%;padding:9px}
+  .btn.ghost{background:#fff;cursor:pointer}
+  .hint{font-size:11px;color:var(--soft);margin-top:9px;border-top:1px dashed var(--light);padding-top:9px}
+
+  /* layers list */
+  .layer{border:1px solid var(--light);border-radius:9px;margin:9px 0;background:#fff;overflow:hidden}
+  .layer.dragging{box-shadow:var(--shadow-2)}
+  .lhead{display:flex;align-items:center;gap:9px;padding:8px 10px}
+  .grip{color:#aab1bb;cursor:grab;font-size:14px;user-select:none}
+  .eye{width:26px;height:26px;border:1px solid var(--light);border-radius:6px;background:#fff;display:grid;place-items:center;cursor:pointer;font-size:13px}
+  .eye.off{opacity:.45}
+  .sw-mini{width:16px;height:16px;border-radius:4px;border:1px solid rgba(0,0,0,.2)}
+  .lname{flex:1;font-weight:600;font-size:12.5px}
+  .lname input{border:1px solid transparent;background:transparent;font:inherit;font-weight:600;border-radius:5px;padding:3px 5px;width:100%}
+  .lname input:hover{border-color:var(--light)}
+  .lcount{font-size:11px;color:var(--soft);font-family:var(--font-mono)}
+  .licon{width:26px;height:26px;border:1px solid var(--light);border-radius:6px;background:#fff;display:grid;place-items:center;cursor:pointer;color:var(--soft)}
+  .licon.del:hover{color:var(--red);border-color:#f0c9c9}
+  .lstyle{border-top:1px solid var(--light);padding:10px;background:var(--paper-2);display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .lstyle .field{margin:0}
+  .range{width:100%}
+  .future{display:flex;align-items:center;gap:9px;border:1px dashed #c3c9d2;border-radius:9px;padding:10px;margin-top:10px;color:var(--soft);background:repeating-linear-gradient(45deg,#fafbfc,#fafbfc 9px,#f2f4f7 9px,#f2f4f7 18px)}
+  .badge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;background:#e5e7eb;color:#4b5563;border-radius:999px;padding:2px 7px}
+
+  /* faux map */
+  .map{position:relative;height:560px;border-radius:10px;border:1px solid var(--light);overflow:hidden;background:
+      linear-gradient(0deg,rgba(0,0,0,.03),rgba(0,0,0,.03)),
+      repeating-linear-gradient(0deg,#eef3ee,#eef3ee 38px,#e8efe8 38px,#e8efe8 76px),
+      repeating-linear-gradient(90deg,#eef3ee,#eef3ee 38px,#e8efe8 38px,#e8efe8 76px)}
+  .map svg{position:absolute;inset:0;width:100%;height:100%}
+  .legend{position:absolute;left:12px;bottom:12px;background:rgba(255,255,255,.94);border:1px solid var(--light);border-radius:9px;padding:9px 11px;font-size:11.5px;box-shadow:var(--shadow-1)}
+  .legend .row{display:flex;align-items:center;gap:8px;margin:3px 0}
+  .legend .k{width:16px;height:10px;border-radius:2px}
+  .maptag{position:absolute;right:12px;top:12px;background:rgba(255,255,255,.94);border:1px solid var(--light);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--ink-soft);box-shadow:var(--shadow-1)}
+  .note{font-size:11.5px;color:var(--soft);margin-top:8px}
+  .pill{display:inline-block;background:var(--yellow);color:#3a3300;font-weight:700;border-radius:999px;padding:1px 8px;font-size:11px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Reference layers <span class="pill">mockup · #25</span></h1>
+  <p class="sub">Import-only (shapefiles) · full layer management · purely visual — <b>never</b> touches the solve.</p>
+
+  <div class="cols">
+    <!-- LEFT: import + layers -->
+    <div>
+      <div class="panel" style="margin-bottom:16px">
+        <h3>⤓ Import reference geometry</h3>
+        <div class="body">
+          <div class="file">
+            <span class="pick">Choose file…</span>
+            <span class="fn">property_boundary.zip</span>
+          </div>
+          <div class="detected">
+            <span class="chip"><span class="dot" style="background:var(--blue)"></span>3 polygons</span>
+            <span class="chip"><span class="dot" style="background:var(--green)"></span>2 lines</span>
+            <span class="chip"><span class="dot" style="background:#b45309"></span>11 points</span>
+          </div>
+          <div class="field" style="margin-top:10px">
+            <label>Layer name</label>
+            <input class="ctrl" value="Property boundary" />
+          </div>
+          <div class="field">
+            <label>Label features from attribute <span style="font-weight:400;color:var(--soft)">(.dbf field → feature name)</span></label>
+            <select class="ctrl">
+              <option value="">— none (no labels) —</option>
+              <option selected>NAME</option>
+              <option>LOT_ID</option>
+              <option>OWNER</option>
+              <option>ZONE</option>
+              <option>AREA_HA</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Default style</label>
+            <div class="swrow">
+              <span class="sw" style="background:#2563eb33;border-color:#2563eb"></span>
+              <span style="font-size:12px;color:var(--ink-soft)">stroke</span>
+              <input class="ctrl" style="width:60px" value="#2563EB" />
+              <span style="font-size:12px;color:var(--ink-soft);margin-left:6px">fill</span>
+              <input class="ctrl" style="width:64px" value="15% blue" />
+            </div>
+          </div>
+          <button class="btn primary">Import as layer</button>
+          <div class="hint">Supports ESRI shapefiles (<span class="fn">.shp</span> in a <span class="fn">.zip</span>, or a folder with <span class="fn">.shp/.shx/.dbf/.prj</span>). Points, lines and polygons are read; attributes can label features.</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>▥ Reference layers <span style="margin-left:auto;font-size:10px;color:var(--soft);text-transform:none;letter-spacing:0">drag to reorder</span></h3>
+        <div class="body" style="padding:10px 11px">
+
+          <!-- layer 1, expanded -->
+          <div class="layer dragging">
+            <div class="lhead">
+              <span class="grip">⠿</span>
+              <span class="eye">👁</span>
+              <span class="sw-mini" style="background:#2563eb33;border-color:#2563eb"></span>
+              <span class="lname"><input value="Property boundary" /></span>
+              <span class="lcount">3 poly</span>
+              <span class="licon" title="Style">▾</span>
+              <span class="licon del" title="Delete">🗑</span>
+            </div>
+            <div class="lstyle">
+              <div class="field"><label>Stroke</label><div class="swrow"><span class="sw" style="background:#2563EB"></span><input class="ctrl" style="flex:1" value="#2563EB" /></div></div>
+              <div class="field"><label>Fill</label><div class="swrow"><span class="sw" style="background:#2563eb33;border-color:#2563eb"></span><input class="ctrl" style="flex:1" value="#2563EB 15%" /></div></div>
+              <div class="field"><label>Line weight: 2 px</label><input class="range" type="range" min="1" max="8" value="2" /></div>
+              <div class="field"><label>Opacity: 90%</label><input class="range" type="range" min="0" max="100" value="90" /></div>
+              <div class="field" style="grid-column:1/-1"><label><input type="checkbox" checked /> Show labels (from attribute <span class="fn">NAME</span>)</label></div>
+            </div>
+          </div>
+
+          <!-- layer 2 -->
+          <div class="layer">
+            <div class="lhead">
+              <span class="grip">⠿</span>
+              <span class="eye">👁</span>
+              <span class="sw-mini" style="background:#16a34a"></span>
+              <span class="lname"><input value="Access track" /></span>
+              <span class="lcount">2 line</span>
+              <span class="licon" title="Style">▾</span>
+              <span class="licon del" title="Delete">🗑</span>
+            </div>
+          </div>
+
+          <!-- layer 3, hidden -->
+          <div class="layer">
+            <div class="lhead">
+              <span class="grip">⠿</span>
+              <span class="eye off">👁</span>
+              <span class="sw-mini" style="background:#b45309"></span>
+              <span class="lname"><input value="Survey markers" /></span>
+              <span class="lcount">11 pt</span>
+              <span class="licon" title="Style">▾</span>
+              <span class="licon del" title="Delete">🗑</span>
+            </div>
+          </div>
+
+          <!-- future raster -->
+          <div class="future">
+            <span style="font-size:16px">🗎</span>
+            <div style="flex:1">
+              <div style="font-weight:600;color:var(--ink-soft)">Georeferenced PDF / image overlay</div>
+              <div style="font-size:11px">Same panel, a <span class="fn">raster</span> layer kind — stored in Firebase Storage. Designed-in now, built later.</div>
+            </div>
+            <span class="badge">soon</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: map -->
+    <div>
+      <div class="map">
+        <span class="maptag">Reference layers overlaid on the model — they don't affect results</span>
+        <svg viewBox="0 0 700 560" preserveAspectRatio="none">
+          <!-- property boundary polygon -->
+          <polygon points="80,70 470,50 560,300 360,470 120,400"
+                   fill="#2563eb22" stroke="#2563EB" stroke-width="2.5"/>
+          <text x="95" y="92" font-size="13" fill="#1e40af" font-family="Inter" font-weight="700">Lot 12 — property boundary</text>
+          <!-- access track line -->
+          <polyline points="120,520 230,420 300,360 430,330 600,250" fill="none" stroke="#16a34a" stroke-width="3" stroke-dasharray="2 0"/>
+          <text x="300" y="350" font-size="12" fill="#166534" font-family="Inter">access track</text>
+          <!-- survey points -->
+          <g fill="#b45309">
+            <circle cx="150" cy="140" r="4"/><circle cx="300" cy="120" r="4"/><circle cx="450" cy="160" r="4"/>
+          </g>
+          <!-- solver objects (separate) -->
+          <g font-family="Inter">
+            <rect x="250" y="210" width="120" height="60" rx="3" fill="#F2CB0033" stroke="#caa800"/>
+            <text x="258" y="200" font-size="11" fill="#7a6a00" font-weight="700">BESS array (modelled)</text>
+            <circle cx="500" cy="380" r="6" fill="#d32f2f"/>
+            <text x="512" y="384" font-size="11" fill="#7f1d1d">R1 receiver</text>
+          </g>
+        </svg>
+        <div class="legend">
+          <div style="font-weight:700;margin-bottom:4px">Legend</div>
+          <div class="row"><span class="k" style="background:#2563eb33;border:1.5px solid #2563EB"></span> Reference polygon</div>
+          <div class="row"><span class="k" style="background:#16a34a"></span> Reference line</div>
+          <div class="row"><span class="k" style="background:#b45309;border-radius:50%;width:10px;height:10px"></span> Reference point</div>
+          <div class="row" style="margin-top:5px;border-top:1px dashed var(--light);padding-top:5px"><span class="k" style="background:#F2CB0055;border:1.5px solid #caa800"></span> Modelled source (solver)</div>
+        </div>
+      </div>
+      <p class="note">Reference layers live in a new <span class="fn">project.referenceLayers</span> field — outside <span class="fn">sources</span>/<span class="fn">barriers</span>, so the solver never sees them. The object is shaped to also hold a future <span class="fn">raster</span> (geo-PDF) layer kind without changing anything else.</p>
+    </div>
+  </div>
+</div>
+</body>
+</html>

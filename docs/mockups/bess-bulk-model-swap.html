@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BEESTY — BESS group bulk model swap (mockup)</title>
+<style>
+  :root{
+    --ink:#1f2937; --ink-soft:#374151; --soft:#6b7280; --light:#d9dde2;
+    --paper:#fff; --paper-2:#f5f7fa; --slate-1:#eef1f5; --red:#d32f2f;
+    --yellow:#F2CB00; --green:#16a34a;
+    --shadow-1:0 1px 2px rgba(15,23,42,.05);
+    --shadow-2:0 4px 12px rgba(15,23,42,.08),0 1px 3px rgba(15,23,42,.06);
+    --font-ui:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    --font-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper-2);color:var(--ink);font-family:var(--font-ui);font-size:13px;line-height:1.45}
+  .wrap{max-width:760px;margin:0 auto;padding:24px}
+  h1{font-size:18px;margin:0 0 2px}
+  .sub{color:var(--soft);margin:0 0 18px;font-size:12.5px}
+  .pill{display:inline-block;background:var(--yellow);color:#3a3300;font-weight:700;border-radius:999px;padding:1px 8px;font-size:11px}
+
+  .wizard{background:var(--paper);border:1px solid var(--light);border-radius:12px;box-shadow:var(--shadow-2);overflow:hidden}
+  .wizard .top{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--light);background:var(--paper-2)}
+  .wizard .top h2{font-size:14px;margin:0}
+  .wizard .top .x{margin-left:auto;color:var(--soft);cursor:pointer;font-size:16px}
+  .section{padding:14px 16px}
+
+  .swap{border:1px solid #ecd24d;border-radius:11px;background:#fffdf2;overflow:hidden}
+  .swap .sh{display:flex;align-items:center;gap:9px;padding:10px 13px;background:#fdf6cf;border-bottom:1px solid #f0e08a}
+  .swap .sh h3{margin:0;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#6a5a00}
+  .swap .sh .note{margin-left:auto;font-size:11px;color:#8a7600}
+  .swap .body{padding:6px 13px 13px}
+
+  .grouplabel{font-size:11px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.05em;margin:12px 2px 6px;display:flex;align-items:center;gap:7px}
+  .grouplabel .tot{margin-left:auto;font-weight:500;color:var(--soft);font-family:var(--font-mono)}
+
+  .row{display:flex;align-items:center;gap:11px;padding:9px 10px;border:1px solid var(--light);border-radius:9px;background:#fff;margin:7px 0}
+  .row .ico{width:30px;height:22px;border-radius:4px;display:grid;place-items:center;font-size:10px;font-weight:800;color:#fff;font-family:var(--font-mono)}
+  .ico.bess{background:#3b82f6}
+  .ico.inv{background:#f59e0b}
+  .ico.tx{background:#8b5cf6}
+  .row .nm{font-weight:600;font-size:12.5px}
+  .row .cnt{font-size:11px;color:var(--soft);font-family:var(--font-mono);background:var(--slate-1);border-radius:999px;padding:2px 8px}
+  .row .arrow{color:#9aa1ab;margin:0 2px}
+  .row select{font-family:inherit;font-size:12.5px;border:1px solid var(--light);border-radius:7px;background:var(--paper);color:var(--ink);padding:7px 9px;min-width:210px;margin-left:auto}
+  .row.changed select{border-color:var(--green);box-shadow:0 0 0 2px #16a34a22}
+  .row .keep{margin-left:auto;font-size:11.5px;color:var(--soft);font-style:italic;padding-right:6px}
+
+  .footer{display:flex;align-items:center;gap:10px;padding:12px 16px;border-top:1px solid var(--light);background:var(--paper-2)}
+  .preview{font-size:11.5px;color:var(--ink-soft)}
+  .preview b{color:var(--green)}
+  .btn{font-family:inherit;font-size:12.5px;border:1px solid var(--light);border-radius:8px;background:#fff;color:var(--ink);padding:8px 13px;cursor:pointer;font-weight:600}
+  .btn.primary{background:var(--ink);color:#fff;border-color:var(--ink);font-weight:700}
+  .btn[disabled]{opacity:.45;cursor:default}
+  .spacer{flex:1}
+  .hint{font-size:11.5px;color:var(--soft);margin-top:12px;border-top:1px dashed var(--light);padding-top:10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>BESS Group — bulk model swap <span class="pill">mockup · #26</span></h1>
+  <p class="sub">One place to retarget every unit of a model across the whole group — no row-by-row editing.</p>
+
+  <div class="wizard">
+    <div class="top">
+      <span style="font-size:16px">▦</span>
+      <h2>Edit BESS group — “GP BESS”</h2>
+      <span style="font-size:11px;color:var(--soft);font-family:var(--font-mono)">192 units · 7 rows</span>
+      <span class="x">✕</span>
+    </div>
+
+    <div class="section">
+      <div class="swap">
+        <div class="sh">
+          <span style="font-size:14px">⇄</span>
+          <h3>Bulk model swap</h3>
+          <span class="note">applies to every matching unit in this group</span>
+        </div>
+        <div class="body">
+
+          <div class="grouplabel">BESS <span class="tot">168 units</span></div>
+
+          <div class="row changed">
+            <span class="ico bess">B</span>
+            <span class="nm">SOLBANK 3.0</span>
+            <span class="cnt">×120</span>
+            <span class="arrow">→</span>
+            <select><option>SOLBANK 3.0 (no change)</option><option selected>SOLBANK 3.6 HC</option><option>Megapack 2 XL</option><option>PowerTitan 2.0</option></select>
+          </div>
+
+          <div class="row">
+            <span class="ico bess">B</span>
+            <span class="nm">PowerTitan 2.0</span>
+            <span class="cnt">×48</span>
+            <span class="arrow">→</span>
+            <select><option selected>PowerTitan 2.0 (no change)</option><option>SOLBANK 3.6 HC</option><option>Megapack 2 XL</option></select>
+          </div>
+
+          <div class="grouplabel">Auxiliary <span class="tot">24 units</span></div>
+
+          <div class="row changed">
+            <span class="ico inv">I</span>
+            <span class="nm">PCSM FP5021MH (GEN3)</span>
+            <span class="cnt">×18</span>
+            <span class="arrow">→</span>
+            <select><option>PCSM FP5021MH (no change)</option><option selected>PCSM FP6000K (GEN4)</option><option>Sungrow SC500</option></select>
+          </div>
+
+          <div class="row">
+            <span class="ico tx">T</span>
+            <span class="nm">Transformer 3.3 MVA</span>
+            <span class="cnt">×6</span>
+            <span class="arrow">→</span>
+            <select><option selected>Transformer 3.3 MVA (no change)</option><option>Transformer 4.0 MVA</option><option>Transformer 2.5 MVA</option></select>
+          </div>
+
+          <div class="hint">
+            Each row is a distinct model currently used in the group, with its live unit count. Pick a replacement of the
+            <b>same kind</b> and every matching unit is rewritten at once — per-unit hand-edits (position nudges, mode overrides)
+            are preserved where they still apply. Mode can be swapped here too once a model is chosen.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <span class="preview">Pending: <b>120 BESS</b> → SOLBANK 3.6 HC · <b>18 inverters</b> → PCSM FP6000K</span>
+      <span class="spacer"></span>
+      <button class="btn">Reset</button>
+      <button class="btn primary">Apply swaps</button>
+    </div>
+  </div>
+
+  <p class="sub" style="margin-top:14px">The same per-kind/per-model swap mechanism powers <b>#24</b> (multi-type bulk edit) from a live map selection.</p>
+</div>
+</body>
+</html>
