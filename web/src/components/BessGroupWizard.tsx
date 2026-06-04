@@ -156,6 +156,40 @@ export function BessGroupWizard(props: Props) {
   const rowCount = countRows(seq);
   const droppedOverrideCount = materialised.droppedOverrideKeys.length;
 
+  // Distinct (kind, model) slices currently in the group, with live unit counts
+  // from the materialised preview — drives the bulk model swap.
+  const modelGroups = useMemo(() => {
+    const map = new Map<string, { key: string; kind: SourceKind; scope: CatalogScope; modelId: string; count: number; name: string }>();
+    for (const s of materialised.sources) {
+      const key = `${s.kind}::${s.catalogScope}:${s.modelId}`;
+      let g = map.get(key);
+      if (!g) {
+        const entry = catalogLookup(s.catalogScope, s.modelId);
+        g = { key, kind: s.kind, scope: s.catalogScope, modelId: s.modelId, count: 0, name: entry?.displayName ?? s.modelId };
+        map.set(key, g);
+      }
+      g.count++;
+    }
+    return [...map.values()];
+  }, [materialised, catalogLookup]);
+
+  // Rewrite every segment of `fromScope:fromModel` to a new model across the
+  // whole sequence (nested groups included). Mode resets to the new model's
+  // default, since the old mode name may not exist on it.
+  const swapModel = useCallback(
+    (fromScope: CatalogScope, fromModel: string, toScope: CatalogScope, toModel: string) => {
+      const defMode = catalogLookup(toScope, toModel)?.defaultMode;
+      setGroup((g) => ({
+        ...g,
+        sequence: mapAllSegments(g.sequence ?? [], (sg) =>
+          sg.catalogScope === fromScope && sg.modelId === fromModel
+            ? { ...sg, catalogScope: toScope, modelId: toModel, modeOverride: defMode ?? undefined }
+            : sg),
+      }));
+    },
+    [catalogLookup],
+  );
+
   return (
     <div role="dialog" aria-modal="true" style={shellStyle}>
       <div style={modalStyle}>
@@ -225,6 +259,44 @@ export function BessGroupWizard(props: Props) {
                 <SeqList items={seq} containerId={null} ops={ops} depth={0} />
               </div>
             </section>
+
+            {modelGroups.length > 0 && (
+              <section style={sectionStyle}>
+                <h4 style={sectionTitleStyle}>Bulk model swap</h4>
+                <p style={hintStyle}>
+                  Change every unit of a model across the whole group at once — pick a replacement of the same kind.
+                  Mode resets to the new model's default.
+                </p>
+                {modelGroups.map((g) => {
+                  const choices = listEntriesByKind(project, g.kind)
+                    .filter((c) => !(c._scope === g.scope && c.id === g.modelId));
+                  const kindLabel = g.kind === 'wtg' ? 'WTG' : g.kind === 'bess' ? 'BESS' : 'Aux';
+                  return (
+                    <div key={g.key} style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0' }}>
+                      <span style={{ fontSize: 12, flex: 1, minWidth: 0 }}>
+                        <b>{kindLabel}</b> · {g.name}{' '}
+                        <span style={{ color: 'var(--ink-soft)', fontFamily: 'var(--font-mono)' }}>×{g.count}</span>
+                      </span>
+                      <select
+                        value=""
+                        disabled={choices.length === 0}
+                        onChange={(e) => {
+                          if (!e.target.value) return;
+                          const [scope, ...rest] = e.target.value.split(':');
+                          swapModel(g.scope, g.modelId, scope as CatalogScope, rest.join(':'));
+                        }}
+                        style={{ ...inputStyle, maxWidth: 200 }}
+                      >
+                        <option value="">change to…</option>
+                        {choices.map((c) => (
+                          <option key={`${c._scope}:${c.id}`} value={`${c._scope}:${c.id}`}>{c.displayName}</option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })}
+              </section>
+            )}
 
             <section style={sectionStyle}>
               <h4 style={sectionTitleStyle}>Summary</h4>
@@ -324,6 +396,15 @@ function mapItemById(items: BessSeqItem[], id: string, fn: (it: BessSeqItem) => 
     if (it.kind === 'group') return { ...it, items: mapItemById(it.items, id, fn) };
     return it;
   });
+}
+
+/// Map every segment of every row anywhere in the tree. Used by the bulk
+/// model swap to rewrite all units of a given model at once.
+function mapAllSegments(items: BessSeqItem[], fn: (seg: BessSegment) => BessSegment): BessSeqItem[] {
+  return items.map((it): BessSeqItem =>
+    it.kind === 'row'
+      ? { ...it, row: { ...it.row, segments: it.row.segments.map(fn) } }
+      : { ...it, items: mapAllSegments(it.items, fn) });
 }
 
 /// Dissolve the group with `id`, lifting its children up one level in place.
