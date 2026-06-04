@@ -687,6 +687,10 @@ export function ProjectScreen() {
       barriers: project.barriers,
       ground: project.settings?.ground,
       annexD: project.settings?.annexD,
+      // Topography (ridge sampling / prominence / despike) feeds the grid via
+      // cellTopoPack, so a change to these controls must re-run the contour
+      // grid — without this the grid silently keeps the old terrain screening.
+      topography: project.settings?.topography,
       gridReceiverHeight: project.settings?.general.defaultReceiverHeight,
       calc: project.calculationArea,
       gridSpacingM,
