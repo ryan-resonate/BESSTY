@@ -123,9 +123,16 @@ export function finaliseFeatures(
   labelAttr: string | null,
 ): ReferenceFeature[] {
   return parsed.map((f) => {
-    const label = labelAttr && f.props[labelAttr] != null && f.props[labelAttr] !== ''
-      ? String(f.props[labelAttr])
-      : undefined;
+    let label: string | undefined;
+    if (labelAttr) {
+      const v = f.props[labelAttr];
+      if (v != null && !(typeof v === 'number' && Number.isNaN(v))) {
+        const s = String(v).trim();
+        // Never label with the literal "NaN" / "undefined" / empty — show
+        // nothing instead.
+        if (s !== '' && s !== 'NaN' && s !== 'undefined') label = s;
+      }
+    }
     return { id: f.id, type: f.type, coords: f.coords, label };
   });
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type {
   Group, Project, ProjectSettings, Source, Receiver, SourceKind,
-  ReferenceLayer, ReferenceLayerStyle, ReferenceFeature,
+  ReferenceLayer, ReferenceLayerStyle, ReferenceFeature, ReferencePointShape,
 } from '../lib/types';
 import { limitForPeriod } from '../lib/types';
 import type { ReceiverResult } from '../lib/solver';
@@ -1461,6 +1461,7 @@ function ReferenceLayersCard(props: {
   const layers = project.referenceLayers ?? [];
   const [importOpen, setImportOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
 
   const setLayers = (next: ReferenceLayer[]) => setProject({ ...project, referenceLayers: next });
   const patchLayer = (id: string, patch: Partial<ReferenceLayer>) =>
@@ -1468,12 +1469,15 @@ function ReferenceLayersCard(props: {
   const patchStyle = (id: string, patch: Partial<ReferenceLayerStyle>) =>
     setLayers(layers.map((l) => (l.id === id ? { ...l, style: { ...l.style, ...patch } } : l)));
   const removeLayer = (id: string) => setLayers(layers.filter((l) => l.id !== id));
-  const move = (id: string, dir: -1 | 1) => {
-    const i = layers.findIndex((l) => l.id === id);
-    const j = i + dir;
-    if (i < 0 || j < 0 || j >= layers.length) return;
-    const next = layers.slice();
-    [next[i], next[j]] = [next[j], next[i]];
+  // Drag-to-reorder: move src to just before the dropped-on target.
+  const reorder = (srcId: string, targetId: string) => {
+    if (srcId === targetId) return;
+    const src = layers.find((l) => l.id === srcId);
+    if (!src) return;
+    const rest = layers.filter((l) => l.id !== srcId);
+    const ti = rest.findIndex((l) => l.id === targetId);
+    const next = rest.slice();
+    next.splice(ti < 0 ? rest.length : ti, 0, src);
     setLayers(next);
   };
 
@@ -1490,11 +1494,28 @@ function ReferenceLayersCard(props: {
           Import points / lines / polygons from a shapefile.
         </div>
       )}
-      {layers.map((l, i) => {
+      {layers.length > 1 && (
+        <div className="hint" style={{ marginBottom: 4 }}>Drag ⠿ to reorder (top layer draws on top).</div>
+      )}
+      {layers.map((l) => {
         const expanded = expandedId === l.id;
+        const hasPoint = l.features.some((f) => f.type === 'point');
+        const hasPoly = l.features.some((f) => f.type === 'polygon');
+        const showFill = hasPoly || hasPoint;
         return (
-          <div key={l.id} className="item" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+          <div key={l.id} className="item"
+            style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6, opacity: dragId === l.id ? 0.5 : 1 }}
+            onDragOver={(e) => { if (dragId && dragId !== l.id) e.preventDefault(); }}
+            onDrop={(e) => { e.preventDefault(); if (dragId) reorder(dragId, l.id); setDragId(null); }}
+          >
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span
+                draggable
+                onDragStart={() => setDragId(l.id)}
+                onDragEnd={() => setDragId(null)}
+                title="Drag to reorder"
+                style={{ cursor: 'grab', color: '#9aa6b2', fontSize: 14, userSelect: 'none', padding: '0 2px' }}
+              >⠿</span>
               <button className="btn small" title={l.visible ? 'Hide' : 'Show'}
                 style={{ opacity: l.visible ? 1 : 0.4 }}
                 onClick={() => patchLayer(l.id, { visible: !l.visible })}>👁</button>
@@ -1502,8 +1523,6 @@ function ReferenceLayersCard(props: {
               <input className="inline-edit-name" value={l.name} style={{ flex: 1, minWidth: 0 }}
                 onChange={(e) => patchLayer(l.id, { name: e.target.value })} />
               <span className="muted" style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{refCountByType(l.features)}</span>
-              <button className="btn small" title="Move up" disabled={i === 0} onClick={() => move(l.id, -1)}>▲</button>
-              <button className="btn small" title="Move down" disabled={i === layers.length - 1} onClick={() => move(l.id, 1)}>▼</button>
               <button className="btn small" title="Style" onClick={() => setExpandedId(expanded ? null : l.id)}>▾</button>
               <button className="btn small" title="Delete" style={{ color: 'var(--red)' }} onClick={() => removeLayer(l.id)}>🗑</button>
             </div>
@@ -1512,10 +1531,12 @@ function ReferenceLayersCard(props: {
                 <Field label="Stroke">
                   <input type="color" value={l.style.stroke} onChange={(e) => patchStyle(l.id, { stroke: e.target.value })} />
                 </Field>
-                <Field label="Fill">
-                  <input type="color" value={l.style.fill} onChange={(e) => patchStyle(l.id, { fill: e.target.value })} />
-                </Field>
-                <Field label={`Line weight ${l.style.weight}px`}>
+                {showFill && (
+                  <Field label="Fill">
+                    <input type="color" value={l.style.fill} onChange={(e) => patchStyle(l.id, { fill: e.target.value })} />
+                  </Field>
+                )}
+                <Field label={`Stroke width ${l.style.weight}px`}>
                   <input type="range" min={1} max={8} step={1} value={l.style.weight}
                     onChange={(e) => patchStyle(l.id, { weight: +e.target.value })} />
                 </Field>
@@ -1523,10 +1544,28 @@ function ReferenceLayersCard(props: {
                   <input type="range" min={0.1} max={1} step={0.05} value={l.style.opacity}
                     onChange={(e) => patchStyle(l.id, { opacity: +e.target.value })} />
                 </Field>
-                <Field label={`Fill opacity ${(l.style.fillOpacity * 100).toFixed(0)}%`}>
-                  <input type="range" min={0} max={0.8} step={0.05} value={l.style.fillOpacity}
-                    onChange={(e) => patchStyle(l.id, { fillOpacity: +e.target.value })} />
-                </Field>
+                {showFill && (
+                  <Field label={`Fill opacity ${(l.style.fillOpacity * 100).toFixed(0)}%`}>
+                    <input type="range" min={0} max={1} step={0.05} value={l.style.fillOpacity}
+                      onChange={(e) => patchStyle(l.id, { fillOpacity: +e.target.value })} />
+                  </Field>
+                )}
+                {hasPoint && (
+                  <>
+                    <Field label="Point shape">
+                      <select value={l.style.pointShape ?? 'circle'}
+                        onChange={(e) => patchStyle(l.id, { pointShape: e.target.value as ReferencePointShape })}>
+                        <option value="circle">Circle</option>
+                        <option value="square">Square</option>
+                        <option value="triangle">Triangle</option>
+                      </select>
+                    </Field>
+                    <Field label={`Point size ${l.style.pointSizePx ?? 5}px`}>
+                      <input type="range" min={2} max={16} step={1} value={l.style.pointSizePx ?? 5}
+                        onChange={(e) => patchStyle(l.id, { pointSizePx: +e.target.value })} />
+                    </Field>
+                  </>
+                )}
                 <Field label="Labels">
                   <label className="row-checkbox">
                     <input type="checkbox" checked={l.style.showLabels}

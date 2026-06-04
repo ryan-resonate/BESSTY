@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import type { Project, Receiver, Source } from '../lib/types';
+import type { Project, Receiver, Source, ReferenceLayerStyle } from '../lib/types';
 import { limitForPeriod } from '../lib/types';
 import type { ReceiverResult, GridResult } from '../lib/solver';
 import { paletteRgb, paletteCss, type Palette, tForDb, makeBandsForRange } from '../lib/colormap';
@@ -402,6 +402,34 @@ function tileLayerOpts(b: BaseMap): L.TileLayerOptions {
 /// Build the right tile layer for a base map. Satellite uses the
 /// EsriCanvasTileLayer so we get parent-tile fallback whenever Esri
 /// serves the placeholder. Other base maps use the stock L.tileLayer.
+/// Build a reference-layer point as the chosen shape. Circle uses a vector
+/// circleMarker; square / triangle use an inline-SVG divIcon so stroke + fill
+/// + opacities all apply consistently.
+function refPointLayer(latlng: [number, number], s: ReferenceLayerStyle): L.Layer {
+  const shape = s.pointShape ?? 'circle';
+  const size = Math.max(2, s.pointSizePx ?? 5);
+  if (shape === 'circle') {
+    return L.circleMarker(latlng, {
+      radius: size, color: s.stroke, weight: s.weight, opacity: s.opacity,
+      fillColor: s.fill, fillOpacity: s.fillOpacity, interactive: false,
+    });
+  }
+  const w = Math.max(0, s.weight);
+  const pad = w + 1;
+  const span = size * 2;
+  const dim = span + pad * 2;
+  const cx = dim / 2;
+  const inner = shape === 'square'
+    ? `<rect x="${pad}" y="${pad}" width="${span}" height="${span}" />`
+    : `<polygon points="${cx},${pad} ${pad},${dim - pad} ${dim - pad},${dim - pad}" />`;
+  const svg = `<svg width="${dim}" height="${dim}" viewBox="0 0 ${dim} ${dim}" style="overflow:visible">`
+    + `<g fill="${s.fill}" fill-opacity="${s.fillOpacity}" stroke="${s.stroke}" stroke-width="${w}" stroke-opacity="${s.opacity}">${inner}</g></svg>`;
+  return L.marker(latlng, {
+    interactive: false,
+    icon: L.divIcon({ className: 'ref-point', html: svg, iconSize: [dim, dim], iconAnchor: [cx, cx] }),
+  });
+}
+
 function makeBaseLayer(b: BaseMap): L.Layer {
   const cfg = TILE_URLS[b];
   if (b === 'satellite') {
@@ -896,18 +924,19 @@ export function MapView({
     const group = referenceGroupRef.current;
     if (!group) return;
     group.clearLayers();
-    for (const layer of project.referenceLayers ?? []) {
+    // Draw in reverse so the FIRST layer in the panel list ends up on top
+    // (added last → highest z), matching the "top of list draws on top" hint.
+    const refLayers = project.referenceLayers ?? [];
+    for (let li = refLayers.length - 1; li >= 0; li--) {
+      const layer = refLayers[li];
       if (!layer.visible) continue;
       const s = layer.style;
       for (const f of layer.features) {
-        let geom: L.Path | null = null;
+        let geom: L.Layer | null = null;
         if (f.type === 'point' && f.coords[0]) {
-          geom = L.circleMarker(f.coords[0], {
-            radius: Math.max(3, s.weight + 2), color: s.stroke, weight: s.weight,
-            opacity: s.opacity, fillColor: s.fill, fillOpacity: Math.max(s.fillOpacity, 0.5),
-            interactive: false,
-          });
+          geom = refPointLayer(f.coords[0], s);
         } else if (f.type === 'line' && f.coords.length >= 2) {
+          // Lines are a single stroke — no fill.
           geom = L.polyline(f.coords, { color: s.stroke, weight: s.weight, opacity: s.opacity, interactive: false });
         } else if (f.type === 'polygon' && f.coords.length >= 3) {
           geom = L.polygon(f.coords, {
@@ -916,7 +945,8 @@ export function MapView({
           });
         }
         if (!geom) continue;
-        if (s.showLabels && f.label) {
+        // Only show a label when there's a real one — never "NaN"/"undefined".
+        if (s.showLabels && f.label && f.label !== 'NaN' && f.label !== 'undefined') {
           geom.bindTooltip(f.label, {
             permanent: true,
             direction: f.type === 'point' ? 'top' : 'center',

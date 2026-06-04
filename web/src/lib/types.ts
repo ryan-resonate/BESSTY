@@ -547,13 +547,19 @@ export interface ReferenceFeature {
   label?: string;
 }
 
+export type ReferencePointShape = 'circle' | 'square' | 'triangle';
+
 export interface ReferenceLayerStyle {
   stroke: string;       // hex, e.g. "#2563EB"
-  fill: string;         // hex (used for polygons)
+  fill: string;         // hex (polygons + point shapes)
   weight: number;       // line/stroke width in px
   opacity: number;      // 0..1
-  fillOpacity: number;  // 0..1 (polygons)
+  fillOpacity: number;  // 0..1 (polygons + point shapes)
   showLabels: boolean;
+  /// Point rendering. Optional for back-compat with layers saved before these
+  /// existed; readers default to 'circle' / 5 px.
+  pointShape?: ReferencePointShape;
+  pointSizePx?: number; // radius / half-extent in px
 }
 
 export interface ReferenceLayer {
@@ -574,6 +580,8 @@ export const DEFAULT_REFERENCE_STYLE: ReferenceLayerStyle = {
   opacity: 0.95,
   fillOpacity: 0.12,
   showLabels: false,
+  pointShape: 'circle',
+  pointSizePx: 5,
 };
 
 // =================== Catalog ===================
