@@ -523,7 +523,58 @@ export interface Project {
     uploadedAt: string;          // ISO 8601
     uploadedByUid: string;
   };
+
+  /// Reference / annotation layers — purely visual map geometry (property
+  /// boundaries, site context, access tracks). The solver NEVER reads these;
+  /// they live outside `sources`/`barriers` so terrain/propagation can't be
+  /// affected. Imported from shapefiles for now.
+  referenceLayers?: ReferenceLayer[];
 }
+
+// =============== Reference (non-solver) layers ===============
+
+export type ReferenceGeometryType = 'point' | 'line' | 'polygon';
+
+export interface ReferenceFeature {
+  id: string;
+  type: ReferenceGeometryType;
+  /// WGS84 vertices as [lat, lng] pairs:
+  ///   point   → exactly one pair
+  ///   line    → ordered vertices
+  ///   polygon → ordered outer-ring vertices (auto-closed on render)
+  coords: Array<[number, number]>;
+  /// Optional label, e.g. mapped from a shapefile (.dbf) attribute.
+  label?: string;
+}
+
+export interface ReferenceLayerStyle {
+  stroke: string;       // hex, e.g. "#2563EB"
+  fill: string;         // hex (used for polygons)
+  weight: number;       // line/stroke width in px
+  opacity: number;      // 0..1
+  fillOpacity: number;  // 0..1 (polygons)
+  showLabels: boolean;
+}
+
+export interface ReferenceLayer {
+  id: string;
+  name: string;
+  visible: boolean;
+  /// 'vector' today. A future 'raster' kind (georeferenced geo-PDF / image,
+  /// stored in Firebase Storage) plugs in here without reshaping the model.
+  kind: 'vector';
+  style: ReferenceLayerStyle;
+  features: ReferenceFeature[];
+}
+
+export const DEFAULT_REFERENCE_STYLE: ReferenceLayerStyle = {
+  stroke: '#2563EB',
+  fill: '#2563EB',
+  weight: 2,
+  opacity: 0.95,
+  fillOpacity: 0.12,
+  showLabels: false,
+};
 
 // =================== Catalog ===================
 

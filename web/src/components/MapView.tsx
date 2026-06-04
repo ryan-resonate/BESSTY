@@ -473,6 +473,10 @@ export function MapView({
   /// shows the real footprint at high zoom.
   const footprintsGroupRef = useRef<L.LayerGroup | null>(null);
   const overlayGroupRef = useRef<L.LayerGroup | null>(null);
+  /// Reference / annotation geometry (property boundaries etc.) — purely
+  /// visual, drawn at the bottom z-order (just above the base tiles), never
+  /// interactive so it can't intercept selection / drawing.
+  const referenceGroupRef = useRef<L.LayerGroup | null>(null);
   const measureGroupRef = useRef<L.LayerGroup | null>(null);
   const measurePointsRef = useRef<L.LatLng[]>([]);
   /// Layer + draft state for the in-progress barrier draw. The layer
@@ -553,6 +557,8 @@ export function MapView({
       boxZoom: false,
     });
     baseLayerRef.current = makeBaseLayer(baseMap).addTo(map) as L.TileLayer;
+    // Reference geometry sits at the bottom (just above base tiles).
+    referenceGroupRef.current = L.layerGroup().addTo(map);
     overlayGroupRef.current = L.layerGroup().addTo(map);
     barriersGroupRef.current = L.layerGroup().addTo(map);
     measureGroupRef.current = L.layerGroup().addTo(map);
@@ -841,6 +847,7 @@ export function MapView({
       markersGroupRef.current = null;
       footprintsGroupRef.current = null;
       overlayGroupRef.current = null;
+      referenceGroupRef.current = null;
       measureGroupRef.current = null;
       barriersGroupRef.current = null;
     };
@@ -855,12 +862,53 @@ export function MapView({
       map.removeLayer(baseLayerRef.current);
     }
     baseLayerRef.current = makeBaseLayer(baseMap).addTo(map) as L.TileLayer;
+    if (referenceGroupRef.current) { referenceGroupRef.current.remove(); referenceGroupRef.current.addTo(map); }
     if (overlayGroupRef.current) { overlayGroupRef.current.remove(); overlayGroupRef.current.addTo(map); }
     if (barriersGroupRef.current) { barriersGroupRef.current.remove(); barriersGroupRef.current.addTo(map); }
     if (measureGroupRef.current) { measureGroupRef.current.remove(); measureGroupRef.current.addTo(map); }
     if (footprintsGroupRef.current) { footprintsGroupRef.current.remove(); footprintsGroupRef.current.addTo(map); }
     if (markersGroupRef.current) { markersGroupRef.current.remove(); markersGroupRef.current.addTo(map); }
   }, [baseMap]);
+
+  // Render reference / annotation layers (non-solver geometry). Non-interactive
+  // so they never intercept selection or drawing. Redraws whenever the layers,
+  // their visibility, or their styling change.
+  useEffect(() => {
+    const group = referenceGroupRef.current;
+    if (!group) return;
+    group.clearLayers();
+    for (const layer of project.referenceLayers ?? []) {
+      if (!layer.visible) continue;
+      const s = layer.style;
+      for (const f of layer.features) {
+        let geom: L.Path | null = null;
+        if (f.type === 'point' && f.coords[0]) {
+          geom = L.circleMarker(f.coords[0], {
+            radius: Math.max(3, s.weight + 2), color: s.stroke, weight: s.weight,
+            opacity: s.opacity, fillColor: s.fill, fillOpacity: Math.max(s.fillOpacity, 0.5),
+            interactive: false,
+          });
+        } else if (f.type === 'line' && f.coords.length >= 2) {
+          geom = L.polyline(f.coords, { color: s.stroke, weight: s.weight, opacity: s.opacity, interactive: false });
+        } else if (f.type === 'polygon' && f.coords.length >= 3) {
+          geom = L.polygon(f.coords, {
+            color: s.stroke, weight: s.weight, opacity: s.opacity,
+            fillColor: s.fill, fillOpacity: s.fillOpacity, interactive: false,
+          });
+        }
+        if (!geom) continue;
+        if (s.showLabels && f.label) {
+          geom.bindTooltip(f.label, {
+            permanent: true,
+            direction: f.type === 'point' ? 'top' : 'center',
+            className: 'ref-label',
+            opacity: 0.95,
+          });
+        }
+        geom.addTo(group);
+      }
+    }
+  }, [project.referenceLayers]);
 
   // Clear measurement when leaving measure mode.
   useEffect(() => {

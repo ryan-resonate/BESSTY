@@ -107,7 +107,7 @@ export async function createProject(
   // Common offenders for a brand-new project: calculationArea, settings,
   // localCatalog (all optional fields on the Project interface). Also encode
   // wall polylines (nested arrays Firestore can't store).
-  const payload = pruneUndefined(encodeBarriersIn(docData as DocumentData));
+  const payload = pruneUndefined(encodeReferenceLayersIn(encodeBarriersIn(docData as DocumentData)));
   const ref = await addDoc(collection(db(), 'projects'), payload);
   return ref.id;
 }
@@ -143,11 +143,11 @@ export async function saveProject(
 ): Promise<void> {
   // Strip undefineds — Firestore rejects them at write time — and encode
   // wall polylines (nested arrays Firestore can't store).
-  const payload: DocumentData = pruneUndefined(encodeBarriersIn({
+  const payload: DocumentData = pruneUndefined(encodeReferenceLayersIn(encodeBarriersIn({
     ...project,
     updatedAt: serverTimestamp(),
     updatedByUid,
-  }));
+  })));
   await setDoc(doc(db(), 'projects', id), payload, { merge: false });
 }
 
@@ -350,7 +350,7 @@ export async function loadVersionSnapshot(
   if (!data.snapshot) return null;
   // The snapshot was stored as the (already-encoded) live doc, so decode the
   // wall polylines back to [lat, lng] tuples before handing it to the app.
-  return decodeBarriersIn(data.snapshot as DocumentData) as unknown as Project;
+  return decodeReferenceLayersIn(decodeBarriersIn(data.snapshot as DocumentData)) as unknown as Project;
 }
 
 /// Clone a saved snapshot back into the live project doc. The snapshot
@@ -368,7 +368,7 @@ export async function revertToVersion(
 // ===== Helpers =====
 
 function hydrateProject(snap: DocumentSnapshot): Project {
-  const d = decodeBarriersIn(snap.data() ?? {});
+  const d = decodeReferenceLayersIn(decodeBarriersIn(snap.data() ?? {}));
   return {
     ...(d as Project),
     // Ensure id-correlated fields are populated even when the doc was
@@ -505,6 +505,54 @@ function decodeBarriersIn<T extends DocumentData>(data: T): T {
             ? p
             : [(p as { lat: number }).lat, (p as { lng: number }).lng],
         ),
+      };
+    }),
+  };
+}
+
+/// Reference-layer feature `coords` are `Array<[lat,lng]>` — another nested
+/// array Firestore can't store. Same fix as barrier polylines: encode each
+/// vertex to {lat,lng} on write; restore the tuple on read.
+function encodeReferenceLayersIn<T extends DocumentData>(data: T): T {
+  const layers = (data as { referenceLayers?: unknown }).referenceLayers;
+  if (!Array.isArray(layers) || layers.length === 0) return data;
+  return {
+    ...data,
+    referenceLayers: layers.map((l) => {
+      const feats = (l as { features?: unknown })?.features;
+      if (!Array.isArray(feats)) return l;
+      return {
+        ...(l as object),
+        features: feats.map((f) => {
+          const coords = (f as { coords?: unknown })?.coords;
+          if (!Array.isArray(coords)) return f;
+          return { ...(f as object), coords: coords.map(([lat, lng]: [number, number]) => ({ lat, lng })) };
+        }),
+      };
+    }),
+  };
+}
+
+/// Inverse of `encodeReferenceLayersIn`. Tuples pass through unchanged.
+function decodeReferenceLayersIn<T extends DocumentData>(data: T): T {
+  const layers = (data as { referenceLayers?: unknown }).referenceLayers;
+  if (!Array.isArray(layers) || layers.length === 0) return data;
+  return {
+    ...data,
+    referenceLayers: layers.map((l) => {
+      const feats = (l as { features?: unknown })?.features;
+      if (!Array.isArray(feats)) return l;
+      return {
+        ...(l as object),
+        features: feats.map((f) => {
+          const coords = (f as { coords?: unknown })?.coords;
+          if (!Array.isArray(coords)) return f;
+          return {
+            ...(f as object),
+            coords: coords.map((p) =>
+              Array.isArray(p) ? p : [(p as { lat: number }).lat, (p as { lng: number }).lng]),
+          };
+        }),
       };
     }),
   };

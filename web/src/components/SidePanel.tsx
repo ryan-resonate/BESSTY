@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react';
-import type { Group, Project, ProjectSettings, Source, Receiver, SourceKind } from '../lib/types';
+import type {
+  Group, Project, ProjectSettings, Source, Receiver, SourceKind,
+  ReferenceLayer, ReferenceLayerStyle, ReferenceFeature,
+} from '../lib/types';
 import { limitForPeriod } from '../lib/types';
 import type { ReceiverResult } from '../lib/solver';
 import type { BaseMap, ContourMode } from './MapView';
 import type { Palette } from '../lib/colormap';
 import { listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { ImportObjectsModal } from './ImportObjectsModal';
+import { ReferenceImportModal } from './ReferenceImportModal';
 import { ProjectMetaPanel } from './ProjectMetaPanel';
 import { EpsgPicker } from './EpsgPicker';
 import { NumericInput } from './NumericInput';
@@ -1426,7 +1430,125 @@ function LayersTab(props: Props) {
         </div>
         <div className="hint">Source: AWS Terrain Tiles (NASADEM/SRTM blend, free).</div>
       </Card>
+
+      <ReferenceLayersCard
+        project={props.project}
+        setProject={props.setProject}
+        onAfterImport={props.onAfterImport}
+      />
     </>
+  );
+}
+
+// -------------------- Reference layers --------------------
+
+function refCountByType(features: ReferenceFeature[]): string {
+  let p = 0, l = 0, g = 0;
+  for (const f of features) { if (f.type === 'point') p++; else if (f.type === 'line') l++; else g++; }
+  const parts: string[] = [];
+  if (g) parts.push(`${g} poly`);
+  if (l) parts.push(`${l} line`);
+  if (p) parts.push(`${p} pt`);
+  return parts.join(' · ') || '0';
+}
+
+function ReferenceLayersCard(props: {
+  project: Project;
+  setProject(p: Project): void;
+  onAfterImport?(bounds: { sw: [number, number]; ne: [number, number] }): void;
+}) {
+  const { project, setProject, onAfterImport } = props;
+  const layers = project.referenceLayers ?? [];
+  const [importOpen, setImportOpen] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const setLayers = (next: ReferenceLayer[]) => setProject({ ...project, referenceLayers: next });
+  const patchLayer = (id: string, patch: Partial<ReferenceLayer>) =>
+    setLayers(layers.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+  const patchStyle = (id: string, patch: Partial<ReferenceLayerStyle>) =>
+    setLayers(layers.map((l) => (l.id === id ? { ...l, style: { ...l.style, ...patch } } : l)));
+  const removeLayer = (id: string) => setLayers(layers.filter((l) => l.id !== id));
+  const move = (id: string, dir: -1 | 1) => {
+    const i = layers.findIndex((l) => l.id === id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= layers.length) return;
+    const next = layers.slice();
+    [next[i], next[j]] = [next[j], next[i]];
+    setLayers(next);
+  };
+
+  return (
+    <Card title="Reference layers" count={layers.length}>
+      <div className="add-row">
+        <button className="btn small block" onClick={() => setImportOpen(true)}>
+          📐 Import reference geometry…
+        </button>
+      </div>
+      {layers.length === 0 && (
+        <div className="hint">
+          Property boundaries, site context, access tracks — purely visual, <b>never solved</b>.
+          Import points / lines / polygons from a shapefile.
+        </div>
+      )}
+      {layers.map((l, i) => {
+        const expanded = expandedId === l.id;
+        return (
+          <div key={l.id} className="item" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <button className="btn small" title={l.visible ? 'Hide' : 'Show'}
+                style={{ opacity: l.visible ? 1 : 0.4 }}
+                onClick={() => patchLayer(l.id, { visible: !l.visible })}>👁</button>
+              <span style={{ width: 14, height: 14, borderRadius: 3, background: l.style.stroke, border: '1px solid rgba(0,0,0,.2)' }} />
+              <input className="inline-edit-name" value={l.name} style={{ flex: 1, minWidth: 0 }}
+                onChange={(e) => patchLayer(l.id, { name: e.target.value })} />
+              <span className="muted" style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{refCountByType(l.features)}</span>
+              <button className="btn small" title="Move up" disabled={i === 0} onClick={() => move(l.id, -1)}>▲</button>
+              <button className="btn small" title="Move down" disabled={i === layers.length - 1} onClick={() => move(l.id, 1)}>▼</button>
+              <button className="btn small" title="Style" onClick={() => setExpandedId(expanded ? null : l.id)}>▾</button>
+              <button className="btn small" title="Delete" style={{ color: 'var(--red)' }} onClick={() => removeLayer(l.id)}>🗑</button>
+            </div>
+            {expanded && (
+              <div className="grid-2" style={{ paddingLeft: 4 }}>
+                <Field label="Stroke">
+                  <input type="color" value={l.style.stroke} onChange={(e) => patchStyle(l.id, { stroke: e.target.value })} />
+                </Field>
+                <Field label="Fill">
+                  <input type="color" value={l.style.fill} onChange={(e) => patchStyle(l.id, { fill: e.target.value })} />
+                </Field>
+                <Field label={`Line weight ${l.style.weight}px`}>
+                  <input type="range" min={1} max={8} step={1} value={l.style.weight}
+                    onChange={(e) => patchStyle(l.id, { weight: +e.target.value })} />
+                </Field>
+                <Field label={`Opacity ${(l.style.opacity * 100).toFixed(0)}%`}>
+                  <input type="range" min={0.1} max={1} step={0.05} value={l.style.opacity}
+                    onChange={(e) => patchStyle(l.id, { opacity: +e.target.value })} />
+                </Field>
+                <Field label={`Fill opacity ${(l.style.fillOpacity * 100).toFixed(0)}%`}>
+                  <input type="range" min={0} max={0.8} step={0.05} value={l.style.fillOpacity}
+                    onChange={(e) => patchStyle(l.id, { fillOpacity: +e.target.value })} />
+                </Field>
+                <Field label="Labels">
+                  <label className="row-checkbox">
+                    <input type="checkbox" checked={l.style.showLabels}
+                      onChange={(e) => patchStyle(l.id, { showLabels: e.target.checked })} />
+                    <span>Show</span>
+                  </label>
+                </Field>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {importOpen && (
+        <ReferenceImportModal
+          onClose={() => setImportOpen(false)}
+          onImport={(layer, bounds) => {
+            setLayers([...layers, layer]);
+            if (bounds && onAfterImport) onAfterImport(bounds);
+          }}
+        />
+      )}
+    </Card>
   );
 }
 
