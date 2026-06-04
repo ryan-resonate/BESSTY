@@ -371,6 +371,55 @@ export function ProjectScreen() {
     });
   }
 
+  /// General-group centre-handle drag: translate every member (sources +
+  /// receivers) by a lat/lng delta. Unlike BESS groups these have no
+  /// parametric recipe — we move the stored positions directly.
+  function translateGroup(groupId: string, dLat: number, dLng: number) {
+    if (!project) return;
+    const group = (project.groups ?? []).find((g) => g.id === groupId);
+    if (!group) return;
+    const ids = new Set(group.memberIds);
+    setProject({
+      ...project,
+      sources: project.sources.map((s) =>
+        ids.has(s.id) ? { ...s, latLng: [s.latLng[0] + dLat, s.latLng[1] + dLng] as [number, number] } : s),
+      receivers: project.receivers.map((r) =>
+        ids.has(r.id) ? { ...r, latLng: [r.latLng[0] + dLat, r.latLng[1] + dLng] as [number, number] } : r),
+    });
+  }
+
+  /// General-group rotation-handle drag: rotate every member about the group's
+  /// centroid by an incremental angle (deg clockwise from north — same screen-
+  /// clockwise convention the map overlay previewed).
+  function rotateGroup(groupId: string, deltaDeg: number) {
+    if (!project) return;
+    const group = (project.groups ?? []).find((g) => g.id === groupId);
+    if (!group) return;
+    const ids = new Set(group.memberIds);
+    const pts: Array<[number, number]> = [];
+    for (const s of project.sources) if (ids.has(s.id)) pts.push(s.latLng);
+    for (const r of project.receivers) if (ids.has(r.id)) pts.push(r.latLng);
+    if (pts.length === 0) return;
+    const cLat = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+    const cLng = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+    const R = 6371008.8;
+    const cosLat = Math.cos((cLat * Math.PI) / 180);
+    const rad = (deltaDeg * Math.PI) / 180;
+    const cosD = Math.cos(rad), sinD = Math.sin(rad);
+    const rot = (ll: [number, number]): [number, number] => {
+      const lx = (ll[1] - cLng) * (Math.PI / 180) * R * cosLat;
+      const ly = -(ll[0] - cLat) * (Math.PI / 180) * R;
+      const rx = lx * cosD - ly * sinD;
+      const ry = lx * sinD + ly * cosD;
+      return [cLat + (-ry / R) * (180 / Math.PI), cLng + (rx / (R * cosLat)) * (180 / Math.PI)];
+    };
+    setProject({
+      ...project,
+      sources: project.sources.map((s) => (ids.has(s.id) ? { ...s, latLng: rot(s.latLng) } : s)),
+      receivers: project.receivers.map((r) => (ids.has(r.id) ? { ...r, latLng: rot(r.latLng) } : r)),
+    });
+  }
+
   // Imperative handle to the Leaflet map for the floating MapControls.
   const mapHandleRef = useRef<L.Map | null>(null);
   function fitCalcArea() {
@@ -1261,6 +1310,9 @@ export function ProjectScreen() {
           onOpenBessGroupWizard={openBessGroupWizard}
           onMoveBessGroup={moveBessGroup}
           onRotateBessGroup={rotateBessGroup}
+          selectedGroupId={selectedGroupId}
+          onTranslateGroup={translateGroup}
+          onRotateGroup={rotateGroup}
         />
 
         <MapControls

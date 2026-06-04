@@ -52,6 +52,14 @@ interface Props {
   onOpenBessGroupWizard?(group: import('../lib/types').BessGroup): void;
   onMoveBessGroup?(groupId: string, newCenter: [number, number]): void;
   onRotateBessGroup?(groupId: string, newRotationDeg: number): void;
+  /// The active saved (general) group, if a group is the current selection.
+  /// Drives the on-map drag/rotate handles for that group.
+  selectedGroupId?: string | null;
+  /// Translate every member of a general group by a lat/lng delta (centre-
+  /// handle drag). `onRotateGroup` rotates members about the group centroid by
+  /// an incremental angle in degrees (rotation-handle drag).
+  onTranslateGroup?(groupId: string, dLat: number, dLng: number): void;
+  onRotateGroup?(groupId: string, deltaDeg: number): void;
   addMode: 'none' | 'wtg' | 'bess' | 'auxiliary' | 'receiver' | 'measure' | 'barrier';
   baseMap: BaseMap;
   showContours: boolean;
@@ -445,6 +453,7 @@ export function MapView({
   onAddSource, onAddReceiver, onAddBarrierPolyline, onUpdateBarrier, onMoveSource, onMoveReceiver,
   onResizeCalcArea, onMoveCalcArea,
   onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
+  selectedGroupId, onTranslateGroup, onRotateGroup,
   addMode, baseMap, showContours, showGridDebug, contourMode, contourOpacity, contourStepDb,
   palette, dbDomain, onCursorMove, onReady,
 }: Props) {
@@ -498,6 +507,10 @@ export function MapView({
   /// handle per group. Re-rendered when project.bessGroups, the
   /// materialised sources, or the selection change.
   const bessGroupsLayerRef = useRef<L.LayerGroup | null>(null);
+  /// On-map drag/rotate handles for the selected GENERAL group (bbox +
+  /// centre move handle + rotation handle). Separate from the BESS-group
+  /// layer so the two redraw effects don't clobber each other.
+  const groupHandlesLayerRef = useRef<L.LayerGroup | null>(null);
   /// id → Leaflet Marker handle, so we can update sibling marker positions
   /// during a group drag without going through React state.
   const markersByIdRef = useRef<Map<string, L.Marker>>(new Map());
@@ -523,12 +536,14 @@ export function MapView({
     onAddSource, onAddReceiver, onAddBarrierPolyline, onUpdateBarrier, onMoveSource, onMoveReceiver,
     onResizeCalcArea, onMoveCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
     onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
+    onTranslateGroup, onRotateGroup,
   });
   useEffect(() => {
     callbacksRef.current = {
       onAddSource, onAddReceiver, onAddBarrierPolyline, onUpdateBarrier, onMoveSource, onMoveReceiver,
       onResizeCalcArea, onMoveCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
       onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
+      onTranslateGroup, onRotateGroup,
     };
   });
   // ProjectScreen needs to know the lat/lng of every source/receiver to
@@ -574,6 +589,8 @@ export function MapView({
     // sources acoustically; the existing rotor SVG icon is fine).
     footprintsGroupRef.current = L.layerGroup().addTo(map);
     markersGroupRef.current = L.layerGroup().addTo(map);
+    // General-group handles sit on top so the move/rotate grips win clicks.
+    groupHandlesLayerRef.current = L.layerGroup().addTo(map);
 
     // ---- Middle-mouse pan (Leaflet's left-mouse drag is disabled above) ----
     const containerEl = containerRef.current!;
@@ -850,6 +867,7 @@ export function MapView({
       referenceGroupRef.current = null;
       measureGroupRef.current = null;
       barriersGroupRef.current = null;
+      groupHandlesLayerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -868,6 +886,7 @@ export function MapView({
     if (measureGroupRef.current) { measureGroupRef.current.remove(); measureGroupRef.current.addTo(map); }
     if (footprintsGroupRef.current) { footprintsGroupRef.current.remove(); footprintsGroupRef.current.addTo(map); }
     if (markersGroupRef.current) { markersGroupRef.current.remove(); markersGroupRef.current.addTo(map); }
+    if (groupHandlesLayerRef.current) { groupHandlesLayerRef.current.remove(); groupHandlesLayerRef.current.addTo(map); }
   }, [baseMap]);
 
   // Render reference / annotation layers (non-solver geometry). Non-interactive
@@ -1832,6 +1851,166 @@ export function MapView({
       // block so it's always visible, per fix #5.)
     }
   }, [project, selectedIds]);
+
+  // ===== General-group handles: drag (translate) + rotate about centroid =====
+  //
+  // Shown only when a saved (general) group is the active selection. Members
+  // are arbitrary sources + receivers; unlike BESS groups there's no stored
+  // centre/rotation — we transform the member lat/lngs directly. Centre handle
+  // translates all members by a lat/lng delta; rotation handle rotates them
+  // about the live centroid. Live preview moves markers + source footprint
+  // polys; project state writes only on dragend.
+  useEffect(() => {
+    const map = mapRef.current;
+    const layer = groupHandlesLayerRef.current;
+    if (!map || !layer) return;
+    layer.clearLayers();
+    const gid = selectedGroupId;
+    if (!gid) return;
+    const group = (project.groups ?? []).find((g) => g.id === gid);
+    if (!group) return;
+
+    const idSet = new Set(group.memberIds);
+    const members: Array<{ id: string; latLng: [number, number] }> = [];
+    for (const s of project.sources) if (idSet.has(s.id)) members.push({ id: s.id, latLng: s.latLng });
+    for (const r of project.receivers) if (idSet.has(r.id)) members.push({ id: r.id, latLng: r.latLng });
+    if (members.length === 0) return;
+
+    const R = 6371008.8;
+    const cLat = members.reduce((a, m) => a + m.latLng[0], 0) / members.length;
+    const cLng = members.reduce((a, m) => a + m.latLng[1], 0) / members.length;
+    const cosLat = Math.cos((cLat * Math.PI) / 180);
+    const cLL = L.latLng(cLat, cLng);
+
+    // World-aligned bbox of members (+ ~12 m pad).
+    let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+    for (const m of members) {
+      minLat = Math.min(minLat, m.latLng[0]); maxLat = Math.max(maxLat, m.latLng[0]);
+      minLng = Math.min(minLng, m.latLng[1]); maxLng = Math.max(maxLng, m.latLng[1]);
+    }
+    const padLat = (12 / R) * (180 / Math.PI);
+    const padLng = (12 / (R * cosLat)) * (180 / Math.PI);
+    minLat -= padLat; maxLat += padLat; minLng -= padLng; maxLng += padLng;
+    const poly = L.polygon(
+      [[minLat, minLng], [minLat, maxLng], [maxLat, maxLng], [maxLat, minLng]] as [number, number][],
+      { color: '#1f2937', weight: 1.5, opacity: 0.9, fillColor: '#3b82f6', fillOpacity: 0.06, dashArray: '6 3', interactive: false },
+    );
+    poly.addTo(layer);
+
+    const centreHandle = L.marker(cLL, {
+      draggable: true, bubblingMouseEvents: false, zIndexOffset: 1300,
+      icon: L.divIcon({
+        className: 'bessty-group-centre',
+        html: '<div style="width:22px;height:22px;border-radius:50%;background:#3b82f6;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:13px;color:#fff;cursor:move;box-shadow:0 1px 4px rgba(0,0,0,.4)">✥</div>',
+        iconSize: [22, 22], iconAnchor: [11, 11],
+      }),
+      title: `Drag to move "${group.name}"`,
+    });
+    centreHandle.addTo(layer);
+
+    // Rotation handle 20 m north of the top edge.
+    const ROT_OFFSET_M = 20;
+    const rotHandleLatLng: [number, number] = [maxLat + (ROT_OFFSET_M / R) * (180 / Math.PI), cLng];
+    const topEdgeLatLng: [number, number] = [maxLat, cLng];
+    const rotStem = L.polyline([topEdgeLatLng, rotHandleLatLng], { color: '#1f2937', weight: 1.5, opacity: 0.85, interactive: false });
+    rotStem.addTo(layer);
+    const rotHandle = L.marker(rotHandleLatLng, {
+      draggable: true, bubblingMouseEvents: false, zIndexOffset: 1100,
+      icon: L.divIcon({
+        className: 'bessty-group-rot',
+        html: '<div style="width:22px;height:22px;border-radius:50%;background:#3b82f6;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:13px;color:#fff;cursor:grab;box-shadow:0 1px 4px rgba(0,0,0,.4)">↻</div>',
+        iconSize: [22, 22], iconAnchor: [11, 11],
+      }),
+      title: 'Rotate group',
+    });
+
+    const toLocal = (p: L.LatLng) => ({ lx: (p.lng - cLng) * (Math.PI / 180) * R * cosLat, ly: -(p.lat - cLat) * (Math.PI / 180) * R });
+    const fromLocal = (lx: number, ly: number): [number, number] => [cLat + (-ly / R) * (180 / Math.PI), cLng + (lx / (R * cosLat)) * (180 / Math.PI)];
+
+    // ----- Rotation about centroid -----
+    let rotSnap: {
+      startAngle: number;
+      members: Map<string, { lx: number; ly: number }>;
+      fps: Map<string, Array<{ lx: number; ly: number }>>;
+      poly: Array<{ lx: number; ly: number }>;
+      stem: Array<{ lx: number; ly: number }>;
+    } | null = null;
+    rotHandle.on('dragstart', () => {
+      const here = rotHandle.getLatLng();
+      const startAngle = Math.atan2((here.lng - cLng) * cosLat, here.lat - cLat);
+      const mm = new Map<string, { lx: number; ly: number }>();
+      const fps = new Map<string, Array<{ lx: number; ly: number }>>();
+      for (const m of members) {
+        const mk = markersByIdRef.current.get(m.id);
+        if (mk) mm.set(m.id, toLocal(mk.getLatLng()));
+        const fp = polysByIdRef.current.get(m.id);
+        if (fp) fps.set(m.id, (fp.getLatLngs()[0] as L.LatLng[]).map(toLocal));
+      }
+      rotSnap = {
+        startAngle, members: mm, fps,
+        poly: (poly.getLatLngs()[0] as L.LatLng[]).map(toLocal),
+        stem: (rotStem.getLatLngs() as L.LatLng[]).map(toLocal),
+      };
+    });
+    rotHandle.on('drag', () => {
+      const snap = rotSnap;
+      if (!snap) return;
+      const here = rotHandle.getLatLng();
+      const d = Math.atan2((here.lng - cLng) * cosLat, here.lat - cLat) - snap.startAngle;
+      const cosD = Math.cos(d), sinD = Math.sin(d);
+      const rot = (p: { lx: number; ly: number }) => ({ lx: p.lx * cosD - p.ly * sinD, ly: p.lx * sinD + p.ly * cosD });
+      for (const [id, pt] of snap.members) { const r = rot(pt); const mk = markersByIdRef.current.get(id); if (mk) mk.setLatLng(fromLocal(r.lx, r.ly)); }
+      for (const [id, cs] of snap.fps) { const fp = polysByIdRef.current.get(id); if (fp) fp.setLatLngs(cs.map((c) => { const r = rot(c); return fromLocal(r.lx, r.ly); })); }
+      poly.setLatLngs(snap.poly.map((c) => { const r = rot(c); return fromLocal(r.lx, r.ly); }));
+      rotStem.setLatLngs(snap.stem.map((c) => { const r = rot(c); return fromLocal(r.lx, r.ly); }));
+      rotHandle.options.title = `${((d * 180) / Math.PI).toFixed(0)}°`;
+    });
+    rotHandle.on('dragend', () => {
+      const snap = rotSnap;
+      rotSnap = null;
+      if (!snap) return;
+      const here = rotHandle.getLatLng();
+      const deltaDeg = ((Math.atan2((here.lng - cLng) * cosLat, here.lat - cLat) - snap.startAngle) * 180) / Math.PI;
+      if (Math.abs(deltaDeg) > 0.05) callbacksRef.current.onRotateGroup?.(gid, +deltaDeg.toFixed(2));
+    });
+    rotHandle.addTo(layer);
+
+    // ----- Centre translate -----
+    let cStart: L.LatLng | null = null;
+    const mSnap = new Map<string, L.LatLng>();
+    const fpSnap = new Map<string, L.LatLng[]>();
+    let rotHSnap: L.LatLng | null = null, rotSSnap: L.LatLng[] | null = null, polySnap: L.LatLng[] | null = null;
+    centreHandle.on('dragstart', () => {
+      cStart = centreHandle.getLatLng();
+      mSnap.clear(); fpSnap.clear();
+      for (const m of members) {
+        const mk = markersByIdRef.current.get(m.id);
+        if (mk) mSnap.set(m.id, mk.getLatLng());
+        const fp = polysByIdRef.current.get(m.id);
+        if (fp) fpSnap.set(m.id, (fp.getLatLngs()[0] as L.LatLng[]).map((p) => L.latLng(p.lat, p.lng)));
+      }
+      rotHSnap = rotHandle.getLatLng();
+      rotSSnap = (rotStem.getLatLngs() as L.LatLng[]).map((p) => L.latLng(p.lat, p.lng));
+      polySnap = (poly.getLatLngs()[0] as L.LatLng[]).map((p) => L.latLng(p.lat, p.lng));
+    });
+    centreHandle.on('drag', () => {
+      if (!cStart) return;
+      const here = centreHandle.getLatLng();
+      const dLat = here.lat - cStart.lat, dLng = here.lng - cStart.lng;
+      for (const [id, o] of mSnap) { const mk = markersByIdRef.current.get(id); if (mk) mk.setLatLng([o.lat + dLat, o.lng + dLng]); }
+      for (const [id, cs] of fpSnap) { const fp = polysByIdRef.current.get(id); if (fp) fp.setLatLngs(cs.map((p) => L.latLng(p.lat + dLat, p.lng + dLng))); }
+      if (rotHSnap) rotHandle.setLatLng([rotHSnap.lat + dLat, rotHSnap.lng + dLng]);
+      if (rotSSnap) rotStem.setLatLngs(rotSSnap.map((p) => L.latLng(p.lat + dLat, p.lng + dLng)));
+      if (polySnap) poly.setLatLngs(polySnap.map((p) => L.latLng(p.lat + dLat, p.lng + dLng)));
+    });
+    centreHandle.on('dragend', () => {
+      if (!cStart) return;
+      const here = centreHandle.getLatLng();
+      const dLat = here.lat - cStart.lat, dLng = here.lng - cStart.lng;
+      cStart = null; mSnap.clear(); fpSnap.clear(); rotHSnap = null; rotSSnap = null; polySnap = null;
+      if (Math.abs(dLat) > 1e-9 || Math.abs(dLng) > 1e-9) callbacksRef.current.onTranslateGroup?.(gid, dLat, dLng);
+    });
+  }, [project, selectedGroupId, selectedIds]);
 
   // Render contour overlay (filled raster, iso-lines, or both).
   useEffect(() => {
