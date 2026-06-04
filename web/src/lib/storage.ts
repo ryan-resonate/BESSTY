@@ -108,9 +108,12 @@ export function loadProject(id: string): Project | null {
     }
     if (p.settings && !p.settings.topography) {
       p.settings.topography = {
-        pathSamples: 48,
         virtualBarrierMinHeightM: 2,
+        despikeStrength: 'low',
       };
+    } else if (p.settings?.topography && p.settings.topography.despikeStrength === undefined) {
+      // Older projects predate the despike knob — default it on (low).
+      p.settings.topography.despikeStrength = 'low';
     }
     if (!p.groups) p.groups = [];
     // Backfill per-period receiver limits from legacy single `limitDbA`.
@@ -205,8 +208,8 @@ function makeEmptyProject(name: string): Project {
         treeAcceptanceTheta: 0.25,
       },
       topography: {
-        pathSamples: 48,
         virtualBarrierMinHeightM: 2,
+        despikeStrength: 'low',
       },
     },
     sources: [],

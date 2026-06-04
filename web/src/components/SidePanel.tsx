@@ -1490,7 +1490,7 @@ function SettingsTab(props: Props) {
   }
 
   const propagation = settings.propagation ?? { maxContributionDistanceM: 20000, treeAcceptanceTheta: 0.25 };
-  const topography = settings.topography ?? { pathSamples: 48, virtualBarrierMinHeightM: 2 };
+  const topography = settings.topography ?? { virtualBarrierMinHeightM: 2, despikeStrength: 'low' as const };
   const extrapolation = settings.extrapolation ?? { capPerBandDb: 6, capTotalDbA: 3 };
 
   return (
@@ -1728,15 +1728,7 @@ function SettingsTab(props: Props) {
       <section className="sp-section">
         <h3><span>Topography (DEM)</span></h3>
         <div className="grid-2">
-          <Field label="Terrain samples per source→receiver path">
-            <NumericInput min={0} max={200} step={1}
-              value={topography.pathSamples} fallback={48}
-              onChange={(v) => update({
-                topography: { ...topography, pathSamples: Math.max(0, Math.round(v)) },
-              })}
-            />
-          </Field>
-          <Field label="Virtual barrier min height (m)">
+          <Field label="Min ridge prominence (m)">
             <NumericInput min={0} max={50} step={0.5}
               value={topography.virtualBarrierMinHeightM} fallback={2}
               onChange={(v) => update({
@@ -1744,17 +1736,38 @@ function SettingsTab(props: Props) {
               })}
             />
           </Field>
+          <Field label="DEM despike">
+            <select
+              value={topography.despikeStrength ?? 'low'}
+              onChange={(e) => update({
+                topography: {
+                  ...topography,
+                  despikeStrength: e.target.value as 'off' | 'low' | 'medium',
+                },
+              })}
+            >
+              <option value="off">Off</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+            </select>
+          </Field>
         </div>
         <div className="hint">
-          With a DEM loaded, the solver reads ground heights at this many evenly
-          spaced points along each source→receiver line; where the terrain
-          pierces the line of sight by more than the threshold, it inserts a
-          virtual barrier (so hills shield like a wall). More samples resolve
-          narrow ridges more faithfully — aim for a spacing finer than your DEM
-          (e.g. a 1&nbsp;km path at 48 samples ≈ 21&nbsp;m spacing, close to a
-          10&nbsp;m DEM) — but each extra sample adds work to every grid cell, so
-          large contour grids solve more slowly. Default <b>48</b>. Set to
-          <b> 0</b> to ignore the DEM (flat ground).
+          With a DEM loaded, the solver samples the ground along each
+          source→receiver line <b>at the DEM's own resolution</b> (no sample
+          count to tune), reduces it to the upper silhouette (the ridge crests
+          that actually screen), and inserts a virtual barrier at each — so hills
+          shield like a wall.
+          <br />
+          <b>Min ridge prominence:</b> a crest is kept only if it rises this far
+          above its neighbouring silhouette edges — i.e. only if it adds a real
+          diffraction path. Higher = only major ridges screen. Default
+          <b> 2&nbsp;m</b>. Set to <b>0</b> to keep every crest.
+          <br />
+          <b>DEM despike:</b> a peak-preserving (Hampel) filter that removes
+          isolated DEM blunders without lowering genuine crests. <b>Low</b> suits
+          most public DEMs; <b>Medium</b> for noisy data; <b>Off</b> for clean
+          LiDAR.
         </div>
       </section>
 

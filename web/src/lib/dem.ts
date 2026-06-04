@@ -92,6 +92,17 @@ export interface DemRaster {
   elevation(lat: number, lng: number): number;
   bounds: { sw: [number, number]; ne: [number, number] };
   tilesLoaded: number;
+  /// Native ground resolution (m per cell) of the underlying data, so callers
+  /// can sample profiles at the DEM's own spacing rather than an arbitrary
+  /// count. Approximate; computed from the tile zoom + latitude (tile raster)
+  /// or the region span ÷ grid size (worker raster).
+  resolutionM?: number;
+}
+
+/// Metres-per-pixel of a web-mercator tile raster at the given zoom + latitude.
+function tileResolutionM(zoom: number, lat: number): number {
+  const EARTH_CIRCUM_M = 40075016.686;
+  return (EARTH_CIRCUM_M * Math.cos((lat * Math.PI) / 180)) / (Math.pow(2, zoom) * TILE_SIZE);
 }
 
 /// A serializable elevation snapshot over a lat/lng rectangle — a dense grid
@@ -132,7 +143,15 @@ export function captureDemRegion(
 /// Used inside the grid worker. Returns 0 outside the region.
 export function regionRaster(region: DemRegion): DemRaster {
   const { data, sw, ne, nx, ny } = region;
+  // Effective cell size: region span (m) ÷ grid size. Use the coarser axis so
+  // path sampling never claims finer resolution than the data actually has.
+  const midLat = (sw[0] + ne[0]) / 2;
+  const R = 6371008.8;
+  const ewM = (((ne[1] - sw[1]) * Math.PI) / 180) * R * Math.cos((midLat * Math.PI) / 180);
+  const nsM = (((ne[0] - sw[0]) * Math.PI) / 180) * R;
+  const resolutionM = Math.max(ewM / Math.max(1, nx - 1), nsM / Math.max(1, ny - 1));
   return {
+    resolutionM,
     elevation(lat: number, lng: number): number {
       const fi = ((lng - sw[1]) / (ne[1] - sw[1])) * (nx - 1);
       const fj = ((ne[0] - lat) / (ne[0] - sw[0])) * (ny - 1);
@@ -189,6 +208,7 @@ export async function loadDemForBounds(
   }
 
   return {
+    resolutionM: tileResolutionM(zoom, (sw[0] + ne[0]) / 2),
     elevation(lat: number, lng: number): number {
       const tx = lng2tileX(lng, zoom);
       const ty = lat2tileY(lat, zoom);

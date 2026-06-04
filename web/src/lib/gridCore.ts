@@ -37,16 +37,111 @@ export function approxDistanceM(a: [number, number], b: [number, number]): numbe
 /// Topography settings subset needed for ridge sampling — passed explicitly
 /// (not the whole `project`) so this runs in a worker.
 export interface TopoSettings {
+  /// @deprecated Sampling is automatic at DEM resolution now; ignored.
   pathSamples?: number;
+  /// Min ridge prominence (m) — keep a silhouette edge only if it rises this
+  /// far above the chord of its neighbours. Default 2.
   virtualBarrierMinHeightM?: number;
+  /// Peak-preserving DEM despike (Hampel) strength. Default 'low'.
+  despikeStrength?: 'off' | 'low' | 'medium';
 }
 
-/// Sample the DEM along the (source → receiver) line; where the ground pokes
-/// above the straight-line path by more than `minHeightM`, emit a thin virtual
-/// barrier whose top IS the absolute ground elevation at that sample (a terrain
-/// ridge has zero height-above-ground — its "top" is the ground itself).
-/// Returns the wall pack layout `(ax, ay, bx, by, base_z_a, base_z_b, height)`
-/// per barrier — here `base_z_a = base_z_b = groundZ` and `height = 0`.
+// Profile sampling bounds. Spacing tracks the DEM's native cell size, but we
+// clamp so a tiny path isn't oversampled and a huge path can't explode the
+// per-cell cost.
+const TOPO_MIN_SPACING_M = 8;
+const TOPO_MAX_SAMPLES = 256;
+const TERRAIN_WING_M = 50;
+
+/// Median of a numeric array (lower-middle for even length).
+function medianOf(vals: number[]): number {
+  if (vals.length === 0) return 0;
+  const s = vals.slice().sort((a, b) => a - b);
+  return s[(s.length - 1) >> 1];
+}
+
+/// Hampel despike: replace a sample with its window median ONLY when it is a
+/// statistical outlier (> t·MAD from that median) AND off by a real margin
+/// (≥1 m). Peak-preserving — a genuine crest sits on its slope so it isn't an
+/// outlier, but a single-cell DEM blunder is. Returns a new array.
+function despikeProfile(z: number[], strength: 'off' | 'low' | 'medium'): number[] {
+  if (strength === 'off' || z.length < 5) return z;
+  const k = strength === 'medium' ? 3 : 2;       // half-window
+  const t = strength === 'medium' ? 2.5 : 3.5;   // MAD multiples
+  const MIN_ABS_M = 1.0;                          // ignore sub-metre wobble
+  const out = z.slice();
+  for (let i = 0; i < z.length; i++) {
+    const lo = Math.max(0, i - k);
+    const hi = Math.min(z.length - 1, i + k);
+    const win: number[] = [];
+    for (let j = lo; j <= hi; j++) win.push(z[j]);
+    const med = medianOf(win);
+    const mad = medianOf(win.map((v) => Math.abs(v - med)));
+    const sigma = Math.max(1.4826 * mad, 0.3);    // floor so clean-flat ≠ everything an outlier
+    const dev = Math.abs(z[i] - med);
+    if (dev > MIN_ABS_M && dev > t * sigma) out[i] = med;
+  }
+  return out;
+}
+
+interface ProfilePt { x: number; z: number; idx: number }  // idx < 0 → S/R anchor
+
+/// Andrew's monotone-chain UPPER hull over points pre-sorted by x. Mirrors the
+/// solver's `upper_hull_select` turn test so this JS pre-reduction agrees with
+/// the engine's own hull.
+function upperHull(pts: ProfilePt[]): ProfilePt[] {
+  const h: ProfilePt[] = [];
+  for (const p of pts) {
+    while (h.length >= 2) {
+      const a = h[h.length - 2];
+      const b = h[h.length - 1];
+      const cross = (b.x - a.x) * (p.z - b.z) - (b.z - a.z) * (p.x - b.x);
+      if (cross >= 0) h.pop(); else break;
+    }
+    h.push(p);
+  }
+  return h;
+}
+
+/// Drop interior hull vertices whose vertical rise above the chord of their
+/// neighbours is < prominence, least-prominent first, until every survivor
+/// clears the bar. S/R anchors (first/last) are fixed. "Prominence" here is the
+/// extra diffraction height the edge actually contributes.
+function simplifyByProminence(hull: ProfilePt[], promM: number): ProfilePt[] {
+  const pts = hull.slice();
+  while (pts.length > 2) {
+    let minDev = Infinity;
+    let minAt = -1;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const c = pts[i + 1];
+      const span = c.x - a.x;
+      const zChord = span > 1e-9 ? a.z + (c.z - a.z) * ((b.x - a.x) / span) : a.z;
+      const dev = b.z - zChord;                    // upper hull → b sits above the chord
+      if (dev < minDev) { minDev = dev; minAt = i; }
+    }
+    if (minAt < 0 || minDev >= promM) break;
+    pts.splice(minAt, 1);
+  }
+  return pts;
+}
+
+/// Build virtual terrain barriers along the source→receiver line.
+///
+/// Pipeline (task #15):
+///   1. Sample the DEM ground profile at its NATIVE resolution along the path
+///      (not a fixed count), capped so long paths stay bounded.
+///   2. Hampel despike — remove isolated DEM blunders, keep real crests.
+///   3. Upper convex hull in the (distance, height) plane, with the source and
+///      receiver acoustic centres as end anchors → the diffracting silhouette
+///      (the engine re-hulls this together with any man-made barriers).
+///   4. Prominence-simplify: keep every silhouette edge that adds ≥ the
+///      prominence knob of extra path height; drop the rest.
+///   5. Emit survivors as thin virtual walls whose top IS the ground elevation.
+///
+/// Returns the wall pack `(ax, ay, bx, by, base_z_a, base_z_b, height)` per
+/// barrier — here `base_z_a = base_z_b = groundZ` and `height = 0`.
 export function topographyBarriers(
   topo: TopoSettings | undefined,
   sourceLatLng: [number, number],
@@ -57,40 +152,73 @@ export function topographyBarriers(
   dem: DemRaster | null,
 ): Float64Array {
   if (!dem) return new Float64Array(0);
-  const samples = topo?.pathSamples ?? 48;
-  const minH = topo?.virtualBarrierMinHeightM ?? 2;
-  if (samples <= 0) return new Float64Array(0);
+  const promM = topo?.virtualBarrierMinHeightM ?? 2;
+  const despike = topo?.despikeStrength ?? 'low';
 
-  const out: number[] = [];
   const dxPath = receiverXyz[0] - sourceXyz[0];
   const dyPath = receiverXyz[1] - sourceXyz[1];
   const pathLen = Math.sqrt(dxPath * dxPath + dyPath * dyPath);
   if (pathLen < 1) return new Float64Array(0);
+
+  // DEM-resolution sample count, clamped.
+  const spacing = Math.max(TOPO_MIN_SPACING_M, dem.resolutionM ?? 20);
+  let n = Math.ceil(pathLen / spacing);
+  if (n > TOPO_MAX_SAMPLES) n = TOPO_MAX_SAMPLES;
+  if (n < 2) n = 2;
+
   const perpX = -dyPath / pathLen;
   const perpY = dxPath / pathLen;
-  const wing = 50;
 
   const srcLat = sourceLatLng[0];
   const srcLng = sourceLatLng[1];
   const rxLat = receiverLatLng[0];
   const rxLng = receiverLatLng[1];
 
-  for (let k = 1; k < samples; k++) {
-    const t = k / samples;
+  // ----- 1. Sample the ground profile (interior points; S/R added later at
+  // their acoustic-centre heights so the hull screens against the sightline).
+  const xs: number[] = [];
+  const zs: number[] = [];
+  const lats: number[] = [];
+  const lngs: number[] = [];
+  for (let i = 1; i < n; i++) {
+    const t = i / n;
     const lat = srcLat + (rxLat - srcLat) * t;
     const lng = srcLng + (rxLng - srcLng) * t;
-    const groundZ = dem.elevation(lat, lng);
-    if (!Number.isFinite(groundZ)) continue;
-    const lineZ = sourceXyz[2] + (receiverXyz[2] - sourceXyz[2]) * t;
-    const protrusion = groundZ - lineZ;
-    if (protrusion < minH) continue;
+    const g = dem.elevation(lat, lng);
+    if (!Number.isFinite(g)) continue;
+    xs.push(t * pathLen);
+    zs.push(g);
+    lats.push(lat);
+    lngs.push(lng);
+  }
+  if (xs.length === 0) return new Float64Array(0);
 
-    const [e, n] = latLngToLocalMetres([lat, lng], origin);
-    const ax = e + perpX * wing;
-    const ay = n + perpY * wing;
-    const bx = e - perpX * wing;
-    const by = n - perpY * wing;
-    out.push(ax, ay, bx, by, groundZ, groundZ, 0);
+  // ----- 2. Despike.
+  const zsD = despikeProfile(zs, despike);
+
+  // ----- 3. Upper hull with S/R as fixed anchors at their absolute heights.
+  const pts: ProfilePt[] = [];
+  pts.push({ x: 0, z: sourceXyz[2], idx: -1 });
+  for (let i = 0; i < xs.length; i++) pts.push({ x: xs[i], z: zsD[i], idx: i });
+  pts.push({ x: pathLen, z: receiverXyz[2], idx: -1 });
+  const hull = upperHull(pts);
+
+  // ----- 4. Prominence simplify.
+  const kept = simplifyByProminence(hull, promM);
+
+  // ----- 5. Emit survivors (interior hull vertices only).
+  const out: number[] = [];
+  for (const p of kept) {
+    if (p.idx < 0) continue;
+    const lat = lats[p.idx];
+    const lng = lngs[p.idx];
+    const gz = zsD[p.idx];
+    const [e, north] = latLngToLocalMetres([lat, lng], origin);
+    const ax = e + perpX * TERRAIN_WING_M;
+    const ay = north + perpY * TERRAIN_WING_M;
+    const bx = e - perpX * TERRAIN_WING_M;
+    const by = north - perpY * TERRAIN_WING_M;
+    out.push(ax, ay, bx, by, gz, gz, 0);
   }
   return new Float64Array(out);
 }

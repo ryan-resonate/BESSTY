@@ -405,14 +405,24 @@ export interface ProjectSettings {
   };
   /// DEM-driven topography settings. Applies to point + grid solves.
   topography?: {
-    /// Sample the DEM at N evenly-spaced points along each source→receiver
-    /// path and feed the mean ground height to the General-method ground
-    /// attenuation. 0 disables (flat ground assumed). Default 12.
-    pathSamples: number;
-    /// When the DEM shows a ridge poking above the source-receiver line of
-    /// sight by more than this many metres, treat it as a virtual barrier
-    /// (Abar applies). Default 2 m.
+    /// @deprecated Sampling is now automatic at the DEM's native resolution
+    /// (one sample per ~cell, capped), so there's no count to tune. Retained
+    /// optional so old saved projects round-trip; ignored by the solver.
+    pathSamples?: number;
+    /// Minimum ridge prominence (m). After the source→receiver ground profile
+    /// is reduced to its upper-silhouette (convex-hull) edges, an edge is kept
+    /// as a diffracting barrier only if it rises at least this far above the
+    /// straight chord joining its neighbouring silhouette edges — i.e. only if
+    /// it adds a meaningful extra diffraction path. Lower = keep more (smaller)
+    /// ridges; higher = only major ridges screen. Default 2 m.
     virtualBarrierMinHeightM: number;
+    /// Peak-preserving DEM despike (Hampel filter) applied to the sampled
+    /// profile before the silhouette/prominence pass. Removes isolated DEM
+    /// blunders (single-cell spikes) without lowering genuine crests, since a
+    /// rank filter only touches statistical outliers. 'off' disables it;
+    /// 'low' clears egregious spikes only; 'medium' is more aggressive (use on
+    /// noisy DEMs, not clean LiDAR). Default 'low'.
+    despikeStrength?: 'off' | 'low' | 'medium';
   };
 }
 
