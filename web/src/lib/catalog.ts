@@ -418,6 +418,39 @@ function aWeightingAt(f: number): number {
   return 20 * Math.log10(ra) + 2.0;
 }
 
+/// Overall (single-figure) sound power from a per-band spectrum, returned as
+/// both A-weighted dB(A) and un-weighted dB. `weighting` says whether the
+/// stored per-band values are ALREADY A-weighted ('A') or un-weighted ('Z'):
+///   - 'Z': band A-level = Lw_band + A(f); overall dB(A) is the energy sum of
+///          those; overall Z is the energy sum of the raw bands.
+///   - 'A': the stored bands ARE the A-levels (energy-sum them directly for
+///          dB(A)); subtract A(f) to recover the Z bands for the overall Z.
+/// Bands that are non-finite or <= 0 are treated as "unset" and skipped (the
+/// same convention the solver uses for catalog spectra), so an empty 0-cell
+/// doesn't drag the total down to a 0 dB floor.
+export function overallLwFromBands(
+  frequencies: number[],
+  levels: number[],
+  weighting: 'A' | 'Z',
+): { dbA: number; dbZ: number } {
+  let energyA = 0;
+  let energyZ = 0;
+  const n = Math.min(frequencies.length, levels.length);
+  for (let i = 0; i < n; i++) {
+    const lv = levels[i];
+    if (lv == null || !Number.isFinite(lv) || lv <= 0) continue;
+    const aw = aWeightingAt(frequencies[i]);
+    const lz = weighting === 'A' ? lv - aw : lv;   // un-weighted band level
+    const la = weighting === 'A' ? lv : lv + aw;   // A-weighted band level
+    energyZ += Math.pow(10, lz / 10);
+    energyA += Math.pow(10, la / 10);
+  }
+  return {
+    dbA: energyA > 0 ? 10 * Math.log10(energyA) : 0,
+    dbZ: energyZ > 0 ? 10 * Math.log10(energyZ) : 0,
+  };
+}
+
 /// Backwards-compatible alias for the original octave-only API.
 export function octaveSpectrumFor(
   entry: CatalogEntry,

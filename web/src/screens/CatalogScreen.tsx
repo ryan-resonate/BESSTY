@@ -15,6 +15,7 @@ import {
   loadGlobalCatalog,
   loadPersonalCatalog,
   localCatalogOf,
+  overallLwFromBands,
   subscribeToCachedGlobalCatalog,
   subscribeToCachedPersonalCatalog,
   upsertGlobalEntry,
@@ -443,6 +444,11 @@ export function CatalogEntryEditor(props: {
   const wsKeys = m && m.windSpeeds && m.windSpeeds.length > 0
     ? m.windSpeeds.map((w) => String(w))
     : ['broadband'];
+  // Calculated single-figure totals per column — overall A-weighted dB(A) and
+  // overall un-weighted Lw — recomputed live as bands / weighting are edited.
+  const overalls = m
+    ? wsKeys.map((k) => overallLwFromBands(m.frequencies, m.spectra[k] ?? [], m.weighting ?? 'Z'))
+    : [];
 
   return (
     <ModalBackdrop onClose={props.onClose}>
@@ -677,7 +683,35 @@ export function CatalogEntryEditor(props: {
                         </tr>
                       ))}
                     </tbody>
+                    <tfoot>
+                      <tr style={{ borderTop: '2px solid var(--ink-soft)', fontWeight: 700 }}>
+                        <td title="Calculated: overall A-weighted sound power, energy-summed across the bands above">
+                          Lw dB(A)
+                        </td>
+                        {wsKeys.map((k, ci) => (
+                          <td key={k} style={{ textAlign: 'right', padding: '4px', color: 'var(--ink)' }}>
+                            {overalls[ci] ? overalls[ci].dbA.toFixed(1) : '—'}
+                          </td>
+                        ))}
+                      </tr>
+                      <tr style={{ color: 'var(--ink-soft)' }}>
+                        <td title="Calculated: overall un-weighted (linear) sound power">
+                          Lw (Z)
+                        </td>
+                        {wsKeys.map((k, ci) => (
+                          <td key={k} style={{ textAlign: 'right', padding: '2px 4px' }}>
+                            {overalls[ci] ? overalls[ci].dbZ.toFixed(1) : '—'}
+                          </td>
+                        ))}
+                      </tr>
+                    </tfoot>
                   </table>
+                </div>
+                <div className="hint" style={{ fontSize: 11, color: 'var(--ink-soft)', marginTop: 4 }}>
+                  <b>Lw dB(A)</b> is calculated — the overall A-weighted sound power
+                  energy-summed over the bands{m.weighting === 'A'
+                    ? ' (bands are already A-weighted, so they are summed as-is).'
+                    : ' (Z bands have the IEC 61672-1 A-weighting applied per band first).'}
                 </div>
 
                 {draft.modes.length > 1 && (
