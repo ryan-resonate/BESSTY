@@ -221,7 +221,12 @@ export function subscribeToAllAccessibleProjects(
     onChange(items);
   }
 
-  const make = (q: Query, bucket: Map<string, ProjectListItem>): Unsubscribe =>
+  // A single stream's `permission-denied` is EXPECTED for non-admins — e.g. a
+  // user with no allowlisted projects, or whose deployed rules don't permit one
+  // of the three query shapes. It must NOT blank the whole list with a fatal
+  // banner: clear that stream's bucket, re-emit from the streams that DID load,
+  // and swallow the error. Genuinely fatal errors (network, etc.) still surface.
+  const make = (label: string, q: Query, bucket: Map<string, ProjectListItem>): Unsubscribe =>
     onSnapshot(
       q,
       (snap: QuerySnapshot) => {
@@ -229,21 +234,30 @@ export function subscribeToAllAccessibleProjects(
         for (const d of snap.docs) bucket.set(d.id, toListItem(d));
         emit();
       },
-      (err) => onError?.(err as Error),
+      (err) => {
+        const code = (err as { code?: string }).code;
+        if (code === 'permission-denied') {
+          console.warn(`[BESSTY] projects "${label}" stream not permitted — continuing without it.`);
+          bucket.clear();
+          emit();
+          return;
+        }
+        onError?.(err as Error);
+      },
     );
 
   const projectsCol = collection(db(), 'projects');
 
   const unsubs = [
-    make(query(projectsCol,
+    make('public', query(projectsCol,
       where('visibility', '==', 'public'),
       orderBy('updatedAt', 'desc')
     ), buckets.public),
-    make(query(projectsCol,
+    make('mine', query(projectsCol,
       where('ownerUid', '==', uid),
       orderBy('updatedAt', 'desc')
     ), buckets.mine),
-    make(query(projectsCol,
+    make('sharedToMe', query(projectsCol,
       where('allowedUserIds', 'array-contains', uid),
       orderBy('updatedAt', 'desc')
     ), buckets.sharedToMe),
