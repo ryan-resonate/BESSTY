@@ -338,6 +338,14 @@ export interface ProjectSettings {
   /// Applied uniformly to every WTG / BESS / auxiliary source. There's
   /// no per-source override yet — set it once at the project level.
   dOmegaDb?: number;
+  /// ISO 9613-2 §8 long-term meteorological correction. `Cmet = C0·[1 −
+  /// 10(hs+hr)/dp]` (0 when dp ≤ 10(hs+hr)) is SUBTRACTED from the downwind
+  /// level to give the long-term average. `c0Db` is the site-meteorology factor
+  /// (dB, typically 0–5); default/absent = 0 = no correction (pure downwind,
+  /// matching SoundPlan's default and the validation set).
+  meteorology?: {
+    c0Db: number;
+  };
   annexD: {
     barrierAbarCapDb: number;
     useElevatedSourceForBarrier: boolean;

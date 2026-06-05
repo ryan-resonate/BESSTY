@@ -1775,6 +1775,27 @@ function SettingsTab(props: Props) {
       </section>
 
       <section className="sp-section">
+        <h3><span>Meteorological correction (Cmet, §8)</span></h3>
+        <Field label="C₀ (dB)">
+          <NumericInput min={0} max={10} step={0.5}
+            value={settings.meteorology?.c0Db ?? 0}
+            fallback={0}
+            onChange={(v) => update({ meteorology: { c0Db: Math.max(0, v) } })}
+          />
+        </Field>
+        <div className="hint">
+          ISO 9613-2 §8 long-term correction, <b>subtracted</b> from the downwind level:
+          <code> Cmet = C₀·[1 − 10(hs+hr)/dp]</code> (0 when dp ≤ 10(hs+hr)), where hs/hr
+          are the source/receiver heights and dp the ground-plane distance.
+          <br />
+          <b>0 dB</b> (default) = pure downwind, matching SoundPlan's default and the
+          validation set. Raise C₀ (typically <b>0–5 dB</b>, from local met statistics) to
+          discount distant sources for the long-term average — it only bites beyond
+          10(hs+hr) and grows with distance.
+        </div>
+      </section>
+
+      <section className="sp-section">
         <h3><span>Atmosphere (ISO 9613-1 Aatm)</span></h3>
         <div className="grid-2">
           <Field label="Temperature (°C)">

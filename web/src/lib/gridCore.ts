@@ -254,7 +254,7 @@ export function concaveCorrectionMet(
 }
 
 /// Atmosphere + barrier-convention parameters threaded to every WASM call.
-export interface SolverEnv { tC: number; rh: number; pKpa: number; barConv: number; dzCap: number; }
+export interface SolverEnv { tC: number; rh: number; pKpa: number; barConv: number; dzCap: number; c0: number; }
 
 export interface GridResult {
   cols: number;
@@ -369,7 +369,7 @@ export function runBatchedGrid(job: GridJob, dem: DemRaster | null): GridResult 
     }
     const evaluator = new GridEvaluator(
       tile.sourcesFlat, nBands, g, userBarriers,
-      env.tC, env.rh, env.pKpa, env.barConv, env.dzCap,
+      env.tC, env.rh, env.pKpa, env.barConv, env.dzCap, env.c0,
     );
     try {
       const rowEnd = Math.min(tile.row0 + tile.rows, rows);

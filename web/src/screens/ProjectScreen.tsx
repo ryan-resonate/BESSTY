@@ -740,6 +740,7 @@ export function ProjectScreen() {
       // cellTopoPack, so a change to these controls must re-run the contour
       // grid — without this the grid silently keeps the old terrain screening.
       topography: project.settings?.topography,
+      meteorology: project.settings?.meteorology,
       gridReceiverHeight: project.settings?.general.defaultReceiverHeight,
       calc: project.calculationArea,
       gridSpacingM,

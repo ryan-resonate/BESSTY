@@ -63,6 +63,25 @@ mod wasm {
         if v.is_finite() && v >= 0.0 { Some(v) } else { None }
     }
 
+    /// ISO 9613-2 §8 meteorological correction Cmet (dB). Subtracted from the
+    /// downwind octave-band levels to give the long-term average; frequency-
+    /// independent, so it applies equally to every band. `c0` is the local-
+    /// meteorology factor (dB; 0 disables the correction), `hs`/`hr` the
+    /// source/receiver heights above ground (m), and `dp` the source→receiver
+    /// distance projected on the ground plane (m).
+    ///   Cmet = 0                       if dp ≤ 10·(hs + hr)
+    ///   Cmet = C0·[1 − 10·(hs+hr)/dp]  otherwise
+    fn cmet_db(c0: f64, hs: f64, hr: f64, dp: f64) -> f64 {
+        if c0 <= 0.0 || !dp.is_finite() || dp <= 0.0 {
+            return 0.0;
+        }
+        let h = hs + hr;
+        if dp <= 10.0 * h {
+            return 0.0;
+        }
+        c0 * (1.0 - 10.0 * h / dp)
+    }
+
     /// General point source (BESS, auxiliary, generic). Output length matches
     /// input length: 10 for octave, 31 for one-third octave.
     ///
@@ -87,6 +106,7 @@ mod wasm {
         atm_temp_c: f64, atm_rh_pct: f64, atm_pres_kpa: f64,
         barrier_convention: u32,
         dz_cap_db: f64,
+        c0: f64,
     ) -> Vec<f64> {
         let bs = band_system_for(lw.len());
         let lw_spec = BandSpectrum::from_iter(bs, lw.iter().copied());
@@ -101,7 +121,10 @@ mod wasm {
         let out = iso9613::evaluate_with_barriers(
             &lw_spec, s, r, src_hagl, rx_hagl, g, &walls, dz_cap(dz_cap_db), atm, barrier_conv(barrier_convention),
         );
-        out.bands.into_iter().collect()
+        // §8 long-term meteorological correction (frequency-independent).
+        let dp = ((rx_e - src_e).powi(2) + (rx_n - src_n).powi(2)).sqrt();
+        let cmet = cmet_db(c0, src_hagl, rx_hagl, dp);
+        out.bands.into_iter().map(|b| b - cmet).collect()
     }
 
     /// Wind turbine source (Annex D rules). Octave or third-octave by lw length.
@@ -120,6 +143,7 @@ mod wasm {
         apply_concave: bool,
         atm_temp_c: f64, atm_rh_pct: f64, atm_pres_kpa: f64,
         barrier_convention: u32,
+        c0: f64,
     ) -> Vec<f64> {
         let bs = band_system_for(lw.len());
         let lw_spec = BandSpectrum::from_iter(bs, lw.iter().copied());
@@ -136,7 +160,9 @@ mod wasm {
             WtgRules::default(), apply_concave, rotor_diameter_m,
             atm, barrier_conv(barrier_convention),
         );
-        out.bands.into_iter().collect()
+        let dp = ((rx_e - hub_e).powi(2) + (rx_n - hub_n).powi(2)).sqrt();
+        let cmet = cmet_db(c0, hub_hagl, rx_hagl, dp);
+        out.bands.into_iter().map(|b| b - cmet).collect()
     }
 
     /// Energy-sum a vector of per-band Lp arrays into one A-weighted total
@@ -301,6 +327,7 @@ mod wasm {
         bar_conv: BarrierConvention,
         dz_cap: Option<f64>,
         g: f64,
+        c0: f64,
         user_barriers: Vec<WallBarrier<f64>>,
     }
 
@@ -319,6 +346,7 @@ mod wasm {
             atm_temp_c: f64, atm_rh_pct: f64, atm_pres_kpa: f64,
             barrier_convention: u32,
             dz_cap_db: f64,
+            c0: f64,
         ) -> GridEvaluator {
             let bs = band_system_for(n_bands);
             let stride = 6 + n_bands;
@@ -344,6 +372,7 @@ mod wasm {
                 bar_conv: barrier_conv(barrier_convention),
                 dz_cap: dz_cap(dz_cap_db),
                 g,
+                c0,
                 user_barriers: unpack_walls(user_barriers_flat),
             }
         }
@@ -437,8 +466,12 @@ mod wasm {
                 let walls = self.walls_for(i, topo_offsets, topo_barriers, &mut scratch);
                 let concave = src.is_wtg && concave_flags.get(i).copied().unwrap_or(0) != 0;
                 let lp = self.lp_for_source(src, r, cell_hagl, walls, concave);
+                // §8 meteorological correction for this source→cell pair.
+                let dpx = src.pos.e - cell_e;
+                let dpy = src.pos.n - cell_n;
+                let cmet = cmet_db(self.c0, src.hagl, cell_hagl, (dpx * dpx + dpy * dpy).sqrt());
                 for (bi, band) in lp.bands.iter().enumerate() {
-                    energy += 10f64.powf(0.1 * (band + aw[bi]));
+                    energy += 10f64.powf(0.1 * (band - cmet + aw[bi]));
                 }
             }
             if energy > 0.0 { 10.0 * energy.log10() } else { -120.0 }

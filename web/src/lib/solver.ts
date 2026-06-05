@@ -69,7 +69,9 @@ function solverEnv(project: Project): SolverEnv {
   // independently (default 3 dB) and aren't affected by this field.
   const userCap = project.settings?.barrierDiffractionCapDb;
   const dzCap = userCap != null && Number.isFinite(userCap) && userCap >= 0 ? userCap : -1;
-  return { tC, rh, pKpa, barConv, dzCap };
+  // ISO 9613-2 §8 meteorological-correction factor C0 (dB). 0 = off (default).
+  const c0 = project.settings?.meteorology?.c0Db ?? 0;
+  return { tC, rh, pKpa, barConv, dzCap, c0 };
 }
 
 /// Project-wide DΩ correction (dB). Defaults to 0 dB (strict ISO 9613-2
@@ -279,7 +281,7 @@ function evaluatePair(
     const concave = concaveCorrectionMet(source.latLng, hubZAbs, rxLatLng, rxZAbs, hubZ, rxZ, dem);
     return evaluate_wtg_octave(
       lw, se, sn, hubZAbs, hubZ, re, rn, rxZAbs, rxZ, g, allBars,
-      rotorD, concave, env.tC, env.rh, env.pKpa, env.barConv,
+      rotorD, concave, env.tC, env.rh, env.pKpa, env.barConv, env.c0,
     );
   }
   const sourceZ = sourceHeightFor(entry) + (source.elevationOffset ?? 0); // HAG
@@ -291,7 +293,7 @@ function evaluatePair(
   const allBars = concatBarriers(barriersFlat, topoBars);
   return evaluate_general_octave(
     lw, se, sn, sourceZAbs, sourceZ, re, rn, rxZAbs, rxZ, g, allBars,
-    env.tC, env.rh, env.pKpa, env.barConv, env.dzCap,
+    env.tC, env.rh, env.pKpa, env.barConv, env.dzCap, env.c0,
   );
 }
 
