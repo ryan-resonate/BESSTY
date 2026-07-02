@@ -35,7 +35,7 @@ fn lat_on_plateau(ground_elev: f64) -> f64 {
     }];
     let lw = flat_100_db_octave();
     let lp = evaluate_with_barriers(
-        &lw, s, r, h_s, h_r, 0.5, &walls, None,
+        &lw, s, r, h_s, h_r, 0.5, &walls, &[], None,
         Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
     );
     lp.a_weighted_total()

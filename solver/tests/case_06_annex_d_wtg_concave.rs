@@ -18,7 +18,7 @@ fn case_06_concave_correction_applied() {
     let lw = BandSpectrum::from_iter(BandSystem::Octave, lw_vals.iter().copied());
 
     let lp_concave = evaluate_wtg(
-        &lw, hub, r, hub.z, r.z, 0.5, &[], WtgRules::default(), true, 120.0,
+        &lw, hub, r, hub.z, r.z, 0.5, &[], &[], WtgRules::default(), true, 120.0,
         Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
     );
     assert_relative_eq!(lp_concave.a_weighted_total(), 44.33, epsilon = 0.5);
@@ -35,11 +35,11 @@ fn case_06_vs_case_05_offset_is_3db() {
     let lw = BandSpectrum::from_iter(BandSystem::Octave, lw_vals.iter().copied());
 
     let lp_flat = evaluate_wtg(
-        &lw, hub, r, hub.z, r.z, 0.5, &[], WtgRules::default(), false, 120.0,
+        &lw, hub, r, hub.z, r.z, 0.5, &[], &[], WtgRules::default(), false, 120.0,
         Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
     );
     let lp_concave = evaluate_wtg(
-        &lw, hub, r, hub.z, r.z, 0.5, &[], WtgRules::default(), true, 120.0,
+        &lw, hub, r, hub.z, r.z, 0.5, &[], &[], WtgRules::default(), true, 120.0,
         Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
     );
     let delta = lp_concave.a_weighted_total() - lp_flat.a_weighted_total();
@@ -59,11 +59,11 @@ fn case_06_concave_disabled_in_rules_skips_correction() {
     // Even with apply_concave = true at the call site, the project setting
     // disables the correction.
     let lp_disabled = evaluate_wtg(
-        &lw, hub, r, hub.z, r.z, 0.5, &[], rules, true, 120.0,
+        &lw, hub, r, hub.z, r.z, 0.5, &[], &[], rules, true, 120.0,
         Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
     );
     let lp_flat = evaluate_wtg(
-        &lw, hub, r, hub.z, r.z, 0.5, &[], WtgRules::default(), false, 120.0,
+        &lw, hub, r, hub.z, r.z, 0.5, &[], &[], WtgRules::default(), false, 120.0,
         Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
     );
     assert_relative_eq!(
