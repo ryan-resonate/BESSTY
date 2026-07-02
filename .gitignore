@@ -1,3 +1,8 @@
+# Licensed ISO standards (single-user licence — must never be committed or
+# carried into any extracted repo). Canonical copies for all Resonate staff:
+#   T:\Literature\Standards\ISO
+Standards/
+
 # Build artefacts
 solver/target/
 web/node_modules/
