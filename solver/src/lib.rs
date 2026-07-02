@@ -21,7 +21,7 @@ mod wasm {
     use super::*;
     use crate::iso9613::annex_d::WtgRules;
     use crate::iso9613::atmosphere::Atmosphere;
-    use crate::iso9613::barrier::{BarrierConvention, WallBarrier};
+    use crate::iso9613::barrier::{BarrierConvention, LateralEdge, WallBarrier};
     use wasm_bindgen::prelude::*;
 
     // Wall pack stride: [a_e, a_n, b_e, b_n, base_z_a, base_z_b, height_agl].
@@ -34,6 +34,15 @@ mod wasm {
                 a_e: c[0], a_n: c[1], b_e: c[2], b_n: c[3],
                 base_z_a: c[4], base_z_b: c[5], height_agl: c[6],
             })
+            .collect()
+    }
+
+    // Lateral-edge pack stride: [e, n, base_z, top_z] — one vertical END edge
+    // per finite (man-made) wall endpoint, for around-the-end diffraction
+    // (§7.4.3). Terrain virtual barriers emit NONE (they model infinite ridges).
+    fn unpack_lateral(flat: &[f64]) -> Vec<LateralEdge<f64>> {
+        flat.chunks_exact(4)
+            .map(|c| LateralEdge { e: c[0], n: c[1], base_z: c[2], top_z: c[3] })
             .collect()
     }
 
@@ -107,6 +116,7 @@ mod wasm {
         barrier_convention: u32,
         dz_cap_db: f64,
         c0: f64,
+        lateral_flat: &[f64],
     ) -> Vec<f64> {
         let bs = band_system_for(lw.len());
         let lw_spec = BandSpectrum::from_iter(bs, lw.iter().copied());
@@ -118,8 +128,9 @@ mod wasm {
             relative_humidity_pct: atm_rh_pct,
             pressure_kpa: atm_pres_kpa,
         };
+        let lateral = unpack_lateral(lateral_flat);
         let out = iso9613::evaluate_with_barriers(
-            &lw_spec, s, r, src_hagl, rx_hagl, g, &walls, dz_cap(dz_cap_db), atm, barrier_conv(barrier_convention),
+            &lw_spec, s, r, src_hagl, rx_hagl, g, &walls, &lateral, dz_cap(dz_cap_db), atm, barrier_conv(barrier_convention),
         );
         // §8 long-term meteorological correction (frequency-independent).
         let dp = ((rx_e - src_e).powi(2) + (rx_n - src_n).powi(2)).sqrt();
@@ -144,6 +155,7 @@ mod wasm {
         atm_temp_c: f64, atm_rh_pct: f64, atm_pres_kpa: f64,
         barrier_convention: u32,
         c0: f64,
+        lateral_flat: &[f64],
     ) -> Vec<f64> {
         let bs = band_system_for(lw.len());
         let lw_spec = BandSpectrum::from_iter(bs, lw.iter().copied());
@@ -155,8 +167,9 @@ mod wasm {
             relative_humidity_pct: atm_rh_pct,
             pressure_kpa: atm_pres_kpa,
         };
+        let lateral = unpack_lateral(lateral_flat);
         let out = iso9613::annex_d::evaluate_wtg(
-            &lw_spec, hub, r, hub_hagl, rx_hagl, g, &walls,
+            &lw_spec, hub, r, hub_hagl, rx_hagl, g, &walls, &lateral,
             WtgRules::default(), apply_concave, rotor_diameter_m,
             atm, barrier_conv(barrier_convention),
         );
@@ -261,7 +274,7 @@ mod wasm {
         };
         let out = iso9613::evaluate_with_barriers(
             &lw_spec, s, r, D::constant(src_hagl), D::constant(rx_hagl),
-            D::constant(g), &walls, dz_cap(dz_cap_db), atm, barrier_conv(barrier_convention),
+            D::constant(g), &walls, &[], dz_cap(dz_cap_db), atm, barrier_conv(barrier_convention),
         );
         pack_dual_grad(&out)
     }
@@ -294,7 +307,7 @@ mod wasm {
         };
         let out = iso9613::annex_d::evaluate_wtg(
             &lw_spec, hub, r, D::constant(hub_hagl), D::constant(rx_hagl),
-            D::constant(g), &walls,
+            D::constant(g), &walls, &[],
             WtgRules::default(), apply_concave, rotor_diameter_m,
             atm, barrier_conv(barrier_convention),
         );
@@ -329,6 +342,7 @@ mod wasm {
         g: f64,
         c0: f64,
         user_barriers: Vec<WallBarrier<f64>>,
+        user_lateral: Vec<LateralEdge<f64>>,
     }
 
     #[wasm_bindgen]
@@ -347,6 +361,7 @@ mod wasm {
             barrier_convention: u32,
             dz_cap_db: f64,
             c0: f64,
+            user_lateral_flat: &[f64],
         ) -> GridEvaluator {
             let bs = band_system_for(n_bands);
             let stride = 6 + n_bands;
@@ -374,6 +389,7 @@ mod wasm {
                 g,
                 c0,
                 user_barriers: unpack_walls(user_barriers_flat),
+                user_lateral: unpack_lateral(user_lateral_flat),
             }
         }
 
@@ -420,12 +436,12 @@ mod wasm {
         ) -> BandSpectrum<f64> {
             if src.is_wtg {
                 iso9613::annex_d::evaluate_wtg(
-                    &src.lw, src.pos, r, src.hagl, cell_hagl, self.g, walls,
+                    &src.lw, src.pos, r, src.hagl, cell_hagl, self.g, walls, &self.user_lateral,
                     WtgRules::default(), apply_concave, src.rotor_d, self.atm, self.bar_conv,
                 )
             } else {
                 iso9613::evaluate_with_barriers(
-                    &src.lw, src.pos, r, src.hagl, cell_hagl, self.g, walls,
+                    &src.lw, src.pos, r, src.hagl, cell_hagl, self.g, walls, &self.user_lateral,
                     self.dz_cap, self.atm, self.bar_conv,
                 )
             }
@@ -521,13 +537,13 @@ mod wasm {
             let out = if src.is_wtg {
                 iso9613::annex_d::evaluate_wtg(
                     &lw_d, s, r, D::constant(src.hagl), D::constant(cell_hagl),
-                    D::constant(self.g), &walls, WtgRules::default(), false, src.rotor_d,
+                    D::constant(self.g), &walls, &[], WtgRules::default(), false, src.rotor_d,
                     self.atm, self.bar_conv,
                 )
             } else {
                 iso9613::evaluate_with_barriers(
                     &lw_d, s, r, D::constant(src.hagl), D::constant(cell_hagl),
-                    D::constant(self.g), &walls, self.dz_cap, self.atm, self.bar_conv,
+                    D::constant(self.g), &walls, &[], self.dz_cap, self.atm, self.bar_conv,
                 )
             };
             pack_dual_grad(&out)

@@ -53,6 +53,76 @@ pub struct PathLengths<T> {
     pub delta_z: T,
 }
 
+/// A vertical END edge of a FINITE wall — a polyline endpoint — used for
+/// lateral diffraction around the wall's ends (§7.4.3 / §7.4.4). Terrain
+/// virtual barriers stand in for *infinite* ridges, so they contribute NO
+/// lateral edges. Plan position `(e, n)` plus the absolute base + top elevation
+/// of the vertical edge.
+#[derive(Copy, Clone, Debug)]
+pub struct LateralEdge<T> {
+    pub e: T,
+    pub n: T,
+    pub base_z: T,
+    pub top_z: T,
+}
+
+/// Primal-value clamp of `v` to `[lo, hi]`. Selecting on the primal keeps AD
+/// smooth away from the clamp boundary (matching the `diffraction::cap` style).
+fn clamp_height<T: ADScalar>(v: T, lo: T, hi: T) -> T {
+    if v.to_f64() < lo.to_f64() {
+        lo
+    } else if v.to_f64() > hi.to_f64() {
+        hi
+    } else {
+        v
+    }
+}
+
+/// Path-length geometry for diffraction around one vertical end edge.
+///
+/// The ray bends at the height `h*` on the edge that minimises `|S→P| + |P→R|`
+/// — a closed form: the straight line in the "unfolded" (horizontal-distance,
+/// height) plane crosses the edge at `h* = (zs·dxr + zr·dxs)/(dxs+dxr)`, where
+/// `dxs`/`dxr` are the plan-view distances from source/receiver to the edge.
+/// `h*` is clamped to the edge's `[base_z, top_z]` extent. The returned
+/// `PathLengths` is a single-edge path (`e_total = 0`); its `delta_z` is ≤ 0
+/// when the edge doesn't shadow the receiver (sound passes the end freely),
+/// which the caller reads as `Dz = 0` (a fully open path).
+pub fn lateral_path_lengths<T: ADScalar>(
+    source: Vec3<T>,
+    receiver: Vec3<T>,
+    edge: &LateralEdge<T>,
+) -> PathLengths<T> {
+    let dse = source.e - edge.e;
+    let dsn = source.n - edge.n;
+    let dxs = (dse * dse + dsn * dsn).sqrt();
+    let dre = receiver.e - edge.e;
+    let drn = receiver.n - edge.n;
+    let dxr = (dre * dre + drn * drn).sqrt();
+    let zs = source.z;
+    let zr = receiver.z;
+    let denom = dxs + dxr;
+    let h_star = if denom.to_f64() > 1e-9 {
+        (zs * dxr + zr * dxs) / denom
+    } else {
+        (zs + zr) / T::from_f64(2.0)
+    };
+    let h = clamp_height(h_star, edge.base_z, edge.top_z);
+    let ls = (dxs * dxs + (h - zs) * (h - zs)).sqrt();
+    let lr = (dxr * dxr + (h - zr) * (h - zr)).sqrt();
+    let de = receiver.e - source.e;
+    let dn = receiver.n - source.n;
+    let dz = receiver.z - source.z;
+    let d_direct = (de * de + dn * dn + dz * dz).sqrt();
+    PathLengths {
+        d_direct,
+        d_ss: ls,
+        d_sr: lr,
+        e_total: T::zero(),
+        delta_z: ls + lr - d_direct,
+    }
+}
+
 /// Project `barriers` into the vertical plane through `source` and `receiver`,
 /// returning candidate diffracting edges sorted by horizontal distance from
 /// the source.

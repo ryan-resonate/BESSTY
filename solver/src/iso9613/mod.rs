@@ -86,6 +86,7 @@ pub fn evaluate_with_barriers<T: ADScalar>(
     h_r: T,
     g: T,
     barriers: &[barrier::WallBarrier<T>],
+    lateral: &[barrier::LateralEdge<T>],
     dz_cap_db: Option<f64>,
     atm: Atmosphere,
     barrier_conv: BarrierConvention,
@@ -95,7 +96,7 @@ pub fn evaluate_with_barriers<T: ADScalar>(
     let aatm = atmosphere::aatm_spectrum(source_pos, receiver_pos, system, atm);
     let agr = ground::agr_spectrum(source_pos, receiver_pos, h_s, h_r, g, g, g, system);
     let (abar, ground_in_bar) = barrier::abar_spectrum(
-        source_pos, receiver_pos, barriers, &agr, system, dz_cap_db, barrier_conv,
+        source_pos, receiver_pos, barriers, lateral, &agr, system, dz_cap_db, barrier_conv,
     );
 
     let mut out = BandSpectrum::zeros(system);
