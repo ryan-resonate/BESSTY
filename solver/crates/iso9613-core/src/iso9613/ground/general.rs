@@ -10,13 +10,14 @@
 //!     `dp` relative to `hS` or `hR`.
 //!
 //! EDITION NOTE: the Kgeo wrap (Eqs 11–13) is 2024-only; the 1996 edition
-//! uses the plain sum `Agr = AS + AR + Am` (its Eq 9). This function is the
-//! 2024 combination — the `EditionSpec` switch arrives in Phase 1/2.
+//! uses the plain sum `Agr = AS + AR + Am` (its Eq 9). The `combination`
+//! argument (from the active `EditionSpec`) selects between them.
 
 use crate::spectrum::{BandSpectrum, BandSystem};
 use crate::units::Vec3;
 
 use super::functions::{a_prime, b_prime, c_prime, d_prime};
+use super::GroundCombination;
 
 /// `Agr` per band per ISO 9613-2:2024 Eqs 10–13.
 ///
@@ -41,6 +42,7 @@ pub fn agr_spectrum(
     g_middle: f64,
     g_receiver: f64,
     system: BandSystem,
+    combination: GroundCombination,
 ) -> BandSpectrum {
     let delta = receiver_pos.sub(source_pos);
     let dp = delta.length_horizontal();
@@ -71,13 +73,19 @@ pub fn agr_spectrum(
 
         let agr_inner = a_s + a_r + a_m;
 
-        // Eq 11: Agr = -10·log10(1 + (10^(-Agr_inner/10) - 1) · Kgeo).
-        // 10^x is computed as exp(x · ln 10) — kept in this exact form so the
-        // Phase-0 refactor is bit-identical to the pre-split implementation.
-        let exponent = (-agr_inner / 10.0) * ln10;
-        let ten_to_neg = exponent.exp();
-        let arg = 1.0 + (ten_to_neg - 1.0) * kgeo;
-        spectrum.bands[band_idx] = -10.0 * arg.log10();
+        spectrum.bands[band_idx] = match combination {
+            // 1996 Eq 9: plain sum.
+            GroundCombination::Sum => agr_inner,
+            // 2024 Eq 11: Agr = -10·log10(1 + (10^(-Agr_inner/10) - 1) · Kgeo).
+            // 10^x is computed as exp(x · ln 10) — kept in this exact form so
+            // the value is bit-identical to the pre-EditionSpec implementation.
+            GroundCombination::KgeoWrap => {
+                let exponent = (-agr_inner / 10.0) * ln10;
+                let ten_to_neg = exponent.exp();
+                let arg = 1.0 + (ten_to_neg - 1.0) * kgeo;
+                -10.0 * arg.log10()
+            }
+        };
     }
 
     spectrum
@@ -127,7 +135,7 @@ mod tests {
     fn agr_spectrum_matches_case_02() {
         let (s, r) = case_02_geometry();
         // Flat ground → HAG equals absolute z.
-        let agr = agr_spectrum(s, r, s.z, r.z, 0.5, 0.5, 0.5, BandSystem::Octave);
+        let agr = agr_spectrum(s, r, s.z, r.z, 0.5, 0.5, 0.5, BandSystem::Octave, GroundCombination::KgeoWrap);
         // 10-band layout: 16, 31.5, 63, 125, 250, 500, 1k, 2k, 4k, 8k.
         // The 16/31.5 Hz octaves use the 63 Hz formula → −3.074.
         let expected = [
@@ -144,8 +152,8 @@ mod tests {
         // Each third-octave band should produce the same Agr as its parent
         // octave (the Table-3 shape functions are octave-defined).
         let (s, r) = case_02_geometry();
-        let agr_oct = agr_spectrum(s, r, s.z, r.z, 0.5, 0.5, 0.5, BandSystem::Octave);
-        let agr_3rd = agr_spectrum(s, r, s.z, r.z, 0.5, 0.5, 0.5, BandSystem::OneThirdOctave);
+        let agr_oct = agr_spectrum(s, r, s.z, r.z, 0.5, 0.5, 0.5, BandSystem::Octave, GroundCombination::KgeoWrap);
+        let agr_3rd = agr_spectrum(s, r, s.z, r.z, 0.5, 0.5, 0.5, BandSystem::OneThirdOctave, GroundCombination::KgeoWrap);
 
         for (third_idx, &third_value) in agr_3rd.bands.iter().enumerate() {
             let parent = BandSystem::OneThirdOctave.parent_octave(third_idx);

@@ -266,6 +266,48 @@ pub fn path_lengths(
     }
 }
 
+/// The diffraction geometry of one source→receiver path, ready for a standard
+/// evaluator to score: the active over-top rubber-band path plus each candidate
+/// around-the-end (lateral) path. This is the output of the "path engine" —
+/// pure geometry, edition-independent (per ISO/TR 17534-3 §5.2 both editions
+/// use this vertical-plane construction). `None` from `build_geometry` means
+/// the line of sight clears every obstacle top (no screening → `Abar = 0`).
+#[derive(Clone, Debug)]
+pub struct BarrierGeometry {
+    /// Over-top path lengths (through the active upper-hull edges).
+    pub over_top: PathLengths,
+    /// One lateral path per supplied end edge (§7.4.3).
+    pub lateral: Vec<PathLengths>,
+}
+
+/// Build the diffraction geometry for a source→receiver pair. Returns `None`
+/// when no obstacle top rises above the line of sight (unshielded).
+pub fn build_geometry(
+    source: Vec3,
+    receiver: Vec3,
+    barriers: &[WallBarrier],
+    lateral_edges: &[LateralEdge],
+) -> Option<BarrierGeometry> {
+    let candidates = project_walls(source, receiver, barriers);
+    let s_in_plane = DiffractionEdge { x: 0.0, z: source.z };
+    let dx = receiver.e - source.e;
+    let dy = receiver.n - source.n;
+    let dp = (dx * dx + dy * dy).sqrt();
+    let r_in_plane = DiffractionEdge { x: dp, z: receiver.z };
+
+    let active = upper_hull_select(s_in_plane, r_in_plane, &candidates);
+    if active.is_empty() {
+        return None;
+    }
+
+    let over_top = path_lengths(s_in_plane, r_in_plane, &active);
+    let lateral = lateral_edges
+        .iter()
+        .map(|edge| lateral_path_lengths(source, receiver, edge))
+        .collect();
+    Some(BarrierGeometry { over_top, lateral })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

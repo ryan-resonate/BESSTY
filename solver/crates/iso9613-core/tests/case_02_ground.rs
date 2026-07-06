@@ -5,7 +5,8 @@
 
 use approx::assert_relative_eq;
 use iso9613_core::iso9613::atmosphere::Atmosphere;
-use iso9613_core::iso9613::{evaluate_with_ground, ground};
+use iso9613_core::iso9613::ground::{self, GroundCombination};
+use iso9613_core::iso9613::evaluate_with_ground;
 use iso9613_core::{BandSpectrum, BandSystem, Vec3};
 
 const TOL_PER_BAND_DB: f64 = 0.55;
@@ -23,7 +24,7 @@ fn flat_100_db_octave() -> BandSpectrum {
 fn case_02_per_band_agr() {
     let (s, r) = case_02_geometry();
     // Flat ground at z = 0 → HAG equals absolute z.
-    let agr = ground::agr_spectrum(s, r, s.z, r.z, 0.5, 0.5, 0.5, BandSystem::Octave);
+    let agr = ground::agr_spectrum(s, r, s.z, r.z, 0.5, 0.5, 0.5, BandSystem::Octave, GroundCombination::KgeoWrap);
     // 16 + 31.5 Hz octaves use the same Agr formula as 63 Hz (Table 3 only
     // defines 63 Hz upward; sub-63 Hz inherits the 63 Hz coefficients).
     let expected = [
@@ -68,8 +69,8 @@ fn case_02_q_threshold_active() {
     let r_low = Vec3::new(200.0, 0.0, 1.5);    // q > 0
     let r_high = Vec3::new(200.0, 0.0, 5.0);   // 30·10 = 300 > 200 → q = 0
 
-    let agr_low = ground::agr_spectrum(s, r_low, s.z, r_low.z, 0.5, 0.5, 0.5, BandSystem::Octave);
-    let agr_high = ground::agr_spectrum(s, r_high, s.z, r_high.z, 0.5, 0.5, 0.5, BandSystem::Octave);
+    let agr_low = ground::agr_spectrum(s, r_low, s.z, r_low.z, 0.5, 0.5, 0.5, BandSystem::Octave, GroundCombination::KgeoWrap);
+    let agr_high = ground::agr_spectrum(s, r_high, s.z, r_high.z, 0.5, 0.5, 0.5, BandSystem::Octave, GroundCombination::KgeoWrap);
     // The high-receiver case has q = 0, so Am = 0, while the low-receiver case
     // has small but nonzero Am contributions. The difference at 63 Hz is
     // dominated by Am (= -3·q ≈ -0.075) so the totals must differ.

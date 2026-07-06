@@ -14,9 +14,8 @@ pub mod diffraction;
 pub mod path;
 
 use crate::spectrum::{BandSpectrum, BandSystem};
-use crate::units::Vec3;
 
-pub use path::{LateralEdge, WallBarrier};
+pub use path::{BarrierGeometry, LateralEdge, WallBarrier};
 
 /// Natural log of 10, for the dB↔energy conversions in the §7.4.4 combination.
 const LN10: f64 = std::f64::consts::LN_10;
@@ -54,12 +53,8 @@ pub enum BarrierConvention {
 ///
 /// `dz_cap_db` overrides the standard 20 / 25 dB cap (used by Annex D for
 /// the WT terrain-screening case — typically 3 dB).
-#[allow(clippy::too_many_arguments)]
 pub fn abar_spectrum(
-    source_pos: Vec3,
-    receiver_pos: Vec3,
-    barriers: &[WallBarrier],
-    lateral_edges: &[LateralEdge],
+    geometry: Option<&path::BarrierGeometry>,
     agr: &BandSpectrum,
     system: BandSystem,
     dz_cap_db: Option<f64>,
@@ -68,35 +63,20 @@ pub fn abar_spectrum(
     let mut abar = BandSpectrum::zeros(system);
     let mut ground_in_bar = vec![false; system.n_bands()];
 
-    let candidates = path::project_walls(source_pos, receiver_pos, barriers);
-    let s_in_plane = path::DiffractionEdge { x: 0.0, z: source_pos.z };
-    let dx = receiver_pos.e - source_pos.e;
-    let dy = receiver_pos.n - source_pos.n;
-    let dp = (dx * dx + dy * dy).sqrt();
-    let r_in_plane = path::DiffractionEdge { x: dp, z: receiver_pos.z };
-
-    let active = path::upper_hull_select(s_in_plane, r_in_plane, &candidates);
-    if active.is_empty() {
-        // No over-top shielding — Abar = 0 across all bands. (Lateral
-        // diffraction only ADDS open paths around a wall that IS screening, so
-        // there's nothing to combine when the line of sight clears the top.)
-        return (abar, ground_in_bar);
-    }
-
-    let lengths = path::path_lengths(s_in_plane, r_in_plane, &active);
-
-    // §7.4.3 lateral paths: geometry is band-independent, so build each finite
-    // wall end's path lengths once. Empty (no finite walls / terrain only) ⇒
-    // the §7.4.4 combination below is the identity, so results are unchanged.
-    let lat_lengths: Vec<path::PathLengths> = lateral_edges
-        .iter()
-        .map(|edge| path::lateral_path_lengths(source_pos, receiver_pos, edge))
-        .collect();
+    // No over-top shielding — Abar = 0 across all bands. (Lateral diffraction
+    // only ADDS open paths around a wall that IS screening, so there's nothing
+    // to combine when the line of sight clears the top.)
+    let geometry = match geometry {
+        Some(g) => g,
+        None => return (abar, ground_in_bar),
+    };
+    let lengths = &geometry.over_top;
+    let lat_lengths = &geometry.lateral;
 
     for (band_idx, &f_centre) in system.centres().iter().enumerate() {
         let lambda = 340.0 / f_centre;
         let dz_top = diffraction::cap(
-            diffraction::dz_uncapped(&lengths, lambda),
+            diffraction::dz_uncapped(lengths, lambda),
             lengths.e_total,
             dz_cap_db,
         );
@@ -111,7 +91,7 @@ pub fn abar_spectrum(
         } else {
             let neg_inv_ten = -LN10 / 10.0;
             let mut sum = (dz_top * neg_inv_ten).exp();
-            for ll in &lat_lengths {
+            for ll in lat_lengths {
                 let dz_lat = diffraction::cap(
                     diffraction::dz_uncapped(ll, lambda),
                     ll.e_total,

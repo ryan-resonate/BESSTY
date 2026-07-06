@@ -53,7 +53,10 @@ pub fn evaluate_with_ground(
     let system = lw.system;
     let adiv = divergence::adiv(source_pos, receiver_pos);
     let aatm = atmosphere::aatm_spectrum(source_pos, receiver_pos, system, atm);
-    let agr = ground::agr_spectrum(source_pos, receiver_pos, h_s, h_r, g, g, g, system);
+    let agr = ground::agr_spectrum(
+        source_pos, receiver_pos, h_s, h_r, g, g, g, system,
+        crate::standards::ISO_2024.ground,
+    );
 
     let mut out = BandSpectrum::zeros(system);
     for i in 0..system.n_bands() {
@@ -72,7 +75,10 @@ pub fn evaluate_with_ground(
 /// barrier top heights, so over-top diffraction geometry is correct over real
 /// terrain); `h_s`/`h_r` are the heights above local ground for the ground
 /// attenuation. See `ground::agr_spectrum`.
-#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+///
+/// Thin wrapper over `standards::Iso2024` — the 2024 evaluator holds the logic;
+/// this keeps the flat call signature the wasm shim and tests use.
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate_with_barriers(
     lw: &BandSpectrum,
     source_pos: Vec3,
@@ -86,18 +92,18 @@ pub fn evaluate_with_barriers(
     atm: Atmosphere,
     barrier_conv: BarrierConvention,
 ) -> BandSpectrum {
-    let system = lw.system;
-    let adiv = divergence::adiv(source_pos, receiver_pos);
-    let aatm = atmosphere::aatm_spectrum(source_pos, receiver_pos, system, atm);
-    let agr = ground::agr_spectrum(source_pos, receiver_pos, h_s, h_r, g, g, g, system);
-    let (abar, ground_in_bar) = barrier::abar_spectrum(
-        source_pos, receiver_pos, barriers, lateral, &agr, system, dz_cap_db, barrier_conv,
-    );
-
-    let mut out = BandSpectrum::zeros(system);
-    for i in 0..system.n_bands() {
-        let agr_term = if ground_in_bar[i] { 0.0 } else { agr.bands[i] };
-        out.bands[i] = lw.bands[i] - adiv - aatm.bands[i] - agr_term - abar.bands[i];
-    }
-    out
+    use crate::standards::{GeneralEval, Iso2024, StandardModel};
+    Iso2024.evaluate_general(&GeneralEval {
+        lw,
+        source: source_pos,
+        receiver: receiver_pos,
+        h_s,
+        h_r,
+        g,
+        barriers,
+        lateral,
+        dz_cap: dz_cap_db,
+        atm,
+        barrier_convention: barrier_conv,
+    })
 }

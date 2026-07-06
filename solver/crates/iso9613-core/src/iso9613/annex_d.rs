@@ -100,8 +100,12 @@ pub fn evaluate_wtg(
     let adiv = divergence::adiv(hub_pos, receiver_pos);
     let aatm = atmosphere::aatm_spectrum(hub_pos, receiver_pos, system, atm);
 
-    // Agr uses the hub HAG and the clamped receiver HAG per D.4.
-    let mut agr = ground::agr_spectrum(hub_pos, receiver_pos, h_s, h_r_ground, g_capped, g_capped, g_capped, system);
+    // Agr uses the hub HAG and the clamped receiver HAG per D.4. Annex D is
+    // 2024-only, so the 2024 ground combination is used.
+    let mut agr = ground::agr_spectrum(
+        hub_pos, receiver_pos, h_s, h_r_ground, g_capped, g_capped, g_capped, system,
+        crate::standards::ISO_2024.ground,
+    );
 
     // D.5 concave correction.
     if rules.apply_concave_correction && apply_concave {
@@ -116,11 +120,9 @@ pub fn evaluate_wtg(
         n: hub_pos.n,
         z: effective_source_z_for_barrier(hub_pos.z, rotor_diameter_m, rules.use_elevated_source_for_barrier),
     };
+    let geometry = barrier::path::build_geometry(barrier_source, receiver_pos, barriers, lateral);
     let (abar, ground_in_bar) = barrier::abar_spectrum(
-        barrier_source,
-        receiver_pos,
-        barriers,
-        lateral,
+        geometry.as_ref(),
         &agr,
         system,
         Some(rules.barrier_dz_cap_db),
