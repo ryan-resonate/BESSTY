@@ -16,7 +16,7 @@ import init, {
   evaluate_wtg_octave,
   octave_a_weighting,
   octave_centres,
-} from '../wasm/beesty_solver.js';
+} from '../wasm/iso9613_wasm.js';
 
 import type {
   Barrier,
@@ -114,6 +114,12 @@ function aWeights(bs: 'octave' | 'oneThirdOctave'): Float64Array {
 }
 
 let initialized: Promise<void> | null = null;
+
+/// Lateral-diffraction edges are not yet packed from the web layer — the
+/// point-receiver path passes an empty set (matching current behaviour).
+/// Wiring finite-barrier end edges (with the TR §5.2 best-per-side + factor-8
+/// selection) is Phase-1 work. See docs/iso9613-solver-phase01-execution.md.
+const NO_LATERAL = new Float64Array(0);
 
 export function ensureSolverReady(): Promise<void> {
   // Wrap in an explicit `Promise<void>` rather than relying on the chained
@@ -282,6 +288,7 @@ function evaluatePair(
     return evaluate_wtg_octave(
       lw, se, sn, hubZAbs, hubZ, re, rn, rxZAbs, rxZ, g, allBars,
       rotorD, concave, env.tC, env.rh, env.pKpa, env.barConv, env.c0,
+      NO_LATERAL,
     );
   }
   const sourceZ = sourceHeightFor(entry) + (source.elevationOffset ?? 0); // HAG
@@ -294,6 +301,7 @@ function evaluatePair(
   return evaluate_general_octave(
     lw, se, sn, sourceZAbs, sourceZ, re, rn, rxZAbs, rxZ, g, allBars,
     env.tC, env.rh, env.pKpa, env.barConv, env.dzCap, env.c0,
+    NO_LATERAL,
   );
 }
 

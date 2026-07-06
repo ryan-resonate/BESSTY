@@ -5,7 +5,7 @@
 // virtual-barrier sampler, and the batched primal grid evaluator core shared
 // by the main thread (`evaluateGrid`) and the worker.
 
-import { GridEvaluator } from '../wasm/beesty_solver.js';
+import { GridEvaluator } from '../wasm/iso9613_wasm.js';
 import type { DemRaster } from './dem';
 
 /// Local east/north metres of `latLng` relative to `origin` (equirectangular
@@ -370,6 +370,9 @@ export function runBatchedGrid(job: GridJob, dem: DemRaster | null): GridResult 
     const evaluator = new GridEvaluator(
       tile.sourcesFlat, nBands, g, userBarriers,
       env.tC, env.rh, env.pKpa, env.barConv, env.dzCap, env.c0,
+      // Lateral edges not yet packed from the web (Phase 1); empty preserves
+      // current behaviour. See docs/iso9613-solver-phase01-execution.md.
+      new Float64Array(0),
     );
     try {
       const rowEnd = Math.min(tile.row0 + tile.rows, rows);

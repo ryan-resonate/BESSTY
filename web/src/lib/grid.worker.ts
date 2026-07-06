@@ -4,7 +4,7 @@
 // `GridJob`; this worker reconstructs the DEM from a region snapshot and runs
 // the shared `runBatchedGrid` core.
 
-import init from '../wasm/beesty_solver.js';
+import init from '../wasm/iso9613_wasm.js';
 import { runBatchedGrid, type GridJob, type GridResult } from './gridCore';
 import { regionRaster, type DemRegion } from './dem';
 
