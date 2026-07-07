@@ -208,3 +208,21 @@ fn t11_cubic_building_receiver_low() {
     );
     assert_tr(&scene, [50.09, 44.62, 39.20, 35.75, 34.77, 33.79, 32.78, 31.28], 41.30);
 }
+
+// PENDING T12 (receiver ABOVE the roof, z=15 > 10): the around-the-side path
+// then partly rides OVER the roof — a combined lateral+vertical diffraction that
+// the pure-horizontal wrap (heights clamped to the roof) under-attenuates by
+// ~0.5 dB. The receiver-BELOW-roof building cases (T11, T13) pass exactly.
+
+#[test]
+fn t13_polygonal_building_receiver_low() {
+    // §6.2.14 — an octagonal building (h=10) between S(0,10,1) and R(30,20,6),
+    // G=0.6. The diagonal path makes the two side wraps ASYMMETRIC (TR Dz-left
+    // 8.32 ≠ Dz-right 6.78 at 63 Hz). Table 38.
+    let octagon = vec![
+        [10.96, 15.50], [12.00, 13.00], [14.50, 11.96], [17.00, 13.00],
+        [18.04, 15.50], [17.00, 18.00], [14.50, 19.04], [12.00, 18.00],
+    ];
+    let scene = tr_scene_sr([0.0, 10.0, 1.0], [30.0, 20.0, 6.0], 0.6, vec![building(octagon, 10.0)]);
+    assert_tr(&scene, [51.17, 46.66, 42.86, 39.28, 37.00, 34.02, 31.22, 27.93], 42.71);
+}
