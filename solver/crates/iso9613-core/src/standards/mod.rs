@@ -76,6 +76,10 @@ pub struct GeneralEval<'a> {
     pub atm: Atmosphere,
     /// §7.3 method for the ground effect — a user setting, edition-independent.
     pub ground_method: GroundMethod,
+    /// Simplified-method mean height `hm` from the terrain profile (§7.3.2,
+    /// Fig 3). `None` ⇒ flat-ground `hm = (hS + hR)/2`. Ignored by the General
+    /// method.
+    pub hm_override: Option<f64>,
 }
 
 /// A propagation standard: scores a source→receiver path per its `EditionSpec`.
@@ -107,7 +111,9 @@ pub trait StandardModel {
                 // Flat-ground hm now; terrain-profile hm arrives in Phase 3.
                 let d = i.receiver.sub(i.source).length();
                 let dp = i.receiver.sub(i.source).length_horizontal();
-                let hm = ground::simplified::hm_flat(i.h_s, i.h_r);
+                let hm = i
+                    .hm_override
+                    .unwrap_or_else(|| ground::simplified::hm_flat(i.h_s, i.h_r));
                 let agr_val = ground::simplified::agr(hm, d);
                 let agr = BandSpectrum::from_iter(
                     system,

@@ -279,6 +279,13 @@ impl Terrain {
             Terrain::Heightfield(hf) => hf.profile_edges(s, r, dp),
         }
     }
+
+    /// Simplified-method mean height `hm` over this terrain (§7.3.2, Fig 3).
+    fn mean_height(&self, s: [f64; 2], r: [f64; 2], sz: f64, rz: f64) -> f64 {
+        match self {
+            Terrain::Heightfield(hf) => hf.mean_height(s, r, sz, rz),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -728,6 +735,12 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                     .as_ref()
                     .map(|t| t.profile_edges([s.e, s.n], [r.e, r.n]))
                     .unwrap_or_default();
+                // Simplified method over terrain: mean height from the profile.
+                let hm_override = if matches!(scene.settings.ground_method, GroundMethod::Simplified) {
+                    scene.terrain.as_ref().map(|t| t.mean_height([s.e, s.n], [r.e, r.n], s.z, r.z))
+                } else {
+                    None
+                };
                 let lp = match &src.kind {
                     SourceKind::General => model.evaluate_general(&GeneralEval {
                         lw: &lw,
@@ -745,6 +758,7 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                         dz_cap: scene.settings.dz_cap_db,
                         atm,
                         ground_method: scene.settings.ground_method,
+                        hm_override,
                     }),
                     SourceKind::WindTurbine { rotor_diameter_m, apply_concave } => annex_d::evaluate_wtg(
                         &lw, s, r, src.height_agl, rx.height_agl, g, &walls, &lateral,
@@ -787,6 +801,7 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                             footprints: &[],
                             dz_cap: scene.settings.dz_cap_db, atm,
                             ground_method: scene.settings.ground_method,
+                            hm_override,
                         });
                         for b in 0..system.n_bands() {
                             let lambda = 340.0 / centres[b];
@@ -838,6 +853,9 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                         footprints: &footprints,
                         dz_cap: scene.settings.dz_cap_db, atm,
                         ground_method: scene.settings.ground_method,
+                        hm_override: if matches!(scene.settings.ground_method, GroundMethod::Simplified) {
+                            scene.terrain.as_ref().map(|t| t.mean_height([ss.e, ss.n], [r.e, r.n], ss.z, r.z))
+                        } else { None },
                     });
                     let dp = ((r.e - ss.e).powi(2) + (r.n - ss.n).powi(2)).sqrt();
                     let cmet = cmet_db(scene.settings.c0_db, ext.height_agl, rx.height_agl, dp);

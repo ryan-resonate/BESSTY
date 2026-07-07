@@ -53,6 +53,31 @@ impl Heightfield {
         a * (1.0 - ty) + b * ty
     }
 
+    /// Mean propagation height `hm = F/d` (ISO 9613-2:1996 §7.3.2, Figure 3):
+    /// `F` is the area between the straight source→receiver line and the ground
+    /// profile beneath it, `d` the source→receiver distance (in the vertical
+    /// SR-profile plane). Feeds the simplified-method `Agr` over undulating
+    /// terrain. `sz`/`rz` are the ABSOLUTE source/receiver elevations.
+    pub fn mean_height(&self, s: [f64; 2], r: [f64; 2], sz: f64, rz: f64) -> f64 {
+        let dp = ((r[0] - s[0]).powi(2) + (r[1] - s[1]).powi(2)).sqrt();
+        let d = (dp * dp + (rz - sz).powi(2)).sqrt();
+        if d < 1e-9 {
+            return 0.0;
+        }
+        // Trapezoidal integral of (SR-line − ground) along the plan path.
+        let n = ((dp / self.spacing * 2.0).ceil() as usize).clamp(8, 2000);
+        let gap = |i: usize| -> f64 {
+            let t = i as f64 / n as f64;
+            let (x, y) = (s[0] + t * (r[0] - s[0]), s[1] + t * (r[1] - s[1]));
+            (sz + t * (rz - sz)) - self.height_at(x, y)
+        };
+        let mut f = 0.0;
+        for i in 0..n {
+            f += 0.5 * (gap(i) + gap(i + 1)) * (dp / n as f64);
+        }
+        f / d
+    }
+
     /// Sample the terrain profile between source and receiver plan positions
     /// into candidate diffraction edges (`x` = distance along the SR line,
     /// `z` = absolute ground elevation). Interior samples only — the endpoints
@@ -88,6 +113,34 @@ mod tests {
         assert_relative_eq!(hf.height_at(5.0, 0.0), 5.0, epsilon = 1e-9); // midway up
         assert_relative_eq!(hf.height_at(20.0, 0.0), 0.0, epsilon = 1e-9);
         assert_relative_eq!(hf.height_at(100.0, 0.0), 0.0, epsilon = 1e-9); // clamps
+    }
+
+    #[test]
+    fn mean_height_matches_area_over_distance() {
+        // Ground flat (0) over x∈[0,80], ramping 0→10 over x∈[80,100]. Ray from
+        // S(0, abs 1) to R(100, abs 14). Hand integral of (line − ground):
+        //   [0,80]:  ∫(1 + 13x/100)dx      = (1 + 11.4)/2·80 = 496
+        //   [80,100]: line 11.4→14, gnd 0→10, gap 11.4→4 → (11.4+4)/2·20 = 154
+        //   F = 650, d = hypot(100,13) = 100.841 → hm = 6.446 m.
+        let nx = 21; // x = 0,5,…,100
+        let heights: Vec<f64> = (0..nx)
+            .map(|i| {
+                let x = i as f64 * 5.0;
+                if x <= 80.0 { 0.0 } else { 10.0 * (x - 80.0) / 20.0 }
+            })
+            .collect();
+        let hf = Heightfield { origin: [0.0, 0.0], spacing: 5.0, nx, ny: 1, heights };
+        let hm = hf.mean_height([0.0, 0.0], [100.0, 0.0], 1.0, 14.0);
+        assert_relative_eq!(hm, 6.446, epsilon = 0.01);
+    }
+
+    #[test]
+    fn mean_height_flat_ground_is_source_receiver_mean() {
+        // Over flat ground hm = F/d reduces to (hS + hR)/2 when the heights are
+        // small vs the distance (d ≈ dp). S at 2 m, R at 4 m over z=0 → ~3 m.
+        let hf = Heightfield { origin: [0.0, 0.0], spacing: 10.0, nx: 21, ny: 1, heights: vec![0.0; 21] };
+        let hm = hf.mean_height([0.0, 0.0], [200.0, 0.0], 2.0, 4.0);
+        assert_relative_eq!(hm, 3.0, epsilon = 0.01);
     }
 
     #[test]

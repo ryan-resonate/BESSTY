@@ -23,6 +23,8 @@ use iso9613_core::scene::{
     SourceKind, Standard, SCHEMA_VERSION,
 };
 use iso9613_core::iso9613::ground::GroundMethod;
+use iso9613_core::iso9613::terrain::Heightfield;
+use iso9613_core::scene::Terrain;
 
 /// TR §6 acceptance tolerance (±0.05 dB).
 const TOL: f64 = 0.05;
@@ -224,11 +226,44 @@ fn t10_varying_heights_short_barrier() {
     assert_relative_eq!(total, 29.30, epsilon = 0.05);
 }
 
-// PENDING T07 (§6.2.8): the simplified method §7.3.2 over the SAME terrain needs
-// the mean propagation height hm above the undulating ground (TR hm=4.99). The
-// area-integral of the S→R ray over the plateau profile gives 6.71 here, so the
-// TR uses a different hm construction (not derivable from the text alone). The
-// GENERAL method over this terrain (T06) passes.
+/// The T06/T07 ground-height field. `ramp` selects how the contour lines (Table
+/// 12) between the flat ground (z=0) and the plateau top (z=10, x∈[185,205]) are
+/// interpreted: a linear ramp from x=120→185, or a step at x=185. Ground depends
+/// only on x here (the plateau spans the path's y-range).
+fn t07_terrain(ramp: bool) -> Terrain {
+    let (x0, spacing) = (0.0_f64, 5.0_f64);
+    let nx = 43; // x = 0 … 210
+    let ny = 16; // y = -10 … 65
+    let ground = |x: f64| -> f64 {
+        if (185.0..=205.0).contains(&x) {
+            10.0
+        } else if ramp && (120.0..185.0).contains(&x) {
+            10.0 * (x - 120.0) / 65.0
+        } else {
+            0.0
+        }
+    };
+    let mut heights = Vec::with_capacity(nx * ny);
+    for _iy in 0..ny {
+        for ix in 0..nx {
+            heights.push(ground(x0 + ix as f64 * spacing));
+        }
+    }
+    Terrain::Heightfield(Heightfield { origin: [0.0, -10.0], spacing, nx, ny, heights })
+}
+
+#[test]
+fn t07_varying_heights_simplified() {
+    // §6.2.8 — identical terrain to T06 but the simplified method §7.3.2, which
+    // needs the mean height hm = F/d over the profile (TR hm=4.99). Table 18.
+    let mut scene = tr_scene(t08_ground(), GroundMethod::Simplified, vec![]);
+    scene.terrain = Some(t07_terrain(true));
+    scene.sources[0].position = [10.0, 10.0, 1.0];
+    scene.sources[0].height_agl = 1.0;
+    scene.receivers[0].position = [200.0, 50.0, 14.0];
+    scene.receivers[0].height_agl = 4.0;
+    assert_tr(&scene, [35.36, 35.32, 35.16, 34.83, 34.40, 33.62, 30.92, 20.47], 39.75);
+}
 
 #[test]
 fn t08_long_barrier() {

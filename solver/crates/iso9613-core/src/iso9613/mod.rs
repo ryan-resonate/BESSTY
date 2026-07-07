@@ -110,5 +110,6 @@ pub fn evaluate_with_barriers(
         dz_cap: dz_cap_db,
         atm,
         ground_method: ground::GroundMethod::General,
+        hm_override: None,
     })
 }
