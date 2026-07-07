@@ -193,6 +193,11 @@ pub struct Settings {
     /// §7.3 ground method (edition-independent). Default General.
     #[serde(default)]
     pub ground_method: GroundMethod,
+    /// Maximum specular-reflection order (ISO 9613-2:2024 §7.5.3). 1 = first
+    /// order only (also the 1996 behaviour); 2+ adds multi-bounce paths between
+    /// (nearly) parallel or surrounding reflectors. 0/absent ⇒ 1.
+    #[serde(default)]
+    pub max_reflection_order: u32,
 }
 
 /// A reflecting vertical facade: a plan-view segment `[A, B]`, its height band
@@ -545,6 +550,31 @@ impl Scene {
     }
 }
 
+/// All ordered reflector sequences of length 2..=`max_order` from `m` reflectors,
+/// with no immediate repeat (a ray can't bounce off the same facade twice in a
+/// row). Drives the higher-order reflection search (§7.5.3).
+fn reflection_sequences(m: usize, max_order: usize) -> Vec<Vec<usize>> {
+    fn rec(m: usize, max_order: usize, cur: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+        if cur.len() >= 2 {
+            out.push(cur.clone());
+        }
+        if cur.len() == max_order {
+            return;
+        }
+        for i in 0..m {
+            if cur.last() == Some(&i) {
+                continue;
+            }
+            cur.push(i);
+            rec(m, max_order, cur, out);
+            cur.pop();
+        }
+    }
+    let mut out = Vec::new();
+    rec(m, max_order, &mut Vec::new(), &mut out);
+    out
+}
+
 /// Ray-casting point-in-polygon (even–odd rule) for an implicitly-closed
 /// polygon.
 fn point_in_polygon(p: [f64; 2], poly: &[[f64; 2]]) -> bool {
@@ -823,6 +853,64 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                         for b in 0..system.n_bands() {
                             let lambda = 340.0 / centres[b];
                             if reflection::fresnel_valid(&refl, &facade, s, lambda) {
+                                bands[b] = 10.0
+                                    * (10f64.powf(0.1 * bands[b]) + 10f64.powf(0.1 * refl_lp.bands[b])).log10();
+                            }
+                        }
+                    }
+                }
+
+                // §7.5.3 higher-order reflections (2024): multi-bounce image
+                // sources between (nearly) parallel or surrounding reflectors.
+                let max_order = scene.settings.max_reflection_order.max(1) as usize;
+                if matches!(src.kind, SourceKind::General) && max_order >= 2 && scene.reflectors.len() >= 2 {
+                    let lambdas: Vec<f64> =
+                        system.centres_exact().iter().map(|c| 340.0 / c).collect();
+                    let facades: Vec<reflection::Facade> = scene
+                        .reflectors
+                        .iter()
+                        .map(|refl| reflection::Facade {
+                            a: refl.segment[0], b: refl.segment[1],
+                            base_z: refl.base_z, top_z: refl.top_z, alpha: refl.alpha,
+                        })
+                        .collect();
+                    for seq in reflection_sequences(scene.reflectors.len(), max_order) {
+                        let seq_facades: Vec<reflection::Facade> =
+                            seq.iter().map(|&i| facades[i]).collect();
+                        let Some((chain, valid)) =
+                            reflection::reflect_chain(s, r, &seq_facades, &lambdas)
+                        else {
+                            continue;
+                        };
+                        // Image LW = LW + Σ per-band reflection losses of the chain.
+                        let img_lw = BandSpectrum::from_iter(
+                            system,
+                            (0..system.n_bands()).map(|b| {
+                                let loss: f64 = seq
+                                    .iter()
+                                    .map(|&i| {
+                                        let a = scene.reflectors[i]
+                                            .alpha_bands
+                                            .as_ref()
+                                            .and_then(|ab| ab.get(b).copied())
+                                            .unwrap_or(scene.reflectors[i].alpha);
+                                        10.0 * (1.0 - a).max(1e-12).log10()
+                                    })
+                                    .sum();
+                                src.lw[b] + loss
+                            }),
+                        );
+                        let refl_lp = model.evaluate_general(&GeneralEval {
+                            lw: &img_lw, source: chain.image_source, receiver: r,
+                            h_s: src.height_agl, h_r: rx.height_agl,
+                            g_source, g_middle, g_receiver,
+                            barriers: &walls, lateral: &lateral,
+                            terrain_edges: &[], footprints: &[],
+                            dz_cap: scene.settings.dz_cap_db, atm,
+                            ground_method: scene.settings.ground_method, hm_override,
+                        });
+                        for b in 0..system.n_bands() {
+                            if valid[b] {
                                 bands[b] = 10.0
                                     * (10f64.powf(0.1 * bands[b]) + 10f64.powf(0.1 * refl_lp.bands[b])).log10();
                             }

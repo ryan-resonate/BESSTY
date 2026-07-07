@@ -52,6 +52,97 @@ fn mirror(s: Vec3, a: [f64; 2], b: [f64; 2]) -> Vec3 {
     Vec3::new(2.0 * foot[0] - s.e, 2.0 * foot[1] - s.n, s.z)
 }
 
+/// Intersect the ray from `from` toward image point `img` with the facade's
+/// plan segment, returning the 3-D reflection point if it lands on the finite
+/// facade (within the segment and its height band). Shared by the first-order
+/// [`reflect`] and the higher-order [`reflect_chain`].
+fn facade_hit(from: Vec3, img: Vec3, facade: &Facade) -> Option<Vec3> {
+    let (dx, dy) = (img.e - from.e, img.n - from.n);
+    let (wx, wy) = (facade.b[0] - facade.a[0], facade.b[1] - facade.a[1]);
+    let det = dx * (-wy) - (-wx) * dy;
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let (ax, ay) = (facade.a[0] - from.e, facade.a[1] - from.n);
+    let t = (ax * (-wy) - (-wx) * ay) / det; // along from→img
+    let s = (dx * ay - dy * ax) / det; // along A→B
+    if !(0.0..=1.0).contains(&t) || !(0.0..=1.0).contains(&s) {
+        return None;
+    }
+    let z_p = from.z + t * (img.z - from.z);
+    if z_p < facade.base_z || z_p > facade.top_z {
+        return None;
+    }
+    Some(Vec3::new(from.e + t * (img.e - from.e), from.n + t * (img.n - from.n), z_p))
+}
+
+/// A valid nth-order reflection (ISO 9613-2:2024 §7.5.3): the ray bounces off
+/// `facades[0]`, `facades[1]`, … in order. Built from the recursive image
+/// source `S_n = mirror(S_{n-1}, B_n)`; the reflection points are traced back
+/// `P_i = line(P_{i+1}, S_i) ∩ B_i`. `None` if any bounce misses its facade or
+/// fails the Fresnel size gate (Eq 26/27, checked per reflector with the bent
+/// ray-path leg lengths).
+pub struct ReflectionChain {
+    /// Highest-order image source (`S_n`); its straight-line distance to the
+    /// receiver equals the real bent path length.
+    pub image_source: Vec3,
+}
+
+/// Build the nth-order reflection for the ordered `facades`, gated per-reflector
+/// by the Fresnel condition at every octave-band `lambda` in `lambdas`. Returns
+/// the image source and a per-band validity mask (a reflection is only summed in
+/// the bands where every bounce passes). `None` if the specular geometry is
+/// impossible (a bounce misses its facade).
+pub fn reflect_chain(
+    source: Vec3,
+    receiver: Vec3,
+    facades: &[Facade],
+    lambdas: &[f64],
+) -> Option<(ReflectionChain, Vec<bool>)> {
+    let k = facades.len();
+    if k == 0 {
+        return None;
+    }
+    // Image chain: images[i] = S_i (images[0] = S, images[k] = S_k).
+    let mut images = Vec::with_capacity(k + 1);
+    images.push(source);
+    for f in facades {
+        images.push(mirror(*images.last().unwrap(), f.a, f.b));
+    }
+    // Trace reflection points backward: P_i = line(P_{i+1}, S_i) ∩ B_i.
+    let mut points = vec![Vec3::new(0.0, 0.0, 0.0); k];
+    let mut next = receiver; // P_{k+1}
+    for i in (0..k).rev() {
+        let p = facade_hit(next, images[i + 1], &facades[i])?;
+        points[i] = p;
+        next = p;
+    }
+    // Ray-path legs: S → P_0 → P_1 → … → P_{k-1} → R.
+    let mut nodes = Vec::with_capacity(k + 2);
+    nodes.push(source);
+    nodes.extend_from_slice(&points);
+    nodes.push(receiver);
+    let legs: Vec<f64> = nodes.windows(2).map(|w| w[0].sub(w[1]).length()).collect();
+    let total: f64 = legs.iter().sum();
+
+    // Per-band validity: every reflector must pass Eq 26/27. For reflector i the
+    // bent leg lengths are dSO = Σ legs before P_i, dOR = total − dSO.
+    let mut valid = vec![true; lambdas.len()];
+    let mut d_so = 0.0;
+    for (i, facade) in facades.iter().enumerate() {
+        d_so += legs[i];
+        let d_or = total - d_so;
+        let p = points[i];
+        for (b, &lambda) in lambdas.iter().enumerate() {
+            let refl = Reflection { image_source: images[i + 1], refl_point: p, dso: d_so, dor: d_or, loss_db: 0.0 };
+            if !fresnel_valid(&refl, facade, source, lambda) {
+                valid[b] = false;
+            }
+        }
+    }
+    Some((ReflectionChain { image_source: images[k] }, valid))
+}
+
 /// First-order reflection of `source` off `facade` toward `receiver`, if the
 /// specular point lies on the finite facade (within the segment and its height
 /// band). `None` otherwise.
@@ -138,5 +229,34 @@ mod tests {
         // Facade too short (x∈[0,10]); the specular point at x=50 is off it.
         let f = Facade { a: [0.0, 0.0], b: [10.0, 0.0], base_z: 0.0, top_z: 10.0, alpha: 0.1 };
         assert!(reflect(Vec3::new(30.0, 20.0, 4.0), Vec3::new(70.0, 20.0, 4.0), &f).is_none());
+    }
+
+    #[test]
+    fn second_order_image_between_parallel_walls() {
+        // Two parallel walls y=0 and y=10, source between them at y=4. The
+        // 2nd-order image for the sequence [y=0, y=10] is S mirrored across y=0
+        // (→ y=−4) then across y=10 (→ y=24). Reflection points land on both.
+        let b1 = Facade { a: [-50.0, 0.0], b: [50.0, 0.0], base_z: 0.0, top_z: 20.0, alpha: 0.0 };
+        let b2 = Facade { a: [-50.0, 10.0], b: [50.0, 10.0], base_z: 0.0, top_z: 20.0, alpha: 0.0 };
+        let s = Vec3::new(0.0, 4.0, 5.0);
+        let r = Vec3::new(30.0, 6.0, 5.0);
+        let lambdas = [0.34, 0.043]; // 1 kHz, 8 kHz — big walls, both valid
+        let (chain, valid) = reflect_chain(s, r, &[b1, b2], &lambdas).unwrap();
+        assert_relative_eq!(chain.image_source.e, 0.0, epsilon = 1e-9);
+        assert_relative_eq!(chain.image_source.n, 24.0, epsilon = 1e-9);
+        assert_relative_eq!(chain.image_source.z, 5.0, epsilon = 1e-9);
+        // |image − R| is the real bent path length.
+        assert_relative_eq!(chain.image_source.sub(r).length(), (30.0f64.powi(2) + 18.0f64.powi(2)).sqrt(), epsilon = 1e-9);
+        assert!(valid.iter().all(|&v| v), "large walls pass Fresnel at both bands");
+    }
+
+    #[test]
+    fn chain_returns_none_when_a_bounce_misses() {
+        // Same walls but only 6 m long — the 2nd-order specular points miss.
+        let b1 = Facade { a: [0.0, 0.0], b: [6.0, 0.0], base_z: 0.0, top_z: 20.0, alpha: 0.0 };
+        let b2 = Facade { a: [0.0, 10.0], b: [6.0, 10.0], base_z: 0.0, top_z: 20.0, alpha: 0.0 };
+        let s = Vec3::new(0.0, 4.0, 5.0);
+        let r = Vec3::new(30.0, 6.0, 5.0);
+        assert!(reflect_chain(s, r, &[b1, b2], &[0.34]).is_none());
     }
 }
