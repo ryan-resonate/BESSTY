@@ -1,93 +1,101 @@
-# `beesty-solver`
+# `iso9613-solver`
 
-Rust crate implementing ISO 9613-2:2024 outdoor noise propagation with forward-mode automatic differentiation, targeting WebAssembly.
+A standalone, closed-source Rust engine implementing **ISO 9613-2** outdoor
+sound propagation — both the **:1996** and **:2024** editions — validated against
+**ISO/TR 17534-3:2015**. Built to be reused across Resonate's applications as a
+git dependency (native Rust), a Python wheel, or a WebAssembly module.
 
-## Status
+> Proprietary — Resonate Consultants internal use only (see `LICENSE`).
+> The ISO standards themselves are single-user licensed and are **never**
+> committed; canonical copies live at `T:\Literature\Standards\ISO`.
 
-**v0.4** — full ISO 9613-2:2024 chain except reflections and lateral diffraction:
-- `Adiv` (7.1)
-- `Aatm` (7.2)
-- `Agr` General method (7.3.1)
-- `Abar` over-top, single + multi edge (7.4.1)
-- Annex D wind-turbine specifics (D.2 omnidirectional, D.3 elevated source + cap, D.4 G ≤ 0.5 + 4 m receiver, D.5 concave correction)
+## What it computes
 
-All 6 validation cases pass. **49 tests total** (22 unit + 27 case integration). WASM build via `wasm-pack` produces a 14 KB module the web app loads on the main thread.
+`Lp = LW + Dc − Adiv − Aatm − Agr − Abar − Amisc`, per octave (16 Hz–8 kHz) or
+one-third-octave band, energy-summed over sources and (in-band) reflections:
 
-Next:
-- v0.5: Lateral diffraction (7.4.3) and Eq 25 combination
-- v0.6: Reflections (image-source method, engine-only — no UI hook in v1)
-- v0.7: Worker integration for adaptive contour grids
+| Term | Clause | Status |
+|---|---|---|
+| `Adiv` geometric divergence | 7.1 | ✅ |
+| `Aatm` atmospheric absorption | 7.2 | ✅ ISO 9613-1, evaluated at the **exact** ISO 266 centres |
+| `Agr` ground — general (7.3.1) + simplified (7.3.2) | 7.3 | ✅ per-region G; terrain-aware mean height `hm = F/d` |
+| `Abar` barriers — over-top (single/multi-edge) + around-the-side lateral | 7.4 | ✅ thin walls, terrain-following & sloped crests, terrain ridges |
+| Buildings (2-D footprints, multi-corner lateral wraps) | 7.4 | ✅ |
+| `Amisc` foliage / industrial / housing | Annex A | ✅ (off by default) |
+| Reflections — first + **higher-order** image sources, per-band α | 7.5 | ✅ |
+| Cylindrical reflections + `Acurv` | 7.5.4 | ✅ (2024) |
+| Chimney-stack directivity `Dc` | Annex B | ✅ (2024) |
+| Wind-turbine specifics | Annex D | ✅ |
+| Long-term meteorological `Cmet` / `C0` | §8 / Annex C | ✅ |
 
-## Build
+Coordinates are Cartesian metres (`e, n, z`-absolute); heights are metres above
+local ground (split z-datum). All geodetic/parsing work belongs in the caller.
+
+## Conformance (the pre-deploy gate)
+
+`cargo test -p iso9613-core --test conformance_tr17534` runs the ISO/TR 17534-3
+§6 cases at the TR's ±0.05 dB rule. **14 of 19 match exactly** (T01–T09, T11–T14;
+T10 & T19 on the A-weighted total); the remaining receiver-above-roof (T12/T15)
+and multi-building-cluster (T16–T18) cases resolve within ISO's ±3 dB method
+uncertainty and are documented in that file.
+
+## Workspace layout
+
+```
+crates/
+  iso9613-core/   pure-f64 physics + typed Scene/Session API   (the crate to depend on)
+  iso9613-wasm/   thin WASM compat shim (existing consumers)
+  iso9613-py/     PyO3 bindings — built on demand via maturin   (workspace-excluded)
+```
+
+## Consuming it
+
+**Native Rust** — add the git dependency and use the typed API:
+
+```toml
+[dependencies]
+iso9613-core = { git = "ssh://…/iso9613-solver", features = ["parallel"] }
+```
+
+```rust
+use iso9613_core::scene::{Scene, solve, Session};
+
+let results = solve(&scene)?;               // one-shot batch
+let mut session = Session::new(scene)?;     // interactive: cache + re-solve
+session.set_receivers(new_grid)?;
+let live = session.solve();
+```
+
+**Any language / JSON seam** — `iso9613_core::scene::solve_json(scene_json) ->
+Result<String, String>` is the stable string-in/string-out entry point every
+binding wraps.
+
+**Python** — `maturin build --release -m crates/iso9613-py/Cargo.toml` produces
+an abi3 wheel (`import iso9613`; `solve`, `solve_parallel`, `Session`).
+
+## Build & test
 
 ```bash
-# Install Rust if needed
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Native build + tests
 cd solver
-cargo test
-
-# WebAssembly build (requires wasm-pack)
-cargo install wasm-pack
-wasm-pack build --target web --release
+cargo test --workspace                 # all native tests (both editions)
+cargo test -p iso9613-core --features parallel   # + rayon determinism
+cargo clippy --workspace --all-targets
 ```
 
-The WASM build emits `pkg/` containing the `.wasm` module and TypeScript bindings, ready for the React app to import.
+The `parallel` feature adds rayon fan-out over receivers with an explicit thread
+budget (`solve_par(scene, max_threads)`, `0` = all cores). It is **off by
+default** so the WASM target stays single-threaded (the web app drives its own
+Web-Worker pool). Every result is bit-for-bit identical across thread counts.
 
-## Tests
+## Editions & extension
 
-```bash
-cargo test                   # all tests
-cargo test --test case_01_divergence   # validation case 01 only
-```
+The edition is a data-only [`EditionSpec`] selected per `Scene.standard`; adding
+a future standard is a new `StandardModel` over the same geometry engine — no
+CONCAWE/CoRTN names appear in the core. The `Scene`/`Obstacle`/`SourceKind`
+enums are `#[non_exhaustive]` / additively extended, never repurposed.
 
-Each validation case in `validation/*.md` has a corresponding `tests/case_*.rs` file. The tolerance policy is documented in `validation/README.md`.
+## Docs
 
-## Crate layout
-
-```
-src/
-  lib.rs           public API + WASM bindings (cfg-gated)
-  units.rs         coordinate types (UTM Vec3)
-  dual.rs          Dual<N> forward-mode AD scalar + ADScalar trait
-  spectrum.rs      BandSystem (Octave / OneThirdOctave) + BandSpectrum
-  iso9613/
-    mod.rs         top-level evaluators
-    divergence.rs  7.1 Eq 8
-    atmosphere.rs  7.2 Eq 9 + αatm lookup
-    ground/
-      mod.rs       7.3 dispatcher
-      functions.rs Table 3 shape functions a', b', c', d'
-      general.rs   7.3.1 General method (AS, AR, Am, Eqs 10-13)
-    barrier/
-      mod.rs       7.4 dispatcher (over-top), Eqs 16/17
-      diffraction.rs Dz Eq 18, zmin Eq 19, C3 Eq 20, Kmet Eq 21, caps
-      path.rs      Wall projection, upper-hull selection, Δz Eq 22
-    annex_d.rs     Annex D wind turbine rules
-tests/
-  case_01_divergence.rs
-  case_02_ground.rs
-  case_03_single_barrier.rs
-  case_04_multi_edge_barrier.rs
-  case_05_annex_d_wtg_flat.rs
-  case_06_annex_d_wtg_concave.rs
-```
-
-## Key design choice: ADScalar trait
-
-Every kernel is generic over `T: ADScalar`. `f64` and `Dual<N>` both implement
-the trait. This means the same code runs:
-
-- with `T = f64` for full-grid recompute (no AD overhead)
-- with `T = Dual<3>` for source-position drag (3 inputs: e, n, z)
-- with `T = Dual<n>` for any other interaction shape
-
-No code duplication, no runtime branching on AD vs non-AD.
-
-## Design references
-
-- `docs/architecture.md` — overall system
-- `docs/solver-design.md` — formula-by-formula mapping to modules
-- `docs/auto-diff-strategy.md` — forward-mode rationale, drag lifecycle
-- `validation/` — hand-calculated reference cases
+- `docs/iso9613-2-1996-vs-2024-differences.md` — clause-by-clause edition diff
+- `docs/iso9613-2-17534-3-implementation-notes.md` — the §5 QA recommendations
+- `docs/iso9613-solver-standalone-plan.md` — the phased build plan
