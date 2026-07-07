@@ -70,14 +70,14 @@ fn terrain_ridge_screens_like_a_single_edge_barrier() {
     let res = solve(&scene(Some(ridge_terrain()))).unwrap();
     let bands = &res.per_receiver[0].per_source[0].bands;
 
-    // Independently computed (oracle.py, CASE 14).
+    // Independently computed (oracle.py, CASE 14, exact ISO 266 centres).
     let expected = [
-        41.797, 41.575, 41.033, 40.013, 38.376, 36.171, 33.398, 29.500, 21.988, 2.601,
+        41.798, 41.573, 41.031, 40.000, 38.363, 36.163, 33.398, 29.517, 22.066, 2.901,
     ];
     for (i, exp) in expected.iter().enumerate() {
         assert_relative_eq!(bands[i], *exp, epsilon = 0.05);
     }
-    assert_relative_eq!(res.per_receiver[0].total_dba.unwrap(), 38.307, epsilon = 0.05);
+    assert_relative_eq!(res.per_receiver[0].total_dba.unwrap(), 38.308, epsilon = 0.05);
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn terrain_ridge_attenuates_vs_flat_ground() {
         .total_dba
         .unwrap();
     let flat = solve(&scene(None)).unwrap().per_receiver[0].total_dba.unwrap();
-    assert_relative_eq!(flat, 50.364, epsilon = 0.05);
+    assert_relative_eq!(flat, 50.373, epsilon = 0.05);
     assert!(
         flat - with_ridge > 10.0,
         "ridge should screen by >10 dB: flat={flat} ridge={with_ridge}"

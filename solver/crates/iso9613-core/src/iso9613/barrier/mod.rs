@@ -70,7 +70,8 @@ pub fn abar_spectrum(
     let lengths = &geometry.over_top;
     let lat_lengths = &geometry.lateral;
 
-    for (band_idx, &f_centre) in system.centres().iter().enumerate() {
+    // Exact ISO 266 centres for λ = c/f (matches ISO/TR 17534-3 step values).
+    for (band_idx, &f_centre) in system.centres_exact().iter().enumerate() {
         let lambda = 340.0 / f_centre;
         // Over-top path — capped (§5.3).
         let dz_top = diffraction::cap(

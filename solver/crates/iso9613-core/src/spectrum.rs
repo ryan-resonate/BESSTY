@@ -14,10 +14,44 @@
 use crate::units::{Decibels, Hz};
 use smallvec::SmallVec;
 
-/// Octave-band centre frequencies (Hz). Extended below 63 Hz to cover the
-/// low-frequency content typically present in WTG datasheets (16 / 31.5 Hz).
+/// Octave-band **nominal** (rounded) centre frequencies (Hz) — the human-facing
+/// band LABELS per ISO 266. Extended below 63 Hz to cover the low-frequency
+/// content typically present in WTG datasheets (16 / 31.5 Hz).
+///
+/// These are labels only. Frequency-dependent PHYSICS (atmospheric absorption
+/// α(f), diffraction wavelength λ = c/f) evaluates at the EXACT centres below.
 pub const OCTAVE_CENTRES_HZ: [Hz; 10] =
     [16.0, 31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0];
+
+/// Octave-band **exact** centre frequencies (Hz): `fc = 10^(1.2 + 0.3·i)`, the
+/// base-10 preferred series of ISO 266. ISO/TR 17534-3 computes its step-by-step
+/// α and barrier values at these (e.g. 7943.28 Hz, not the 8000 Hz label) — so
+/// conformance requires physics to use them. The 1 kHz band is exactly 1000 Hz.
+pub const OCTAVE_CENTRES_EXACT_HZ: [Hz; 10] = [
+    15.848931924611133,
+    31.622776601683793,
+    63.0957344480193,
+    125.89254117941663,
+    251.18864315095797,
+    501.18723362727246,
+    1000.0,
+    1995.2623149688789,
+    3981.071705534969,
+    7943.282347242805,
+];
+
+/// One-third-octave **exact** centre frequencies (Hz): `fc = 10^(1.0 + 0.1·n)`.
+pub const ONE_THIRD_OCTAVE_CENTRES_EXACT_HZ: [Hz; 31] = [
+    10.0, 12.589254117941675, 15.848931924611142, 19.952623149688797,
+    25.11886431509581, 31.622776601683793, 39.810717055349734,
+    50.11872336272725, 63.09573444801933, 79.43282347242817, 100.0,
+    125.89254117941675, 158.48931924611142, 199.52623149688807,
+    251.18864315095823, 316.22776601683796, 398.1071705534973,
+    501.18723362727246, 630.9573444801937, 794.3282347242822, 1000.0,
+    1258.9254117941675, 1584.893192461114, 1995.262314968881,
+    2511.886431509582, 3162.2776601683795, 3981.0717055349733,
+    5011.872336272725, 6309.573444801937, 7943.282347242822, 10000.0,
+];
 
 /// A-weighting at octave-band centres per IEC 61672-1.
 pub const OCTAVE_A_WEIGHTING_DB: [Decibels; 10] =
@@ -72,10 +106,21 @@ pub enum BandSystem {
 }
 
 impl BandSystem {
+    /// Nominal (rounded) centre frequencies — band LABELS. Use
+    /// [`Self::centres_exact`] for frequency-dependent physics.
     pub fn centres(&self) -> &'static [Hz] {
         match self {
             BandSystem::Octave         => &OCTAVE_CENTRES_HZ,
             BandSystem::OneThirdOctave => &ONE_THIRD_OCTAVE_CENTRES_HZ,
+        }
+    }
+
+    /// Exact ISO 266 base-10 centre frequencies — the basis for α(f) and
+    /// diffraction λ, matching ISO/TR 17534-3's step values.
+    pub fn centres_exact(&self) -> &'static [Hz] {
+        match self {
+            BandSystem::Octave         => &OCTAVE_CENTRES_EXACT_HZ,
+            BandSystem::OneThirdOctave => &ONE_THIRD_OCTAVE_CENTRES_EXACT_HZ,
         }
     }
 

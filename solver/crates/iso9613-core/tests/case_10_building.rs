@@ -61,7 +61,11 @@ fn building_screens_over_top_and_around_the_sides() {
     assert_relative_eq!(t_without, 53.33, epsilon = 0.3);
 
     // Per-band Lp (oracle.py) — pins down the lateral selection + Eq-25 combine.
-    let expected = [48.66, 47.70, 46.38, 41.75, 38.46, 35.41, 33.67, 30.13, 24.36, 11.21];
+    // Evaluated at the exact ISO 266 centres (α and λ); vs the nominal-centre
+    // derivation only the high bands shift materially (4k +0.06, 8k +0.19 dB),
+    // tracking the atmospheric-absorption change validated against ISO/TR
+    // 17534-3's α row.
+    let expected = [48.67, 47.70, 46.38, 41.72, 38.43, 35.40, 33.67, 30.14, 24.42, 11.39];
     let bands = &with.per_receiver[0].per_source[0].bands;
     for (i, exp) in expected.iter().enumerate() {
         assert_relative_eq!(bands[i], *exp, epsilon = 0.15);

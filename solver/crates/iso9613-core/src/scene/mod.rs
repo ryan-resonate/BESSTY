@@ -735,7 +735,7 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                 // facade adds an image-source contribution, energy-summed with
                 // the direct path per band (gated by the Fresnel size validity).
                 if matches!(src.kind, SourceKind::General) && !scene.reflectors.is_empty() {
-                    let centres = system.centres();
+                    let centres = system.centres_exact();
                     for reflector in &scene.reflectors {
                         let facade = reflection::Facade {
                             a: reflector.segment[0], b: reflector.segment[1],

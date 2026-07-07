@@ -44,7 +44,9 @@ fn two_zone_scene() -> Scene {
 fn per_region_ground_matches_oracle() {
     let res = solve(&two_zone_scene()).unwrap();
     let bands = &res.per_receiver[0].per_source[0].bands;
-    let expected = [47.18, 47.17, 47.15, 43.58, 38.98, 42.51, 44.21, 43.14, 38.47, 21.40];
+    // Exact ISO 266 centres (α at 7943 Hz etc.); only 4k/8k shift vs the
+    // nominal-centre derivation (+0.06 / +0.30 dB), tracking the α basis.
+    let expected = [47.18, 47.17, 47.15, 43.58, 38.98, 42.51, 44.21, 43.15, 38.52, 21.70];
     for (i, exp) in expected.iter().enumerate() {
         assert_relative_eq!(bands[i], *exp, epsilon = 0.1);
     }

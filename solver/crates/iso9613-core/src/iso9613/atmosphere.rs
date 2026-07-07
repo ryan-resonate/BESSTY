@@ -90,7 +90,9 @@ pub fn aatm_spectrum(
     let d_km = d / 1000.0;
 
     let mut spectrum = BandSpectrum::zeros(system);
-    for (i, &f) in system.centres().iter().enumerate() {
+    // Exact ISO 266 centres — matches ISO/TR 17534-3 step values (e.g. α at
+    // 7943 Hz, not the 8000 Hz label).
+    for (i, &f) in system.centres_exact().iter().enumerate() {
         let alpha = alpha_atm_at(f, atm);
         spectrum.bands[i] = alpha * d_km;
     }
@@ -155,5 +157,26 @@ mod tests {
         let warm = Atmosphere { temperature_c: 20.0, relative_humidity_pct: 70.0, pressure_kpa: 101.325 };
         let cool = Atmosphere::iso_reference();
         assert!(alpha_atm_at(1000.0, warm) > alpha_atm_at(1000.0, cool));
+    }
+
+    /// Conformance anchor: at the EXACT ISO 266 octave centres and 20 °C / 70 %,
+    /// α must reproduce ISO/TR 17534-3's reference row (T01, dB/km, 63–8 kHz).
+    /// This is the fix that makes the high bands pass the ±0.05 dB TR gate — at
+    /// the nominal 8000 Hz label α would be ≈ 77.6, missing the reference 76.6.
+    #[test]
+    fn exact_centres_reproduce_tr17534_alpha_row() {
+        use crate::spectrum::OCTAVE_CENTRES_EXACT_HZ;
+        let atm = Atmosphere { temperature_c: 20.0, relative_humidity_pct: 70.0, pressure_kpa: 101.325 };
+        // ISO/TR 17534-3:2015 Table 4 (T01), α at 63…8 kHz (bands 2..10).
+        let tr = [0.1, 0.3, 1.1, 2.8, 5.0, 9.0, 22.9, 76.6];
+        for (k, &f) in OCTAVE_CENTRES_EXACT_HZ[2..].iter().enumerate() {
+            let a = alpha_atm_at(f, atm);
+            // The TR values are 1-dp rounded, so match to ±0.05 dB/km.
+            assert!(
+                (a - tr[k]).abs() <= 0.05,
+                "α({:.1} Hz) = {:.3} dB/km, TR ≈ {} (Δ {:.3})",
+                f, a, tr[k], a - tr[k],
+            );
+        }
     }
 }
