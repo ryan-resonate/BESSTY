@@ -10,8 +10,8 @@
 //! and PASS with the corrected, continuous form (Dz just above zmin ≈ 0).
 
 use approx::assert_relative_eq;
-use iso9613_core::iso9613::barrier::diffraction;
 use iso9613_core::iso9613::barrier::path::PathLengths;
+use iso9613_core::iso9613::barrier::{diffraction, BarrierVariant};
 
 /// Realistic single-edge path lengths with a controllable `delta_z`. The
 /// component lengths are held fixed (illustrative) so we can sweep `delta_z`
@@ -30,11 +30,11 @@ fn lengths_with_dz(delta_z: f64) -> PathLengths {
 fn dz_is_continuous_across_zmin() {
     let lambda = 340.0 / 1000.0; // 1 kHz, λ = 0.34 m
     let c3 = 1.0;
-    let zmin = -lambda / (20.0 * c3); // = -0.017 m
+    let zmin = -2.0 * lambda / (20.0 * c3); // = -0.034 m (Eq 19)
     let eps = 1e-4;
 
-    let below = diffraction::dz_uncapped(&lengths_with_dz(zmin - eps), lambda);
-    let above = diffraction::dz_uncapped(&lengths_with_dz(zmin + eps), lambda);
+    let below = diffraction::dz_uncapped(&lengths_with_dz(zmin - eps), lambda, BarrierVariant::V2024);
+    let above = diffraction::dz_uncapped(&lengths_with_dz(zmin + eps), lambda, BarrierVariant::V2024);
 
     // Below zmin: hard zero.
     assert_relative_eq!(below, 0.0, epsilon = 1e-12);
@@ -53,8 +53,8 @@ fn dz_rises_smoothly_with_positive_dz() {
     let lambda = 340.0 / 1000.0;
     let mut prev = 0.0;
     for step in 0..20 {
-        let dz = -0.017 + (step as f64) * 0.05; // sweep from ~zmin upward
-        let val = diffraction::dz_uncapped(&lengths_with_dz(dz), lambda);
+        let dz = -0.034 + (step as f64) * 0.05; // sweep from ~zmin upward
+        let val = diffraction::dz_uncapped(&lengths_with_dz(dz), lambda, BarrierVariant::V2024);
         assert!(val >= -1e-9, "Dz must be non-negative, got {val} at Δz={dz}");
         if dz > 0.05 {
             assert!(val >= prev - 1e-9, "Dz must be monotonic; {val} < {prev} at Δz={dz}");

@@ -7,7 +7,7 @@
 
 use iso9613_core::iso9613::annex_d::WtgRules;
 use iso9613_core::iso9613::atmosphere::Atmosphere;
-use iso9613_core::iso9613::barrier::{BarrierConvention, LateralEdge, WallBarrier};
+use iso9613_core::iso9613::barrier::{LateralEdge, WallBarrier};
 use iso9613_core::iso9613::meteorology::cmet_db;
 use iso9613_core::iso9613::{self, annex_d};
 use iso9613_core::{BandSpectrum, BandSystem, Vec3};
@@ -46,12 +46,11 @@ fn band_system_for(n: usize) -> BandSystem {
     }
 }
 
-/// Helper: parse the JS-side `barrierConvention` int (0 = ISO Eq16,
-/// 1 = Dz − max(Agr, 0)) into the Rust enum. Default to ISO Eq16
-/// when callers haven't been updated yet.
-fn barrier_conv(flag: u32) -> BarrierConvention {
-    if flag == 1 { BarrierConvention::DzMinusMaxAgr0 } else { BarrierConvention::IsoEq16 }
-}
+// NOTE: the `barrier_convention` int is still accepted on every exported
+// function for call-site compatibility with the current web app, but it is now
+// IGNORED. Phase 1 collapsed the two barrier/ground conventions to the single
+// literal-ISO behaviour (see `barrier::abar_spectrum`); the web arg is a no-op
+// pending removal when BEESTY migrates to the typed Scene API (Phase 6).
 
 /// Helper: turn the JS-side `dz_cap_db` float into `Option<f64>`.
 /// Negative or non-finite (sentinel `-1.0` from JS) → no override
@@ -83,7 +82,7 @@ pub fn evaluate_general_octave(
     g: f64,
     barriers_flat: &[f64],
     atm_temp_c: f64, atm_rh_pct: f64, atm_pres_kpa: f64,
-    barrier_convention: u32,
+    _barrier_convention: u32, // ignored (see note at top); kept for call-site compat
     dz_cap_db: f64,
     c0: f64,
     lateral_flat: &[f64],
@@ -100,7 +99,7 @@ pub fn evaluate_general_octave(
     };
     let lateral = unpack_lateral(lateral_flat);
     let out = iso9613::evaluate_with_barriers(
-        &lw_spec, s, r, src_hagl, rx_hagl, g, &walls, &lateral, dz_cap(dz_cap_db), atm, barrier_conv(barrier_convention),
+        &lw_spec, s, r, src_hagl, rx_hagl, g, &walls, &lateral, dz_cap(dz_cap_db), atm,
     );
     // §8 long-term meteorological correction (frequency-independent).
     let dp = ((rx_e - src_e).powi(2) + (rx_n - src_n).powi(2)).sqrt();
@@ -124,7 +123,7 @@ pub fn evaluate_wtg_octave(
     rotor_diameter_m: f64,
     apply_concave: bool,
     atm_temp_c: f64, atm_rh_pct: f64, atm_pres_kpa: f64,
-    barrier_convention: u32,
+    _barrier_convention: u32, // ignored (see note at top); kept for call-site compat
     c0: f64,
     lateral_flat: &[f64],
 ) -> Vec<f64> {
@@ -142,7 +141,7 @@ pub fn evaluate_wtg_octave(
     let out = annex_d::evaluate_wtg(
         &lw_spec, hub, r, hub_hagl, rx_hagl, g, &walls, &lateral,
         WtgRules::default(), apply_concave, rotor_diameter_m,
-        atm, barrier_conv(barrier_convention),
+        atm,
     );
     let dp = ((rx_e - hub_e).powi(2) + (rx_n - hub_n).powi(2)).sqrt();
     let cmet = cmet_db(c0, hub_hagl, rx_hagl, dp);
@@ -193,7 +192,6 @@ pub struct GridEvaluator {
     bs: BandSystem,
     sources: Vec<SourceRec>,
     atm: Atmosphere,
-    bar_conv: BarrierConvention,
     dz_cap: Option<f64>,
     g: f64,
     c0: f64,
@@ -215,7 +213,7 @@ impl GridEvaluator {
         g: f64,
         user_barriers_flat: &[f64],
         atm_temp_c: f64, atm_rh_pct: f64, atm_pres_kpa: f64,
-        barrier_convention: u32,
+        _barrier_convention: u32, // ignored (see note at top); kept for call-site compat
         dz_cap_db: f64,
         c0: f64,
         user_lateral_flat: &[f64],
@@ -241,7 +239,6 @@ impl GridEvaluator {
                 relative_humidity_pct: atm_rh_pct,
                 pressure_kpa: atm_pres_kpa,
             },
-            bar_conv: barrier_conv(barrier_convention),
             dz_cap: dz_cap(dz_cap_db),
             g,
             c0,
@@ -343,12 +340,12 @@ impl GridEvaluator {
         if src.is_wtg {
             annex_d::evaluate_wtg(
                 &src.lw, src.pos, r, src.hagl, cell_hagl, self.g, walls, &self.user_lateral,
-                WtgRules::default(), apply_concave, src.rotor_d, self.atm, self.bar_conv,
+                WtgRules::default(), apply_concave, src.rotor_d, self.atm,
             )
         } else {
             iso9613::evaluate_with_barriers(
                 &src.lw, src.pos, r, src.hagl, cell_hagl, self.g, walls, &self.user_lateral,
-                self.dz_cap, self.atm, self.bar_conv,
+                self.dz_cap, self.atm,
             )
         }
     }

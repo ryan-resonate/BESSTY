@@ -7,7 +7,7 @@
 //! commit (`GOLDEN_WRITE=1 cargo test --test golden_phase0`).
 
 use iso9613_core::iso9613::atmosphere::Atmosphere;
-use iso9613_core::iso9613::barrier::{BarrierConvention, LateralEdge, WallBarrier};
+use iso9613_core::iso9613::barrier::{LateralEdge, WallBarrier};
 use iso9613_core::iso9613::{annex_d, evaluate_free_field, evaluate_with_barriers, evaluate_with_ground};
 use iso9613_core::{BandSpectrum, BandSystem, Vec3};
 
@@ -51,7 +51,7 @@ fn run_all(out: &mut Vec<String>) {
     );
 
     // S4: barriers on elevated terrain (split z-datum), one finite wall with
-    // lateral end edges + one long topo-like wall, both conventions.
+    // lateral end edges + one long topo-like wall.
     let s = Vec3::new(0.0, 0.0, 152.0);   // ground 150 + hagl 2
     let r = Vec3::new(300.0, 0.0, 151.5); // ground 150 + hagl 1.5
     let walls = [
@@ -64,18 +64,14 @@ fn run_all(out: &mut Vec<String>) {
     ];
     let lw = flat_lw(BandSystem::Octave, 105.0);
     push(
-        "barrier_elevated_iso_eq16",
-        &evaluate_with_barriers(&lw, s, r, 2.0, 1.5, 0.6, &walls, &lateral, None, atm_ref, BarrierConvention::IsoEq16),
-    );
-    push(
-        "barrier_elevated_dz_minus",
-        &evaluate_with_barriers(&lw, s, r, 2.0, 1.5, 0.6, &walls, &lateral, None, atm_ref, BarrierConvention::DzMinusMaxAgr0),
+        "barrier_elevated",
+        &evaluate_with_barriers(&lw, s, r, 2.0, 1.5, 0.6, &walls, &lateral, None, atm_ref),
     );
 
     // S5: dz-cap override (2 dB), no lateral.
     push(
         "barrier_capped_2db",
-        &evaluate_with_barriers(&lw, s, r, 2.0, 1.5, 0.6, &walls, &[], Some(2.0), atm_ref, BarrierConvention::DzMinusMaxAgr0),
+        &evaluate_with_barriers(&lw, s, r, 2.0, 1.5, 0.6, &walls, &[], Some(2.0), atm_ref),
     );
 
     // S6: WTG per Annex D — flat + concave variants, terrain barrier between.
@@ -89,7 +85,7 @@ fn run_all(out: &mut Vec<String>) {
             &annex_d::evaluate_wtg(
                 &lw_wtg, hub, rx, 110.0, 1.5, 1.0, &topo, &[],
                 annex_d::WtgRules::default(), concave, 120.0,
-                atm_ref, BarrierConvention::DzMinusMaxAgr0,
+                atm_ref,
             ),
         );
     }

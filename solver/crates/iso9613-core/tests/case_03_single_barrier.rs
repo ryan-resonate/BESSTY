@@ -5,7 +5,7 @@
 
 use approx::assert_relative_eq;
 use iso9613_core::iso9613::atmosphere::Atmosphere;
-use iso9613_core::iso9613::barrier::{BarrierConvention, WallBarrier};
+use iso9613_core::iso9613::barrier::WallBarrier;
 use iso9613_core::iso9613::{barrier, evaluate_with_barriers};
 use iso9613_core::{BandSpectrum, BandSystem, Vec3};
 
@@ -31,7 +31,7 @@ fn flat_100_db_octave() -> BandSpectrum {
 
 #[test]
 fn case_03_dz_per_band_matches_validation() {
-    use barrier::{diffraction, path};
+    use barrier::{diffraction, path, BarrierVariant};
     let (s, r, walls) = case_03_setup();
     let candidates = path::project_walls(s, r, &walls);
     let s_in_plane = path::DiffractionEdge { x: 0.0, z: s.z };
@@ -41,24 +41,20 @@ fn case_03_dz_per_band_matches_validation() {
     let lengths = path::path_lengths(s_in_plane, r_in_plane, &active);
 
     let centres = BandSystem::Octave.centres();
-    // Expected (uncapped) Dz from validation/case-03-single-barrier.md.
-    // Two new low octaves (16, 31.5 Hz) prepended — Dz computed from λ=21.25
-    // and λ=10.79 m respectively. The reference values for 63 Hz upward are
-    // unchanged. We compute the new low-band values inline here.
+    // Expected (uncapped) Dz per band, independently computed (scratchpad
+    // oracle.py, a fresh 2024 implementation) for Δz = 0.449 m, single edge:
+    // Dz = 10·lg[1 + (2 + 20·Δz/λ)·Kmet_2024] (Eq 18, corrected bracket + zmin).
     let expected_dz_uncapped = [
-        // 16 Hz: λ ≈ 21.25 m. C2·Δz/λ = 20·0.449/21.25 = 0.423.
-        // Inner = 1 + (3 + 0.423)·Kmet ≈ 1 + 3.42·0.85 ≈ 3.91 → 5.92 dB
-        5.92, 6.42,
-        6.80, 7.78, 9.29, 11.32, 13.74, 16.43, 19.27, 22.19,
+        5.01, 5.38, 6.09, 7.25, 8.93, 11.10, 13.62, 16.36, 19.24, 22.17,
     ];
     for (i, &f) in centres.iter().enumerate() {
         let lambda = 340.0 / f;
-        let dz = diffraction::dz_uncapped(&lengths, lambda);
-        assert_relative_eq!(dz, expected_dz_uncapped[i], epsilon = 1.0);
+        let dz = diffraction::dz_uncapped(&lengths, lambda, BarrierVariant::V2024);
+        assert_relative_eq!(dz, expected_dz_uncapped[i], epsilon = 0.1);
     }
 
-    // Single-edge cap = 20 dB → 8 kHz (22.19) clamps to 20.
-    let dz_8k = diffraction::dz_uncapped(&lengths, 340.0 / 8000.0);
+    // Single-edge cap = 20 dB → 8 kHz (22.17 uncapped) clamps to 20.
+    let dz_8k = diffraction::dz_uncapped(&lengths, 340.0 / 8000.0, BarrierVariant::V2024);
     let dz_8k_capped = diffraction::cap(dz_8k, lengths.e_total, None);
     assert_relative_eq!(dz_8k_capped, 20.0, epsilon = 1e-9);
 }
@@ -67,25 +63,25 @@ fn case_03_dz_per_band_matches_validation() {
 fn case_03_a_weighted_total() {
     let (s, r, walls) = case_03_setup();
     let lw = flat_100_db_octave();
-    let lp = evaluate_with_barriers(&lw, s, r, s.z, r.z, 0.5, &walls, &[], None, Atmosphere::iso_reference(), BarrierConvention::IsoEq16);
+    let lp = evaluate_with_barriers(&lw, s, r, s.z, r.z, 0.5, &walls, &[], None, Atmosphere::iso_reference());
     let total = lp.a_weighted_total();
-    assert_relative_eq!(total, 41.17, epsilon = TOL_OVERALL_DBA);
+    // 40.93 dB(A) — independently computed (scratchpad oracle.py) with the
+    // corrected 2024 barrier formula + literal-ISO Agr combination.
+    assert_relative_eq!(total, 40.93, epsilon = TOL_OVERALL_DBA);
 }
 
 #[test]
 fn case_03_per_band_lp() {
     let (s, r, walls) = case_03_setup();
     let lw = flat_100_db_octave();
-    let lp = evaluate_with_barriers(&lw, s, r, s.z, r.z, 0.5, &walls, &[], None, Atmosphere::iso_reference(), BarrierConvention::IsoEq16);
-    // Loose check on the new low bands; tighter on the existing reference
-    // bands (which we don't expect to change).
+    let lp = evaluate_with_barriers(&lw, s, r, s.z, r.z, 0.5, &walls, &[], None, Atmosphere::iso_reference());
+    // Per-band Lp, independently computed (scratchpad oracle.py) with the
+    // corrected 2024 barrier chain.
     let expected = [
-        46.0, 45.6,                                                           // 16, 31.5 Hz approx
-        45.18, 41.34, 41.52, 38.13, 36.10, 33.09, 27.94, 18.79,
+        46.98, 46.60, 45.88, 41.71, 39.96, 37.70, 36.22, 33.16, 27.95, 18.65,
     ];
     for (i, exp) in expected.iter().enumerate() {
-        let tol = if i < 2 { 2.0 } else { TOL_PER_BAND_DB };
-        assert_relative_eq!(lp.bands[i], *exp, epsilon = tol);
+        assert_relative_eq!(lp.bands[i], *exp, epsilon = TOL_PER_BAND_DB);
     }
 }
 
@@ -94,7 +90,7 @@ fn case_03_no_barrier_baseline_is_louder() {
     use iso9613_core::iso9613::evaluate_with_ground;
     let (s, r, walls) = case_03_setup();
     let lw = flat_100_db_octave();
-    let lp_with = evaluate_with_barriers(&lw, s, r, s.z, r.z, 0.5, &walls, &[], None, Atmosphere::iso_reference(), BarrierConvention::IsoEq16);
+    let lp_with = evaluate_with_barriers(&lw, s, r, s.z, r.z, 0.5, &walls, &[], None, Atmosphere::iso_reference());
     let lp_without = evaluate_with_ground(&lw, s, r, s.z, r.z, 0.5, Atmosphere::iso_reference());
     // Barrier should reduce the level substantially (≈ 14 dB(A) per validation).
     let drop = lp_without.a_weighted_total() - lp_with.a_weighted_total();

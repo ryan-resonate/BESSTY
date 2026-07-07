@@ -1,84 +1,99 @@
-//! ISO 9613-2:2024 — 7.4.1 Barrier diffraction (Eqs 18–21).
+//! ISO 9613-2 — 7.4 Barrier diffraction `Dz`.
 //!
-//! ⚠ KNOWN DEVIATIONS (preserved verbatim through the Phase-0 restructure so
-//! the golden gate stays byte-identical; fixed in Phase 1 with hand-calculated
-//! expected values — see `docs/iso9613-solver-phase01-execution.md` §2.3 and
-//! `docs/iso9613-2-1996-vs-2024-differences.md` §8.1):
-//!   1. `dz_uncapped` uses bracket constant 3 — the 2024 standard (Eq 18,
-//!      printed p.16) specifies 2: `Dz = 10·lg[1 + (2 + (C2/λ)C3·z)·Kmet]`.
-//!   2. `z_min` returns `−λ/(C2·C3)` — Eq 19 specifies `−2λ/(C2·C3)`.
-//!   3. `cap` is applied by the caller to lateral paths too — ISO/TR 17534-3
-//!      §5.3 restricts the 20/25 dB caps to over-top diffraction only.
+//! The log-argument bracket (2024 Eq 18 / 1996 Eq 14) and the `Kmet` form
+//! (2024 Eq 21 / 1996 Eq 18) are **edition-dependent** — selected by
+//! [`BarrierVariant`]. `zmin`, `C2`, and `C3` are shared. See
+//! `docs/iso9613-2-1996-vs-2024-differences.md` §8.1–8.2 and the 17534-3
+//! implementation notes §5.4.
 
 use super::path::PathLengths;
+use super::BarrierVariant;
 
 /// `C2` per Eq 18: 20 in the standard configuration (ground reflections
 /// already accounted for in `Agr`). 40 if reflections are tracked separately
 /// via image sources — not used yet.
 pub const C2: f64 = 20.0;
 
-/// `C3` per Eq 20.
+/// `C3` per Eq 20 — **frequency-dependent** (via `λ`):
 ///   - 1 for single diffraction (e = 0).
 ///   - `(1 + (5λ/e)²) / (1/3 + (5λ/e)²)` for multi-edge.
-pub fn c3(e_total: f64) -> f64 {
+///
+/// (Fixed 2026-07 — the previous form used `5/e`, dropping the `λ` factor and
+/// making `C3` frequency-independent; see differences doc §8.1.)
+pub fn c3(e_total: f64, lambda: f64) -> f64 {
     if e_total < 1e-9 {
         1.0
     } else {
-        let r = 5.0 / e_total;
+        let r = 5.0 * lambda / e_total;
         let r_sq = r * r;
         (1.0 + r_sq) / (1.0 / 3.0 + r_sq)
     }
 }
 
-/// `zmin` per Eq 19. ⚠ Deviation #2 above — Phase 1 corrects to −2λ/(C2·C3).
+/// `zmin = −2λ / (C2·C3)` per 2024 Eq 19 (and ISO/TR 17534-3 §5.4, which
+/// introduced the same two-step clamp for the 1996 edition). Below it the line
+/// of sight has risen far enough over the top that `Dz` would go negative;
+/// `dz_uncapped` returns 0 there. Edition-independent.
 pub fn z_min(lambda: f64, c3_val: f64) -> f64 {
-    -lambda / (C2 * c3_val)
+    -2.0 * lambda / (C2 * c3_val)
 }
 
-/// Meteorological correction `Kmet` per Eq 21.
+/// Meteorological correction `Kmet`.
 ///
-/// Eq 21 is defined for the whole `z > zmin` domain (where `Dz` is non-zero),
-/// not just `z > 0`. As `z → zmin⁺` the denominator `2(z − zmin) → 0`, the
-/// argument → ∞, and `Kmet → 0`, so `Dz = 10·log10(1 + inner·Kmet) → 0`
-/// continuously into the `z ≤ zmin → Dz = 0` branch. Guarding at `z ≤ zmin`
-/// keeps the value continuous and avoids the division by zero at `z = zmin`
-/// (where `Dz` is 0 regardless of `Kmet`).
-pub fn k_met(lengths: &PathLengths, z_min_val: f64) -> f64 {
-    if lengths.delta_z <= z_min_val {
-        // At or below zmin Dz is 0 anyway; return 1 to avoid the 0/0 in the
-        // denominator. The caller (`dz_uncapped`) already short-circuits here.
-        return 1.0;
+/// - `V2024` (Eq 21): `exp[−(1/2000)·√((max(dss,dsr)+e)·min(dss,dsr)·d / 2(z−zmin))]`.
+///   As `z → zmin⁺` the denominator → 0, the argument → ∞, and `Kmet → 0`, so
+///   `Dz → 0` continuously into the `z ≤ zmin → Dz = 0` branch.
+/// - `V1996` (Eq 18): `exp[−(1/2000)·√(dss·dsr·d / 2z)]`, with `Kmet = 1` for
+///   `z ≤ 0` (the 1996 form is only defined for positive path-length
+///   difference; the `zmin` clamp above still bounds `Dz`).
+pub fn k_met(lengths: &PathLengths, z_min_val: f64, variant: BarrierVariant) -> f64 {
+    match variant {
+        BarrierVariant::V1996 => {
+            if lengths.delta_z <= 0.0 {
+                return 1.0;
+            }
+            let numerator = lengths.d_ss * lengths.d_sr * lengths.d_direct;
+            let denominator = 2.0 * lengths.delta_z;
+            (-(numerator / denominator).sqrt() / 2000.0).exp()
+        }
+        BarrierVariant::V2024 => {
+            if lengths.delta_z <= z_min_val {
+                // At or below zmin Dz is 0 anyway; return 1 to avoid the 0/0 in
+                // the denominator. `dz_uncapped` already short-circuits here.
+                return 1.0;
+            }
+            let max_dss_dsr = lengths.d_ss.max(lengths.d_sr);
+            let min_dss_dsr = lengths.d_ss.min(lengths.d_sr);
+            let numerator = (max_dss_dsr + lengths.e_total) * min_dss_dsr * lengths.d_direct;
+            let denominator = 2.0 * (lengths.delta_z - z_min_val);
+            (-(numerator / denominator).sqrt() / 2000.0).exp()
+        }
     }
-    let max_dss_dsr = if lengths.d_ss >= lengths.d_sr {
-        lengths.d_ss
-    } else {
-        lengths.d_sr
-    };
-    let min_dss_dsr = if lengths.d_ss <= lengths.d_sr {
-        lengths.d_ss
-    } else {
-        lengths.d_sr
-    };
-    let numerator = (max_dss_dsr + lengths.e_total) * min_dss_dsr * lengths.d_direct;
-    let denominator = 2.0 * (lengths.delta_z - z_min_val);
-    let arg = (numerator / denominator).sqrt();
-    (-arg / 2000.0).exp()
 }
 
-/// `Dz` per Eq 18 (without the 20/25 dB cap — caller applies that).
-/// ⚠ Deviation #1 above — Phase 1 corrects the bracket constant to 2.
-pub fn dz_uncapped(lengths: &PathLengths, lambda: f64) -> f64 {
-    let c3_val = c3(lengths.e_total);
+/// `Dz` (dB) for the given path, without the 20/25 dB cap (caller applies that
+/// to the over-top path only). `X = (C2/λ)·C3·z`.
+///
+/// - `V2024` (Eq 18): `Dz = 10·lg[1 + (2 + X)·Kmet]`.
+/// - `V1996` (Eq 14): `Dz = 10·lg[3 + X·Kmet]`.
+///
+/// Both give `Dz = 0` for `z ≤ zmin`.
+pub fn dz_uncapped(lengths: &PathLengths, lambda: f64, variant: BarrierVariant) -> f64 {
+    let c3_val = c3(lengths.e_total, lambda);
     let z_min_val = z_min(lambda, c3_val);
     if lengths.delta_z <= z_min_val {
         return 0.0;
     }
-    let kmet = k_met(lengths, z_min_val);
-    let inner = 3.0 + C2 * c3_val * lengths.delta_z / lambda;
-    10.0 * (1.0 + inner * kmet).log10()
+    let kmet = k_met(lengths, z_min_val, variant);
+    let x = C2 * c3_val * lengths.delta_z / lambda;
+    match variant {
+        BarrierVariant::V1996 => 10.0 * (3.0 + x * kmet).log10(),
+        BarrierVariant::V2024 => 10.0 * (1.0 + (2.0 + x) * kmet).log10(),
+    }
 }
 
-/// Cap `Dz` to the per-mode maximum:
+/// Cap `Dz` to the per-mode maximum (ISO/TR 17534-3 §5.3 — applied to the
+/// **over-top** path only, never to lateral paths):
 ///   - single edge (`e_total == 0`): 20 dB
 ///   - multi-edge: 25 dB
 ///
@@ -102,21 +117,24 @@ mod tests {
 
     #[test]
     fn c3_for_single_edge_is_one() {
-        assert_relative_eq!(c3(0.0), 1.0, epsilon = 1e-12);
+        assert_relative_eq!(c3(0.0, 0.34), 1.0, epsilon = 1e-12);
     }
 
     #[test]
-    fn c3_for_e_40m_matches_case_04() {
-        // C3 = (1 + (5/40)²) / (1/3 + (5/40)²) = 1.0156 / 0.3490 = 2.911
-        assert_relative_eq!(c3(40.0), 2.911, epsilon = 0.01);
+    fn c3_is_frequency_dependent() {
+        // e = 40 m. At 1 kHz (λ = 0.34): 5λ/e = 0.0425, (·)² = 0.00181,
+        // C3 = 1.00181 / 0.33514 = 2.989.
+        assert_relative_eq!(c3(40.0, 0.34), 2.989, epsilon = 0.01);
+        // At 63 Hz (λ = 5.397): 5λ/e = 0.6746, (·)² = 0.4551,
+        // C3 = 1.4551 / 0.7884 = 1.845 — much lower than the high-freq limit.
+        assert_relative_eq!(c3(40.0, 340.0 / 63.0), 1.845, epsilon = 0.01);
     }
 
     #[test]
     fn z_min_at_500hz_single_edge() {
-        // Current (deviating) form: λ = 340/500 = 0.680, C3 = 1,
-        // zmin = -0.680/20 = -0.034. Phase 1 corrects to -0.068 (Eq 19).
+        // λ = 340/500 = 0.680, C3 = 1, zmin = -2·0.680/20 = -0.068 (Eq 19).
         let z = z_min(0.680, 1.0);
-        assert_relative_eq!(z, -0.034, epsilon = 1e-3);
+        assert_relative_eq!(z, -0.068, epsilon = 1e-3);
     }
 
     #[test]
@@ -128,7 +146,20 @@ mod tests {
             e_total: 0.0,
             delta_z: -0.5,
         };
-        assert_relative_eq!(dz_uncapped(&lengths, 0.680), 0.0, epsilon = 1e-12);
+        assert_relative_eq!(dz_uncapped(&lengths, 0.680, BarrierVariant::V2024), 0.0, epsilon = 1e-12);
+        assert_relative_eq!(dz_uncapped(&lengths, 0.680, BarrierVariant::V1996), 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn v1996_and_v2024_agree_when_kmet_is_one() {
+        // With Kmet = 1 the two brackets coincide: 3 + X = 1 + (2 + X).
+        // Kmet = 1 for V1996 requires z ≤ 0; pick z in (zmin, 0] and compare a
+        // hand value. λ = 0.34 (1 kHz), C3 = 1, zmin = -0.034; take z = -0.02.
+        // X = 20·(-0.02)/0.34 = -1.1765. Dz = 10·lg(3 - 1.1765) = 10·lg(1.8235)
+        //    = 2.609 dB. V2024 Kmet at z=-0.02 is NOT 1, so only V1996 checked.
+        let lengths = PathLengths { d_direct: 100.0, d_ss: 50.0, d_sr: 50.0, e_total: 0.0, delta_z: -0.02 };
+        let dz = dz_uncapped(&lengths, 0.34, BarrierVariant::V1996);
+        assert_relative_eq!(dz, 2.609, epsilon = 0.01);
     }
 
     #[test]

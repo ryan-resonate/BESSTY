@@ -1,6 +1,6 @@
-//! ISO 9613-2 implementation modules (currently the 2024 edition chain; the
-//! path-engine / StandardModel / EditionSpec split lands in Phase 1, the 1996
-//! edition in Phase 2 — see `docs/iso9613-solver-standalone-plan.md`).
+//! ISO 9613-2 implementation modules. The 2024 edition chain runs through
+//! `standards::Iso2024`; the 1996 edition lands in Phase 2 — see
+//! `docs/iso9613-solver-standalone-plan.md`.
 
 pub mod annex_d;
 pub mod atmosphere;
@@ -10,7 +10,6 @@ pub mod ground;
 pub mod meteorology;
 
 pub use atmosphere::Atmosphere;
-pub use barrier::BarrierConvention;
 
 use crate::spectrum::BandSpectrum;
 use crate::units::Vec3;
@@ -90,7 +89,6 @@ pub fn evaluate_with_barriers(
     lateral: &[barrier::LateralEdge],
     dz_cap_db: Option<f64>,
     atm: Atmosphere,
-    barrier_conv: BarrierConvention,
 ) -> BandSpectrum {
     use crate::standards::{GeneralEval, Iso2024, StandardModel};
     Iso2024.evaluate_general(&GeneralEval {
@@ -104,6 +102,5 @@ pub fn evaluate_with_barriers(
         lateral,
         dz_cap: dz_cap_db,
         atm,
-        barrier_convention: barrier_conv,
     })
 }

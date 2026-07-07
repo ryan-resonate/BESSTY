@@ -9,7 +9,7 @@
 use std::time::Instant;
 
 use iso9613_core::iso9613::atmosphere::Atmosphere;
-use iso9613_core::iso9613::barrier::{BarrierConvention, WallBarrier};
+use iso9613_core::iso9613::barrier::WallBarrier;
 use iso9613_core::iso9613::evaluate_with_barriers;
 use iso9613_core::{BandSpectrum, BandSystem, Vec3};
 
@@ -29,7 +29,7 @@ fn time_one_eval(walls: &[WallBarrier], iters: u32) -> f64 {
         // Nudge the source each iter so the optimiser can't hoist the call.
         let s2 = Vec3::new((i as f64) * 1e-6, 0.0, 2.0);
         let lp = evaluate_with_barriers(
-            &lw, s2, r, s2.z, r.z, 0.5, walls, &[], None, atm, BarrierConvention::IsoEq16,
+            &lw, s2, r, s2.z, r.z, 0.5, walls, &[], None, atm,
         );
         acc += lp.bands[0];
     }

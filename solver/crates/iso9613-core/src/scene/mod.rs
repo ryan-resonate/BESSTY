@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::iso9613::annex_d::WtgRules;
 use crate::iso9613::atmosphere::Atmosphere as CoreAtmosphere;
-use crate::iso9613::barrier::{BarrierConvention, LateralEdge, WallBarrier};
+use crate::iso9613::barrier::{LateralEdge, WallBarrier};
 use crate::iso9613::meteorology::cmet_db;
 use crate::iso9613::{evaluate_with_barriers, annex_d::evaluate_wtg};
 use crate::spectrum::{BandSpectrum, BandSystem};
@@ -110,25 +110,6 @@ pub enum Obstacle {
     // Building / Solid3D variants arrive in Phase 3.
 }
 
-/// How barrier Dz combines with Agr. Temporary — Phase 1 collapses to the
-/// single literal-ISO behaviour and removes this setting (see barrier module).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum BarrierConventionSetting {
-    IsoEq16,
-    #[default]
-    DzMinusMaxAgr0,
-}
-
-impl From<BarrierConventionSetting> for BarrierConvention {
-    fn from(s: BarrierConventionSetting) -> Self {
-        match s {
-            BarrierConventionSetting::IsoEq16 => BarrierConvention::IsoEq16,
-            BarrierConventionSetting::DzMinusMaxAgr0 => BarrierConvention::DzMinusMaxAgr0,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct Settings {
     /// Override for the standard 20/25 dB Dz caps (general sources only;
@@ -136,7 +117,6 @@ pub struct Settings {
     pub dz_cap_db: Option<f64>,
     /// §8 meteorological-correction factor C0 (dB). 0 disables Cmet.
     pub c0_db: f64,
-    pub barrier_convention: BarrierConventionSetting,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -302,7 +282,6 @@ impl Scene {
 pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
     let system = scene.validate()?;
     let atm: CoreAtmosphere = scene.atmosphere.into();
-    let conv: BarrierConvention = scene.settings.barrier_convention.into();
     let (walls, lateral) = scene.barriers();
     let g = scene.ground.default_g;
 
@@ -318,11 +297,11 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                 let lp = match &src.kind {
                     SourceKind::General => evaluate_with_barriers(
                         &lw, s, r, src.height_agl, rx.height_agl, g, &walls, &lateral,
-                        scene.settings.dz_cap_db, atm, conv,
+                        scene.settings.dz_cap_db, atm,
                     ),
                     SourceKind::WindTurbine { rotor_diameter_m, apply_concave } => evaluate_wtg(
                         &lw, s, r, src.height_agl, rx.height_agl, g, &walls, &lateral,
-                        WtgRules::default(), *apply_concave, *rotor_diameter_m, atm, conv,
+                        WtgRules::default(), *apply_concave, *rotor_diameter_m, atm,
                     ),
                 };
                 // §8 long-term meteorological correction (frequency-independent).
@@ -394,7 +373,6 @@ mod tests {
             Vec3::new(200.0, 0.0, 1.5),
             5.0, 1.5, 0.5, &[], &[], None,
             CoreAtmosphere::iso_reference(),
-            BarrierConvention::DzMinusMaxAgr0,
         );
         let got = &results.per_receiver[0].per_source[0].bands;
         for (a, b) in got.iter().zip(direct.bands.iter()) {

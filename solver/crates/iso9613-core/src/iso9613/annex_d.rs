@@ -16,7 +16,6 @@ use crate::units::Vec3;
 
 use super::{atmosphere, barrier, divergence, ground};
 use super::atmosphere::Atmosphere;
-use super::barrier::BarrierConvention;
 
 /// WT-specific configuration applied at every receiver.
 #[derive(Copy, Clone, Debug)]
@@ -86,7 +85,6 @@ pub fn evaluate_wtg(
     apply_concave: bool,
     rotor_diameter_m: f64,
     atm: Atmosphere,
-    barrier_conv: BarrierConvention,
 ) -> BandSpectrum {
     let system = lw.system;
 
@@ -121,18 +119,19 @@ pub fn evaluate_wtg(
         z: effective_source_z_for_barrier(hub_pos.z, rotor_diameter_m, rules.use_elevated_source_for_barrier),
     };
     let geometry = barrier::path::build_geometry(barrier_source, receiver_pos, barriers, lateral);
-    let (abar, ground_in_bar) = barrier::abar_spectrum(
+    let abar = barrier::abar_spectrum(
         geometry.as_ref(),
         &agr,
         system,
         Some(rules.barrier_dz_cap_db),
-        barrier_conv,
+        crate::standards::ISO_2024.barrier,
     );
 
+    // Agr is always carried separately (Eq 5); Abar encodes the literal ISO
+    // combination (see `barrier::abar_spectrum`).
     let mut out = BandSpectrum::zeros(system);
     for i in 0..system.n_bands() {
-        let agr_term = if ground_in_bar[i] { 0.0 } else { agr.bands[i] };
-        out.bands[i] = lw.bands[i] - adiv - aatm.bands[i] - agr_term - abar.bands[i];
+        out.bands[i] = lw.bands[i] - adiv - aatm.bands[i] - agr.bands[i] - abar.bands[i];
     }
     out
 }

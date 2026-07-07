@@ -7,7 +7,6 @@
 use approx::assert_relative_eq;
 use iso9613_core::iso9613::annex_d::{evaluate_wtg, WtgRules};
 use iso9613_core::iso9613::atmosphere::Atmosphere;
-use iso9613_core::iso9613::barrier::BarrierConvention;
 use iso9613_core::{BandSpectrum, BandSystem, Vec3};
 
 #[test]
@@ -19,7 +18,7 @@ fn case_06_concave_correction_applied() {
 
     let lp_concave = evaluate_wtg(
         &lw, hub, r, hub.z, r.z, 0.5, &[], &[], WtgRules::default(), true, 120.0,
-        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+        Atmosphere::iso_reference(),
     );
     assert_relative_eq!(lp_concave.a_weighted_total(), 44.33, epsilon = 0.5);
 }
@@ -36,11 +35,11 @@ fn case_06_vs_case_05_offset_is_3db() {
 
     let lp_flat = evaluate_wtg(
         &lw, hub, r, hub.z, r.z, 0.5, &[], &[], WtgRules::default(), false, 120.0,
-        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+        Atmosphere::iso_reference(),
     );
     let lp_concave = evaluate_wtg(
         &lw, hub, r, hub.z, r.z, 0.5, &[], &[], WtgRules::default(), true, 120.0,
-        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+        Atmosphere::iso_reference(),
     );
     let delta = lp_concave.a_weighted_total() - lp_flat.a_weighted_total();
     assert_relative_eq!(delta, 3.0, epsilon = 0.05);
@@ -59,11 +58,11 @@ fn case_06_concave_disabled_in_rules_skips_correction() {
     // disables the correction.
     let lp_disabled = evaluate_wtg(
         &lw, hub, r, hub.z, r.z, 0.5, &[], &[], rules, true, 120.0,
-        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+        Atmosphere::iso_reference(),
     );
     let lp_flat = evaluate_wtg(
         &lw, hub, r, hub.z, r.z, 0.5, &[], &[], WtgRules::default(), false, 120.0,
-        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+        Atmosphere::iso_reference(),
     );
     assert_relative_eq!(
         lp_disabled.a_weighted_total(),

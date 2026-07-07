@@ -12,7 +12,7 @@
 
 use approx::assert_relative_eq;
 use iso9613_core::iso9613::atmosphere::Atmosphere;
-use iso9613_core::iso9613::barrier::{BarrierConvention, WallBarrier};
+use iso9613_core::iso9613::barrier::WallBarrier;
 use iso9613_core::iso9613::evaluate_with_barriers;
 use iso9613_core::{BandSpectrum, BandSystem, Vec3};
 
@@ -36,7 +36,7 @@ fn lat_on_plateau(ground_elev: f64) -> f64 {
     let lw = flat_100_db_octave();
     let lp = evaluate_with_barriers(
         &lw, s, r, h_s, h_r, 0.5, &walls, &[], None,
-        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+        Atmosphere::iso_reference(),
     );
     lp.a_weighted_total()
 }
@@ -47,8 +47,8 @@ fn barrier_result_is_invariant_to_plateau_elevation() {
     let at100 = lat_on_plateau(100.0);
     let at500 = lat_on_plateau(500.0);
 
-    // All three must equal case 03 (41.17 dB(A)) and each other.
-    assert_relative_eq!(at0, 41.17, epsilon = 0.5);
+    // All three must equal case 03 (40.93 dB(A) post-Phase-1) and each other.
+    assert_relative_eq!(at0, 40.93, epsilon = 0.5);
     assert_relative_eq!(at100, at0, epsilon = 1e-6);
     assert_relative_eq!(at500, at0, epsilon = 1e-6);
 }

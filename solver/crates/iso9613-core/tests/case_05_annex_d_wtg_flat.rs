@@ -8,7 +8,6 @@
 use approx::assert_relative_eq;
 use iso9613_core::iso9613::annex_d::{evaluate_wtg, WtgRules};
 use iso9613_core::iso9613::atmosphere::Atmosphere;
-use iso9613_core::iso9613::barrier::BarrierConvention;
 use iso9613_core::{BandSpectrum, BandSystem, Vec3};
 
 fn case_05_setup() -> (Vec3, Vec3, BandSpectrum) {
@@ -38,7 +37,6 @@ fn case_05_a_weighted_total() {
         false,                // apply_concave = false (flat ground)
         120.0,                // rotor diameter
         Atmosphere::iso_reference(),
-        BarrierConvention::IsoEq16,
     );
     assert_relative_eq!(lp.a_weighted_total(), 41.33, epsilon = 0.5);
 }
@@ -50,11 +48,11 @@ fn case_05_g_above_0_5_silently_capped() {
     let (hub, r, lw) = case_05_setup();
     let lp_a = evaluate_wtg(
         &lw, hub, r, hub.z, r.z, 0.5, &[], &[], WtgRules::default(), false, 120.0,
-        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+        Atmosphere::iso_reference(),
     );
     let lp_b = evaluate_wtg(
         &lw, hub, r, hub.z, r.z, 1.0, &[], &[], WtgRules::default(), false, 120.0,
-        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+        Atmosphere::iso_reference(),
     );
     assert_relative_eq!(lp_a.a_weighted_total(), lp_b.a_weighted_total(), epsilon = 1e-9);
 }
@@ -68,11 +66,11 @@ fn case_05_receiver_below_4m_is_clamped() {
     let r_at4 = Vec3::new(500.0, 0.0, 4.0);
     let lp_low = evaluate_wtg(
         &lw, hub, r_low, hub.z, r_low.z, 0.5, &[], &[], WtgRules::default(), false, 120.0,
-        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+        Atmosphere::iso_reference(),
     );
     let lp_at4 = evaluate_wtg(
         &lw, hub, r_at4, hub.z, r_at4.z, 0.5, &[], &[], WtgRules::default(), false, 120.0,
-        Atmosphere::iso_reference(), BarrierConvention::IsoEq16,
+        Atmosphere::iso_reference(),
     );
     // Adiv differs slightly because actual receiver height enters d, but Agr
     // and Aatm are dominated. Allow up to ~0.3 dB(A) difference.
