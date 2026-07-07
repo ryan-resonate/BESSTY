@@ -758,8 +758,21 @@ fn region_ground_factors(
 /// One-shot point-receiver solve.
 pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
     let system = scene.validate()?;
-    let atm: CoreAtmosphere = scene.atmosphere.into();
     let (walls, lateral, footprints) = scene.barriers();
+    Ok(solve_cached(scene, system, walls, lateral, footprints))
+}
+
+/// Core evaluation given a pre-decomposed obstacle set — shared by the one-shot
+/// [`solve`] and the stateful [`Session`], which caches the decomposition across
+/// interactive edits. `scene` must already have passed `validate()`.
+fn solve_cached(
+    scene: &Scene,
+    system: BandSystem,
+    walls: Vec<WallBarrier>,
+    lateral: Vec<LateralEdge>,
+    footprints: Vec<FootprintLateral>,
+) -> Results {
+    let atm: CoreAtmosphere = scene.atmosphere.into();
     let g = scene.ground.default_g;
 
     // Edition dispatch (once) — general sources score through the standard's
@@ -1100,7 +1113,7 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
     #[cfg(not(feature = "parallel"))]
     let per_receiver: Vec<ReceiverResult> = scene.receivers.iter().map(compute).collect();
 
-    Ok(Results { per_receiver })
+    Results { per_receiver }
 }
 
 /// Multithreaded solve with an explicit concurrency budget (native only).
@@ -1116,6 +1129,108 @@ pub fn solve_par(scene: &Scene, max_threads: usize) -> Result<Results, SceneErro
         .build()
         .map_err(|_| SceneError::StandardNotImplemented("rayon thread pool"))?;
     pool.install(|| solve(scene))
+}
+
+/// Stateful, incremental solver for interactive hosts (a map UI, a live grid).
+///
+/// Holds a VALIDATED scene plus the cached obstacle decomposition (over-top
+/// walls, thin-wall lateral edges, building footprints). Cheap edits — moving
+/// receivers, retuning a source's power, changing the atmosphere — reuse the
+/// decomposition and re-validate only (O(entities), no physics). Editing the
+/// obstacles re-decomposes. Every mutator keeps the cache consistent, so
+/// [`Session::solve`] is always safe to call.
+///
+/// This is the seam BEESTY (and other Resonate apps) migrate their repeated
+/// per-edit solves onto; the one-shot [`solve`] is a thin wrapper for batch use.
+pub struct Session {
+    scene: Scene,
+    system: BandSystem,
+    walls: Vec<WallBarrier>,
+    lateral: Vec<LateralEdge>,
+    footprints: Vec<FootprintLateral>,
+}
+
+impl Session {
+    /// Validate `scene` and cache its decomposition. Fails exactly as
+    /// [`Scene::validate`] would.
+    pub fn new(scene: Scene) -> Result<Self, SceneError> {
+        let system = scene.validate()?;
+        let (walls, lateral, footprints) = scene.barriers();
+        Ok(Self { scene, system, walls, lateral, footprints })
+    }
+
+    /// The current scene (read-only).
+    pub fn scene(&self) -> &Scene {
+        &self.scene
+    }
+
+    /// Full solve, reusing the cached decomposition.
+    pub fn solve(&self) -> Results {
+        solve_cached(
+            &self.scene,
+            self.system,
+            self.walls.clone(),
+            self.lateral.clone(),
+            self.footprints.clone(),
+        )
+    }
+
+    /// Solve just the receivers at `indices` (skipping the rest) — the fast path
+    /// when one receiver moves on a large grid. Out-of-range indices are ignored.
+    pub fn solve_receivers(&self, indices: &[usize]) -> Vec<ReceiverResult> {
+        let mut sub = self.scene.clone();
+        sub.receivers = indices
+            .iter()
+            .filter_map(|&i| self.scene.receivers.get(i).cloned())
+            .collect();
+        solve_cached(&sub, self.system, self.walls.clone(), self.lateral.clone(), self.footprints.clone())
+            .per_receiver
+    }
+
+    /// Replace the receivers (no obstacle re-decomposition).
+    pub fn set_receivers(&mut self, receivers: Vec<Receiver>) -> Result<(), SceneError> {
+        self.scene.receivers = receivers;
+        self.system = self.scene.validate()?;
+        Ok(())
+    }
+
+    /// Retune a source's per-band sound power (no re-decomposition). `Ok(false)`
+    /// if no source has that id.
+    pub fn set_source_lw(&mut self, id: &str, lw: Vec<f64>) -> Result<bool, SceneError> {
+        let Some(src) = self.scene.sources.iter_mut().find(|s| s.id == id) else {
+            return Ok(false);
+        };
+        src.lw = lw;
+        self.system = self.scene.validate()?;
+        Ok(true)
+    }
+
+    /// Change the atmospheric conditions (no re-decomposition).
+    pub fn set_atmosphere(&mut self, atmosphere: Atmosphere) {
+        self.scene.atmosphere = atmosphere;
+    }
+
+    /// Replace the obstacles and re-decompose.
+    pub fn set_obstacles(&mut self, obstacles: Vec<Obstacle>) -> Result<(), SceneError> {
+        self.scene.obstacles = obstacles;
+        self.revalidate_and_decompose()
+    }
+
+    /// Arbitrary edit through a closure, then re-validate + re-decompose. Use for
+    /// changes the typed setters don't cover (sources, ground, reflectors, …).
+    pub fn update(&mut self, edit: impl FnOnce(&mut Scene)) -> Result<(), SceneError> {
+        edit(&mut self.scene);
+        self.revalidate_and_decompose()
+    }
+
+    fn revalidate_and_decompose(&mut self) -> Result<(), SceneError> {
+        self.system = self.scene.validate()?;
+        let (walls, lateral, footprints) = self.scene.barriers();
+        self.walls = walls;
+        self.lateral = lateral;
+        self.footprints = footprints;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1255,6 +1370,54 @@ mod tests {
         let json = serde_json::to_string(&scene).unwrap();
         let back: Scene = serde_json::from_str(&json).unwrap();
         assert_eq!(back.sources[0].id, "s1");
+    }
+
+    #[test]
+    fn session_solve_matches_one_shot() {
+        let mut scene = basic_scene();
+        scene.obstacles.push(Obstacle::Wall {
+            polyline: vec![[100.0, -50.0], [100.0, 50.0]],
+            base_z: vec![0.0, 0.0], height_agl: 8.0, top_z: None,
+        });
+        let one_shot = solve(&scene).unwrap();
+        let session = Session::new(scene).unwrap();
+        let got = session.solve();
+        assert_eq!(got.per_receiver[0].total_dba, one_shot.per_receiver[0].total_dba);
+    }
+
+    #[test]
+    fn session_incremental_edits_stay_consistent() {
+        let mut session = Session::new(basic_scene()).unwrap();
+
+        // Moving/adding receivers reuses the decomposition; the result must equal
+        // a fresh one-shot solve of the edited scene.
+        let grid: Vec<Receiver> = (0..50)
+            .map(|i| Receiver { id: format!("r{i}"), position: [120.0 + i as f64, 0.0, 1.5], height_agl: 1.5 })
+            .collect();
+        session.set_receivers(grid.clone()).unwrap();
+        let mut edited = basic_scene();
+        edited.receivers = grid;
+        let fresh = solve(&edited).unwrap();
+        let inc = session.solve();
+        for (a, b) in inc.per_receiver.iter().zip(&fresh.per_receiver) {
+            assert_eq!(a.total_dba, b.total_dba);
+        }
+        // The subset fast-path agrees with the full solve.
+        let subset = session.solve_receivers(&[3, 17, 42]);
+        assert_eq!(subset.len(), 3);
+        assert_eq!(subset[0].total_dba, inc.per_receiver[3].total_dba);
+        assert_eq!(subset[2].total_dba, inc.per_receiver[42].total_dba);
+
+        // Editing obstacles re-decomposes: a fresh wall must attenuate.
+        let before = session.solve().per_receiver[0].total_dba.unwrap();
+        session
+            .set_obstacles(vec![Obstacle::Wall {
+                polyline: vec![[110.0, -50.0], [110.0, 50.0]],
+                base_z: vec![0.0, 0.0], height_agl: 10.0, top_z: None,
+            }])
+            .unwrap();
+        let after = session.solve().per_receiver[0].total_dba.unwrap();
+        assert!(after < before - 1.0, "wall added via Session should screen: {before} → {after}");
     }
 
     /// The multithreaded solve must be bit-for-bit identical to the serial one,
