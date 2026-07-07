@@ -8,6 +8,7 @@ pub mod barrier;
 pub mod divergence;
 pub mod ground;
 pub mod meteorology;
+pub mod misc;
 
 pub use atmosphere::Atmosphere;
 
