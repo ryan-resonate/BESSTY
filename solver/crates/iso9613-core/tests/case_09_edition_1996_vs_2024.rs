@@ -74,7 +74,7 @@ fn edition_switch_is_observable_end_to_end() {
     let mk = || GeneralEval {
         lw: &lw, source: s, receiver: r, h_s: 5.0, h_r: 1.5,
         g_source: 0.5, g_middle: 0.5, g_receiver: 0.5,
-        barriers: &walls, lateral: &[], terrain_edges: &[], dz_cap: None,
+        barriers: &walls, lateral: &[], terrain_edges: &[], footprints: &[], dz_cap: None,
         atm: Atmosphere::iso_reference(), ground_method: GroundMethod::General,
     };
     let t96 = Iso1996.evaluate_general(&mk()).a_weighted_total();

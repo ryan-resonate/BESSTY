@@ -106,6 +106,7 @@ pub fn evaluate_with_barriers(
         barriers,
         lateral,
         terrain_edges: &[],
+        footprints: &[],
         dz_cap: dz_cap_db,
         atm,
         ground_method: ground::GroundMethod::General,

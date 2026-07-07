@@ -86,18 +86,21 @@ fn wall(a: [f64; 2], b: [f64; 2], top_z: f64) -> Obstacle {
     Obstacle::Wall { polyline: vec![a, b], base_z: vec![0.0, 0.0], height_agl: top_z }
 }
 
-// ── PENDING: building cases T11–T18 ──────────────────────────────────────────
-// These need the AROUND-THE-SIDE lateral path for a 2D footprint, which wraps
-// the taut string around BOTH corners of a side (a multi-edge lateral). The
-// single-edge lateral is TR-validated (T09 reproduces Dz = 7.21 exactly), and
-// the building OVER-TOP multi-edge is validated (T08 + T11's own top Dz), but
-// buildings currently emit single-edge-per-vertex laterals — which under-
-// estimate the detour (T11 needs the left-side Dz from Δz ≈ 4.43 m; the single
-// near corner gives 2.85 m, and even a two-corner taut string gives 4.11 m, so
-// the TR's plane-EL construction differs and isn't fully pinned from the text).
-// Deferred until the multi-corner lateral construction is nailed against the
-// figures. case_10's lateral component is likewise not yet TR-validated (its
-// over-top is). See docs / memory `solver-standalone`.
+/// A building footprint of the given plan corners, flat roof at `height` over
+/// z = 0 ground (TR building tables).
+fn building(footprint: Vec<[f64; 2]>, height: f64) -> Obstacle {
+    Obstacle::Building { footprint, base_z: 0.0, height_agl: height }
+}
+
+/// A TR scene with S/R positions overridden (the building cases move S and R).
+fn tr_scene_sr(s: [f64; 3], r: [f64; 3], g: f64, obstacles: Vec<Obstacle>) -> Scene {
+    let mut scene = tr_scene(Ground { default_g: g, regions: vec![] }, GroundMethod::General, obstacles);
+    scene.sources[0].position = s;
+    scene.sources[0].height_agl = s[2];
+    scene.receivers[0].position = r;
+    scene.receivers[0].height_agl = r[2];
+    scene
+}
 
 /// Solve and return the 63 Hz–8 kHz band levels (8 values) + A-weighted total.
 fn run(scene: &Scene) -> (Vec<f64>, f64) {
@@ -189,4 +192,19 @@ fn t09_short_barrier() {
         vec![wall([175.0, 50.0], [190.0, 10.0], 6.0)],
     );
     assert_tr(&scene, [36.99, 32.36, 29.72, 29.21, 27.84, 26.51, 21.46, 8.40], 32.93);
+}
+
+#[test]
+fn t11_cubic_building_receiver_low() {
+    // §6.2.12 — 10×10 m building 10 m tall at [55,65]×[5,15], S(50,10,1)→
+    // R(70,10,4), G=0.5. Over-top multi-edge (near+far wall) energy-combined
+    // with the two around-the-side multi-corner wraps; receiver deep in shadow.
+    // Table 31.
+    let scene = tr_scene_sr(
+        [50.0, 10.0, 1.0],
+        [70.0, 10.0, 4.0],
+        0.5,
+        vec![building(vec![[55.0, 5.0], [65.0, 5.0], [65.0, 15.0], [55.0, 15.0]], 10.0)],
+    );
+    assert_tr(&scene, [50.09, 44.62, 39.20, 35.75, 34.77, 33.79, 32.78, 31.28], 41.30);
 }

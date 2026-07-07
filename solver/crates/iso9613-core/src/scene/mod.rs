@@ -15,7 +15,7 @@ pub mod extent;
 
 use crate::iso9613::annex_d::{self, WtgRules};
 use crate::iso9613::atmosphere::Atmosphere as CoreAtmosphere;
-use crate::iso9613::barrier::path::DiffractionEdge;
+use crate::iso9613::barrier::path::{DiffractionEdge, FootprintLateral};
 use crate::iso9613::barrier::{LateralEdge, WallBarrier};
 use crate::iso9613::ground::GroundMethod;
 use crate::iso9613::meteorology::cmet_db;
@@ -455,10 +455,13 @@ impl Scene {
         Ok(system.unwrap_or(BandSystem::Octave))
     }
 
-    /// Decompose obstacles into solver primitives.
-    fn barriers(&self) -> (Vec<WallBarrier>, Vec<LateralEdge>) {
+    /// Decompose obstacles into solver primitives: over-top wall segments,
+    /// thin-wall lateral end edges, and building footprints (for multi-corner
+    /// around-the-side wraps).
+    fn barriers(&self) -> (Vec<WallBarrier>, Vec<LateralEdge>, Vec<FootprintLateral>) {
         let mut walls = Vec::new();
         let mut lateral = Vec::new();
+        let mut footprints = Vec::new();
         for ob in &self.obstacles {
             match ob {
                 Obstacle::Wall { polyline, base_z, height_agl } => {
@@ -481,9 +484,10 @@ impl Scene {
                 Obstacle::Building { footprint, base_z, height_agl } => {
                     // Each footprint edge is a wall (implicitly closed loop). A
                     // ray crossing the footprint hits two edges → multi-edge
-                    // over-the-roof diffraction. Every vertex is a candidate
-                    // lateral (around-the-side) edge; the path engine's §5.2
-                    // best-per-side selection reduces them to ≤ 2.
+                    // over-the-roof diffraction. The around-the-side diffraction
+                    // wraps the taut string around the corners of each side —
+                    // emitted once as a FootprintLateral (NOT per-vertex single
+                    // edges, which underestimate the detour; ISO/TR 17534-3 T11).
                     let n = footprint.len();
                     for i in 0..n {
                         let a = footprint[i];
@@ -492,14 +496,16 @@ impl Scene {
                             a_e: a[0], a_n: a[1], b_e: b[0], b_n: b[1],
                             base_z_a: *base_z, base_z_b: *base_z, height_agl: *height_agl,
                         });
-                        lateral.push(LateralEdge {
-                            e: a[0], n: a[1], base_z: *base_z, top_z: base_z + height_agl,
-                        });
                     }
+                    footprints.push(FootprintLateral {
+                        verts: footprint.iter().map(|p| (p[0], p[1])).collect(),
+                        base_z: *base_z,
+                        top_z: base_z + height_agl,
+                    });
                 }
             }
         }
-        (walls, lateral)
+        (walls, lateral, footprints)
     }
 }
 
@@ -664,7 +670,7 @@ fn region_ground_factors(
 pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
     let system = scene.validate()?;
     let atm: CoreAtmosphere = scene.atmosphere.into();
-    let (walls, lateral) = scene.barriers();
+    let (walls, lateral, footprints) = scene.barriers();
     let g = scene.ground.default_g;
 
     // Edition dispatch (once) — general sources score through the standard's
@@ -710,6 +716,7 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                         barriers: &walls,
                         lateral: &lateral,
                         terrain_edges: &terrain_edges,
+                        footprints: &footprints,
                         dz_cap: scene.settings.dz_cap_db,
                         atm,
                         ground_method: scene.settings.ground_method,
@@ -748,10 +755,11 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                             h_s: src.height_agl, h_r: rx.height_agl,
                             g_source, g_middle, g_receiver,
                             barriers: &walls, lateral: &lateral,
-                            // Terrain screening of the reflected ray (a distinct
-                            // image→R profile) is deferred; direct-path terrain
-                            // dominates in practice.
+                            // Terrain screening + building wraps of the reflected
+                            // ray (a distinct image→R profile) are deferred; the
+                            // direct path dominates in practice.
                             terrain_edges: &[],
+                            footprints: &[],
                             dz_cap: scene.settings.dz_cap_db, atm,
                             ground_method: scene.settings.ground_method,
                         });
@@ -802,6 +810,7 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                         g_source: gs, g_middle: gm, g_receiver: gr,
                         barriers: &walls, lateral: &lateral,
                         terrain_edges: &terrain_edges,
+                        footprints: &footprints,
                         dz_cap: scene.settings.dz_cap_db, atm,
                         ground_method: scene.settings.ground_method,
                     });

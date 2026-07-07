@@ -114,6 +114,161 @@ pub fn lateral_path_lengths(source: Vec3, receiver: Vec3, edge: &LateralEdge) ->
     }
 }
 
+/// A closed building footprint that diffracts sound around its SIDES: the
+/// around-the-side (lateral) path wraps the taut string around the run of
+/// vertical corner-edges on each side (a MULTI-edge lateral, unlike a thin
+/// wall's single-edge ends). Plan `verts` (implicitly closed) plus the absolute
+/// base/top elevation of the vertical faces.
+#[derive(Clone, Debug)]
+pub struct FootprintLateral {
+    pub verts: Vec<(f64, f64)>,
+    pub base_z: f64,
+    pub top_z: f64,
+}
+
+/// The two around-the-side lateral paths (one per side) for a building
+/// footprint blocking the direct ray. Each is the shortest taut string wrapping
+/// the footprint corners on that side, in 3-D (heights on the vertical edges set
+/// by unfolding). Empty when the plan line misses the footprint (no shadow).
+///
+/// Construction: work in `(t, d)` coordinates — `t` the along-`SR` distance,
+/// `d` the signed perpendicular plan offset. The corners on one side (same sign
+/// of `d`) plus `S`(t=0,d=0) and `R`(t=dp,d=0) have an outer convex chain (the
+/// taut string) given by the monotone-hull that bulges away from the `SR` line;
+/// its interior vertices are the active diffracting corners. This reproduces
+/// ISO/TR 17534-3's "shortest polygon lines around these edges" (§5.2) and, with
+/// the multi-edge `C3` from `e_total`, matches the T11 step values.
+pub fn footprint_lateral_paths(
+    source: Vec3,
+    receiver: Vec3,
+    fp: &FootprintLateral,
+) -> Vec<PathLengths> {
+    let (dx, dy) = (receiver.e - source.e, receiver.n - source.n);
+    let dp = (dx * dx + dy * dy).sqrt();
+    if dp < 1e-9 || fp.verts.len() < 3 {
+        return Vec::new();
+    }
+    let (ux, uy) = (dx / dp, dy / dp); // unit along SR (plan)
+
+    // (t, d) for each corner: t along SR, d signed perpendicular offset.
+    let td: Vec<(f64, f64)> = fp
+        .verts
+        .iter()
+        .map(|&(e, n)| {
+            let (rx, ry) = (e - source.e, n - source.n);
+            (rx * ux + ry * uy, ux * ry - uy * rx) // (along, cross)
+        })
+        .collect();
+
+    let mut out = Vec::new();
+    for side in [1.0_f64, -1.0] {
+        // Corners strictly on this side, in the SR plane, plus the S/R anchors.
+        let mut pts: Vec<(f64, f64, usize)> = vec![(0.0, 0.0, usize::MAX)];
+        for (i, &(t, d)) in td.iter().enumerate() {
+            if d * side > 1e-9 {
+                pts.push((t, d * side, i)); // fold to a common (positive-d) side
+            }
+        }
+        pts.push((dp, 0.0, usize::MAX));
+        if pts.len() < 3 {
+            continue; // no corner shadows this side
+        }
+        pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+        // Upper hull in (t, d): the taut string over the side's corners.
+        let mut hull: Vec<(f64, f64, usize)> = Vec::new();
+        for &p in &pts {
+            while hull.len() >= 2 {
+                let a = hull[hull.len() - 2];
+                let b = hull[hull.len() - 1];
+                let cross = (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0);
+                if cross >= 0.0 {
+                    hull.pop(); // b is below the a→p line → not on the upper hull
+                } else {
+                    break;
+                }
+            }
+            hull.push(p);
+        }
+        // Active corners = interior hull vertices (exclude the S/R anchors).
+        let corners: Vec<usize> = hull
+            .iter()
+            .filter(|p| p.2 != usize::MAX)
+            .map(|p| p.2)
+            .collect();
+        if corners.is_empty() {
+            continue;
+        }
+        if let Some(path) = wrap_path_lengths(source, receiver, &corners, fp) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// 3-D taut-string path lengths through an ordered run of footprint corners,
+/// with each diffraction height set by unfolding the plan polyline and clamping
+/// to the vertical face `[base_z, top_z]`.
+fn wrap_path_lengths(
+    source: Vec3,
+    receiver: Vec3,
+    corners: &[usize],
+    fp: &FootprintLateral,
+) -> Option<PathLengths> {
+    // Plan polyline S → corners → R and its cumulative plan length.
+    let mut plan: Vec<(f64, f64)> = Vec::with_capacity(corners.len() + 2);
+    plan.push((source.e, source.n));
+    for &i in corners {
+        plan.push(fp.verts[i]);
+    }
+    plan.push((receiver.e, receiver.n));
+
+    let mut cum = vec![0.0f64; plan.len()];
+    for k in 1..plan.len() {
+        let (ax, ay) = plan[k - 1];
+        let (bx, by) = plan[k];
+        cum[k] = cum[k - 1] + ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
+    }
+    let total = *cum.last().unwrap();
+    if total < 1e-9 {
+        return None;
+    }
+    // Unfolded height along the path (linear S.z → R.z), clamped to the face.
+    let height_at = |k: usize| {
+        let h = source.z + (receiver.z - source.z) * cum[k] / total;
+        clamp_height(h, fp.base_z, fp.top_z)
+    };
+
+    // 3-D node positions (plan + unfolded height).
+    let node = |k: usize| -> (f64, f64, f64) {
+        let (x, y) = plan[k];
+        (x, y, height_at(k))
+    };
+    let dist3 = |a: (f64, f64, f64), b: (f64, f64, f64)| {
+        ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2) + (a.2 - b.2).powi(2)).sqrt()
+    };
+
+    let n = plan.len();
+    let d_ss = dist3(node(0), node(1));
+    let d_sr = dist3(node(n - 2), node(n - 1));
+    let mut e_total = 0.0;
+    for k in 1..n - 2 {
+        e_total += dist3(node(k), node(k + 1));
+    }
+    let d_direct = {
+        let (sx, sy, sz) = (source.e, source.n, source.z);
+        let (rx, ry, rz) = (receiver.e, receiver.n, receiver.z);
+        ((rx - sx).powi(2) + (ry - sy).powi(2) + (rz - sz).powi(2)).sqrt()
+    };
+    Some(PathLengths {
+        d_direct,
+        d_ss,
+        d_sr,
+        e_total,
+        delta_z: d_ss + d_sr + e_total - d_direct,
+    })
+}
+
 /// Project `barriers` into the vertical plane through `source` and `receiver`,
 /// returning candidate diffracting edges sorted by horizontal distance from
 /// the source.
@@ -332,6 +487,7 @@ pub fn build_geometry(
     barriers: &[WallBarrier],
     lateral_edges: &[LateralEdge],
     terrain_edges: &[DiffractionEdge],
+    footprints: &[FootprintLateral],
 ) -> Option<BarrierGeometry> {
     let mut candidates = project_walls(source, receiver, barriers);
     candidates.extend_from_slice(terrain_edges);
@@ -348,7 +504,12 @@ pub fn build_geometry(
     }
 
     let over_top = path_lengths(s_in_plane, r_in_plane, &active);
-    let lateral = select_lateral(source, receiver, lateral_edges);
+    // Around-the-side paths: thin-wall ends (single-edge, best per side) plus
+    // each blocking building's two multi-corner wraps.
+    let mut lateral = select_lateral(source, receiver, lateral_edges);
+    for fp in footprints {
+        lateral.extend(footprint_lateral_paths(source, receiver, fp));
+    }
     Some(BarrierGeometry { over_top, lateral })
 }
 
@@ -439,6 +600,30 @@ mod tests {
         let (s, r) = sr_plane(src, rcv);
         let active = upper_hull_select(s, r, &candidates);
         assert_eq!(active.len(), 0);
+    }
+
+    #[test]
+    fn building_wrap_is_two_corners_matching_tr_t11() {
+        // ISO/TR 17534-3 T11: 10×10 building at [55,65]×[5,15] tall 10, between
+        // S(50,10,1) and R(70,10,4). Each side wraps BOTH corners of that side.
+        let fp = FootprintLateral {
+            verts: vec![(55.0, 5.0), (65.0, 5.0), (65.0, 15.0), (55.0, 15.0)],
+            base_z: 0.0,
+            top_z: 10.0,
+        };
+        let paths = footprint_lateral_paths(Vec3::new(50.0, 10.0, 1.0), Vec3::new(70.0, 10.0, 4.0), &fp);
+        assert_eq!(paths.len(), 2, "one wrap per side");
+        for p in &paths {
+            // Multi-edge: the e-segment between the two corners ≈ 10 m.
+            assert_relative_eq!(p.e_total, 10.08, epsilon = 0.1);
+            assert_relative_eq!(p.delta_z, 4.10, epsilon = 0.05);
+            // With the multi-edge C3 the 63 Hz lateral Dz reproduces TR's 12.89.
+            let lambda = 340.0 / 63.0957;
+            let dz = super::super::diffraction::dz_uncapped_lateral(
+                p, lambda, crate::iso9613::barrier::BarrierVariant::V1996,
+            );
+            assert_relative_eq!(dz, 12.89, epsilon = 0.05);
+        }
     }
 
     #[test]
