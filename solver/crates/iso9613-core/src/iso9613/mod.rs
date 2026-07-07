@@ -2,6 +2,7 @@
 //! `standards::Iso2024`; the 1996 edition lands in Phase 2 — see
 //! `docs/iso9613-solver-standalone-plan.md`.
 
+pub mod annex_b;
 pub mod annex_d;
 pub mod atmosphere;
 pub mod barrier;

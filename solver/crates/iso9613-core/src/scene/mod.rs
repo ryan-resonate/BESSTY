@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod extent;
 
+use crate::iso9613::annex_b;
 use crate::iso9613::annex_d::{self, WtgRules};
 use crate::iso9613::atmosphere::Atmosphere as CoreAtmosphere;
 use crate::iso9613::barrier::path::{DiffractionEdge, FootprintLateral};
@@ -95,6 +96,10 @@ pub enum SourceKind {
     #[default]
     General,
     WindTurbine { rotor_diameter_m: f64, apply_concave: bool },
+    /// A chimney / upward-facing open pipe (ISO 9613-2:2024 Annex B). Modelled as
+    /// a point source at the opening centre with the direction-dependent
+    /// directivity `Dc` from Table B.1 (needs the opening radius for `ka`).
+    ChimneyStack { opening_radius_m: f64 },
 }
 
 /// Plan-view geometry of an extended source.
@@ -818,6 +823,29 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                         &lw, s, r, src.height_agl, rx.height_agl, g, &walls, &lateral,
                         WtgRules::default(), *apply_concave, *rotor_diameter_m, atm,
                     ),
+                    SourceKind::ChimneyStack { opening_radius_m } => {
+                        // Annex B directivity Dc (added to LW per band) for the
+                        // curved-ray direction to this receiver.
+                        let dpp = ((r.e - s.e).powi(2) + (r.n - s.n).powi(2)).sqrt();
+                        let d3 = r.sub(s).length();
+                        let theta = annex_b::emission_angle(dpp, d3, s.z, r.z);
+                        let dc_lw = BandSpectrum::from_iter(
+                            system,
+                            system.centres_exact().iter().zip(src.lw.iter()).map(|(&f, &x)| {
+                                let ka = annex_b::ka(*opening_radius_m, f, atm.temperature_c);
+                                x + annex_b::chimney_dc(theta, ka)
+                            }),
+                        );
+                        model.evaluate_general(&GeneralEval {
+                            lw: &dc_lw, source: s, receiver: r,
+                            h_s: src.height_agl, h_r: rx.height_agl,
+                            g_source, g_middle, g_receiver,
+                            barriers: &walls, lateral: &lateral,
+                            terrain_edges: &terrain_edges, footprints: &footprints,
+                            dz_cap: scene.settings.dz_cap_db, atm,
+                            ground_method: scene.settings.ground_method, hm_override,
+                        })
+                    }
                 };
 
                 // Annex A Amisc (foliage / industrial / housing) on the direct
