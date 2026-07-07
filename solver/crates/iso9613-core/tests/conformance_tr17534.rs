@@ -83,7 +83,18 @@ fn t08_ground() -> Ground {
 /// endpoints' z is the absolute top; the ground under this scene is flat at 0,
 /// so `height_agl = top_z`.
 fn wall(a: [f64; 2], b: [f64; 2], top_z: f64) -> Obstacle {
-    Obstacle::Wall { polyline: vec![a, b], base_z: vec![0.0, 0.0], height_agl: top_z }
+    Obstacle::Wall { polyline: vec![a, b], base_z: vec![0.0, 0.0], height_agl: top_z, top_z: None }
+}
+
+/// A thin screen with an explicit ABSOLUTE crest elevation per endpoint (for a
+/// barrier over varying terrain, where the crest height above ground differs).
+fn wall_crest(a: [f64; 2], b: [f64; 2], base: [f64; 2], top: [f64; 2]) -> Obstacle {
+    Obstacle::Wall {
+        polyline: vec![a, b],
+        base_z: vec![base[0], base[1]],
+        height_agl: 0.0,
+        top_z: Some(vec![top[0], top[1]]),
+    }
 }
 
 /// A building footprint of the given plan corners, flat roof at `height` over
@@ -182,6 +193,35 @@ fn t06_varying_ground_heights_general() {
     scene.receivers[0].position = [200.0, 50.0, 14.0]; // abs z on the plateau
     scene.receivers[0].height_agl = 4.0; // above local (plateau) ground
     assert_tr(&scene, [39.88, 35.65, 29.70, 29.24, 34.82, 35.83, 33.13, 22.68], 40.59);
+}
+
+#[test]
+fn t10_varying_heights_short_barrier() {
+    // §6.2.11 — the T06 terrain (plateau lifting R's ground to z=10) plus a short
+    // screen whose crest is at absolute z=17 over the flat end (175,50) and z=14
+    // over the plateau end (190,10) — a crest that varies in height above ground
+    // (17 vs 4), needing the explicit `top_z`. Table 27.
+    let mut scene = tr_scene(
+        t08_ground(),
+        GroundMethod::General,
+        vec![wall_crest([175.0, 50.0], [190.0, 10.0], [0.0, 10.0], [17.0, 14.0])],
+    );
+    scene.sources[0].position = [10.0, 10.0, 1.0];
+    scene.sources[0].height_agl = 1.0;
+    scene.receivers[0].position = [200.0, 50.0, 14.0];
+    scene.receivers[0].height_agl = 4.0;
+    let (bands, total) = run(&scene);
+    // The A-weighted total (the engineering result) matches to ±0.05. Per-band
+    // the reference is printed to 1 dp AND the TR neglects the far end edge2
+    // ("--" in Table 27) which the engine keeps (~0.01 energy) — the same
+    // factor-8 lateral-neglect subtlety that KEEPS T09's identical-position
+    // edge2, so no ev/Δz threshold reproduces both. Net: 63 Hz reads +0.12,
+    // the rest ≤0.08. Band tolerance 0.15 documents that residual.
+    let refb = [36.3, 31.2, 28.2, 25.8, 24.1, 22.1, 16.6, 4.0];
+    for (i, e) in refb.iter().enumerate() {
+        assert_relative_eq!(bands[i], *e, epsilon = 0.15);
+    }
+    assert_relative_eq!(total, 29.30, epsilon = 0.05);
 }
 
 // PENDING T07 (§6.2.8): the simplified method §7.3.2 over the SAME terrain needs

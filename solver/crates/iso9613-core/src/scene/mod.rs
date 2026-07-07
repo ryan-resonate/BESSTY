@@ -151,10 +151,18 @@ pub enum Obstacle {
     /// under each vertex and a constant height above ground. Decomposed into
     /// terrain-following `WallBarrier` segments; the two polyline ENDS emit
     /// vertical `LateralEdge`s for around-the-end diffraction (§7.4.3).
+    ///
+    /// The top follows the terrain at constant `height_agl` (`base_z[i] +
+    /// height_agl`) UNLESS `top_z` is given — an explicit absolute top
+    /// elevation per vertex (a sloped / stepped crest, e.g. a screen whose
+    /// crest is level while the ground beneath it rises). When present, `top_z`
+    /// wins and `height_agl` is ignored for the crest.
     Wall {
         polyline: Vec<[f64; 2]>,
         base_z: Vec<f64>,
         height_agl: f64,
+        #[serde(default)]
+        top_z: Option<Vec<f64>>,
     },
     /// A 2D building footprint extruded to a flat roof: a closed plan-view
     /// polygon (implicitly closed — the last vertex joins the first), a single
@@ -424,7 +432,7 @@ impl Scene {
         }
         for (i, ob) in self.obstacles.iter().enumerate() {
             match ob {
-                Obstacle::Wall { polyline, base_z, height_agl } => {
+                Obstacle::Wall { polyline, base_z, height_agl, top_z } => {
                     if polyline.len() < 2 {
                         return Err(SceneError::DegenerateWall { index: i, reason: "polyline needs ≥ 2 vertices" });
                     }
@@ -433,6 +441,14 @@ impl Scene {
                     }
                     if !height_agl.is_finite() || *height_agl < 0.0 {
                         return Err(SceneError::DegenerateWall { index: i, reason: "height_agl must be finite and ≥ 0" });
+                    }
+                    if let Some(tz) = top_z {
+                        if tz.len() != polyline.len() {
+                            return Err(SceneError::DegenerateWall { index: i, reason: "top_z length must match polyline" });
+                        }
+                        if !all_finite(tz.iter().copied()) {
+                            return Err(SceneError::NonFinite { entity: format!("obstacle {i}") });
+                        }
                     }
                     if !all_finite(polyline.iter().flat_map(|p| p.iter().copied()).chain(base_z.iter().copied())) {
                         return Err(SceneError::NonFinite { entity: format!("obstacle {i}") });
@@ -464,20 +480,27 @@ impl Scene {
         let mut footprints = Vec::new();
         for ob in &self.obstacles {
             match ob {
-                Obstacle::Wall { polyline, base_z, height_agl } => {
+                Obstacle::Wall { polyline, base_z, height_agl, top_z } => {
+                    // Absolute crest per vertex: explicit `top_z`, else the
+                    // terrain-following `base_z + height_agl`.
+                    let top = |i: usize| top_z.as_ref().map_or(base_z[i] + height_agl, |tz| tz[i]);
                     for i in 0..polyline.len() - 1 {
+                        // The over-top diffraction only needs the CREST; encode a
+                        // sloped crest as a zero-height segment sitting at `top`
+                        // (WallBarrier's top = base + height, interpolated).
                         walls.push(WallBarrier {
                             a_e: polyline[i][0], a_n: polyline[i][1],
                             b_e: polyline[i + 1][0], b_n: polyline[i + 1][1],
-                            base_z_a: base_z[i], base_z_b: base_z[i + 1],
-                            height_agl: *height_agl,
+                            base_z_a: top(i), base_z_b: top(i + 1),
+                            height_agl: 0.0,
                         });
                     }
-                    // Finite screens diffract around their two ends (§7.4.3).
+                    // Finite screens diffract around their two ends (§7.4.3);
+                    // the vertical edge spans the real ground base to the crest.
                     for v in [0, polyline.len() - 1] {
                         lateral.push(LateralEdge {
                             e: polyline[v][0], n: polyline[v][1],
-                            base_z: base_z[v], top_z: base_z[v] + height_agl,
+                            base_z: base_z[v], top_z: top(v),
                         });
                     }
                 }
@@ -943,6 +966,7 @@ mod tests {
             polyline: vec![[100.0, -50.0], [100.0, 50.0]],
             base_z: vec![0.0, 0.0],
             height_agl: 8.0,
+            top_z: None,
         });
         let mut s96 = base.clone();
         s96.standard = Standard::Iso9613_2_1996;
@@ -998,6 +1022,7 @@ mod tests {
             polyline: vec![[100.0, -50.0], [100.0, 50.0]],
             base_z: vec![0.0, 0.0],
             height_agl: 8.0,
+            top_z: None,
         });
         let with_wall = solve(&scene).unwrap();
         let no_wall = solve(&basic_scene()).unwrap();
@@ -1026,6 +1051,7 @@ mod tests {
             polyline: vec![[100.0, -50.0], [100.0, 50.0]],
             base_z: vec![0.0, 0.0],
             height_agl: 8.0,
+            top_z: None,
         });
         // A grid of receivers so the fan-out actually has work to split.
         scene.receivers = (0..200)
