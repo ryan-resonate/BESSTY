@@ -7,12 +7,10 @@
 //! The `Dz` formula bracket and `Kmet` form are edition-dependent — see
 //! [`BarrierVariant`] and the `diffraction` module.
 //!
-//! NOTE (Phase 1): lateral-path *selection* (ISO/TR 17534-3 §5.2 best-per-side,
-//! ≤ 2 paths, factor-8 neglect) is deferred to Phase 3, where buildings
-//! introduce the multi-obstacle geometry that carries the per-edge side/offset
-//! it needs. For a single finite wall the two supplied end edges already ARE
-//! the best left/right paths, so summing them is correct today; the caller
-//! currently supplies at most a single wall's ends.
+//! Lateral-path selection (ISO/TR 17534-3 §5.2: the most-transmitting edge per
+//! side of the S–R line, ≤ 2 paths, with the factor-8 neglect) happens in the
+//! path engine (`path::build_geometry`); `abar_spectrum` here just combines the
+//! ≤ 2 selected laterals with the over-top path per Eq 25.
 
 pub mod diffraction;
 pub mod path;

@@ -328,9 +328,9 @@ impl Scene {
                 Obstacle::Building { footprint, base_z, height_agl } => {
                     // Each footprint edge is a wall (implicitly closed loop). A
                     // ray crossing the footprint hits two edges → multi-edge
-                    // over-the-roof diffraction. Around-building lateral
-                    // diffraction needs the Fix-4 best-per-side selection (TR
-                    // §5.2) and is a later increment — no lateral edges yet.
+                    // over-the-roof diffraction. Every vertex is a candidate
+                    // lateral (around-the-side) edge; the path engine's §5.2
+                    // best-per-side selection reduces them to ≤ 2.
                     let n = footprint.len();
                     for i in 0..n {
                         let a = footprint[i];
@@ -338,6 +338,9 @@ impl Scene {
                         walls.push(WallBarrier {
                             a_e: a[0], a_n: a[1], b_e: b[0], b_n: b[1],
                             base_z_a: *base_z, base_z_b: *base_z, height_agl: *height_agl,
+                        });
+                        lateral.push(LateralEdge {
+                            e: a[0], n: a[1], base_z: *base_z, top_z: base_z + height_agl,
                         });
                     }
                 }

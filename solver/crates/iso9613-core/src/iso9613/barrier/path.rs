@@ -267,8 +267,8 @@ pub fn path_lengths(
 }
 
 /// The diffraction geometry of one source→receiver path, ready for a standard
-/// evaluator to score: the active over-top rubber-band path plus each candidate
-/// around-the-end (lateral) path. This is the output of the "path engine" —
+/// evaluator to score: the active over-top rubber-band path plus the selected
+/// around-the-end (lateral) paths. This is the output of the "path engine" —
 /// pure geometry, edition-independent (per ISO/TR 17534-3 §5.2 both editions
 /// use this vertical-plane construction). `None` from `build_geometry` means
 /// the line of sight clears every obstacle top (no screening → `Abar = 0`).
@@ -276,8 +276,59 @@ pub fn path_lengths(
 pub struct BarrierGeometry {
     /// Over-top path lengths (through the active upper-hull edges).
     pub over_top: PathLengths,
-    /// One lateral path per supplied end edge (§7.4.3).
+    /// Up to two lateral paths — the most‑transmitting one on each side of the
+    /// source→receiver line (ISO/TR 17534-3 §5.2), after the factor‑8 neglect.
     pub lateral: Vec<PathLengths>,
+}
+
+/// Perpendicular distance of point `p` from the line through `a` and `b` in the
+/// SR vertical plane (`(x, z)` coordinates).
+fn perp_distance(a: DiffractionEdge, b: DiffractionEdge, p: DiffractionEdge) -> f64 {
+    let (abx, abz) = (b.x - a.x, b.z - a.z);
+    let (apx, apz) = (p.x - a.x, p.z - a.z);
+    let len = (abx * abx + abz * abz).sqrt();
+    if len < 1e-9 { 0.0 } else { (abx * apz - abz * apx).abs() / len }
+}
+
+/// Signed side (via the plan-view cross product) and perpendicular plan offset
+/// of an edge from the source→receiver line.
+fn plan_side_offset(source: Vec3, receiver: Vec3, e: f64, n: f64) -> (f64, f64) {
+    let (dx, dy) = (receiver.e - source.e, receiver.n - source.n);
+    let (ex, ey) = (e - source.e, n - source.n);
+    let cross = dx * ey - dy * ex;
+    let len = (dx * dx + dy * dy).sqrt();
+    let offset = if len < 1e-9 { 0.0 } else { cross.abs() / len };
+    (cross, offset)
+}
+
+/// Select the lateral paths per ISO/TR 17534-3 §5.2: at most two — the
+/// most‑transmitting (smallest `Δz`) edge on each side of the S–R line — and
+/// neglect any whose plan offset from that line exceeds `8×` the over‑top
+/// ribbon's `ev_offset` (its max edge height above the direct line).
+fn select_lateral(
+    source: Vec3,
+    receiver: Vec3,
+    edges: &[LateralEdge],
+    ev_offset: f64,
+) -> Vec<PathLengths> {
+    let mut best_left: Option<PathLengths> = None;
+    let mut best_right: Option<PathLengths> = None;
+    for edge in edges {
+        let (side, offset) = plan_side_offset(source, receiver, edge.e, edge.n);
+        if ev_offset > 1e-9 && offset > 8.0 * ev_offset {
+            continue; // factor-8 neglect
+        }
+        let ll = lateral_path_lengths(source, receiver, edge);
+        let slot = if side >= 0.0 { &mut best_left } else { &mut best_right };
+        let keep = match slot {
+            Some(cur) => ll.delta_z < cur.delta_z,
+            None => true,
+        };
+        if keep {
+            *slot = Some(ll);
+        }
+    }
+    best_left.into_iter().chain(best_right).collect()
 }
 
 /// Build the diffraction geometry for a source→receiver pair. Returns `None`
@@ -301,10 +352,13 @@ pub fn build_geometry(
     }
 
     let over_top = path_lengths(s_in_plane, r_in_plane, &active);
-    let lateral = lateral_edges
+    // The over-top ribbon's max edge height above the direct S–R line, for the
+    // §5.2 factor-8 lateral‑neglect comparison.
+    let ev_offset = active
         .iter()
-        .map(|edge| lateral_path_lengths(source, receiver, edge))
-        .collect();
+        .map(|e| perp_distance(s_in_plane, r_in_plane, *e))
+        .fold(0.0_f64, f64::max);
+    let lateral = select_lateral(source, receiver, lateral_edges, ev_offset);
     Some(BarrierGeometry { over_top, lateral })
 }
 

@@ -42,17 +42,26 @@ fn box_building() -> Obstacle {
 }
 
 #[test]
-fn building_screens_over_the_roof() {
+fn building_screens_over_top_and_around_the_sides() {
     let with = solve(&scene_with(vec![box_building()])).unwrap();
     let without = solve(&scene_with(vec![])).unwrap();
 
     let t_with = with.per_receiver[0].total_dba.unwrap();
     let t_without = without.per_receiver[0].total_dba.unwrap();
 
-    // Independently computed (oracle.py): 36.98 dB(A), a 16.36 dB drop.
-    assert_relative_eq!(t_with, 36.98, epsilon = 0.3);
+    // Independently computed (oracle.py): over-top multi-edge diffraction
+    // combined (Eq 25) with the best-per-side lateral paths (the near corners,
+    // Δz = 3.69) → 38.54 dB(A), a 14.79 dB drop. (Over-top alone would be
+    // 36.98 dB(A); the sides leak ~1.6 dB back in.)
+    assert_relative_eq!(t_with, 38.54, epsilon = 0.3);
     assert_relative_eq!(t_without, 53.33, epsilon = 0.3);
-    assert_relative_eq!(t_without - t_with, 16.36, epsilon = 0.3);
+
+    // Per-band Lp (oracle.py) — pins down the lateral selection + Eq-25 combine.
+    let expected = [48.66, 47.70, 46.38, 41.75, 38.46, 35.41, 33.67, 30.13, 24.36, 11.21];
+    let bands = &with.per_receiver[0].per_source[0].bands;
+    for (i, exp) in expected.iter().enumerate() {
+        assert_relative_eq!(bands[i], *exp, epsilon = 0.15);
+    }
 }
 
 #[test]
