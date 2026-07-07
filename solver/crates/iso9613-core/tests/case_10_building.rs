@@ -26,6 +26,7 @@ fn scene_with(obstacles: Vec<Obstacle>) -> Scene {
             height_agl: 2.0,
             lw: vec![100.0; 10],
         }],
+        extended_sources: vec![],
         receivers: vec![Receiver { id: "r".into(), position: [120.0, 0.0, 2.0], height_agl: 2.0 }],
         obstacles,
         reflectors: vec![],

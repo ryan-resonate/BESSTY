@@ -30,6 +30,7 @@ fn two_zone_scene() -> Scene {
             id: "s".into(), kind: SourceKind::General,
             position: [0.0, 0.0, 2.0], height_agl: 2.0, lw: vec![100.0; 10],
         }],
+        extended_sources: vec![],
         receivers: vec![Receiver { id: "r".into(), position: [200.0, 0.0, 2.0], height_agl: 2.0 }],
         obstacles: vec![],
         reflectors: vec![],

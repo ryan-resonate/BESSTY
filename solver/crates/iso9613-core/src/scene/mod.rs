@@ -11,6 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod extent;
+
 use crate::iso9613::annex_d::{self, WtgRules};
 use crate::iso9613::atmosphere::Atmosphere as CoreAtmosphere;
 use crate::iso9613::barrier::{LateralEdge, WallBarrier};
@@ -84,11 +86,37 @@ impl Default for Ground {
     fn default() -> Self { Self { default_g: 0.5, regions: Vec::new() } }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SourceKind {
+    #[default]
     General,
     WindTurbine { rotor_diameter_m: f64, apply_concave: bool },
+}
+
+/// Plan-view geometry of an extended source.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ExtentGeometry {
+    /// A polyline (open) — a line source.
+    Line { vertices: Vec<[f64; 2]> },
+    /// A closed polygon — an area source.
+    Area { polygon: Vec<[f64; 2]> },
+}
+
+/// A line or area source: subdivided per receiver into point sub-sources (§4,
+/// raster factor k = 0.5), each carrying its share of `lw` (the TOTAL sound
+/// power of the whole extent). `z` is the absolute source-plane elevation and
+/// `height_agl` the height above local ground (both shared by all sub-sources).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExtendedSource {
+    pub id: String,
+    #[serde(default)]
+    pub kind: SourceKind,
+    pub geometry: ExtentGeometry,
+    pub z: f64,
+    pub height_agl: f64,
+    pub lw: Vec<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -177,6 +205,8 @@ pub struct Scene {
     pub atmosphere: Atmosphere,
     pub ground: Ground,
     pub sources: Vec<Source>,
+    #[serde(default)]
+    pub extended_sources: Vec<ExtendedSource>,
     pub receivers: Vec<Receiver>,
     pub obstacles: Vec<Obstacle>,
     #[serde(default)]
@@ -275,6 +305,28 @@ impl Scene {
             }
             let bs = band_system_for(src.lw.len())
                 .ok_or(SceneError::BadLwLength { source_id: src.id.clone(), len: src.lw.len() })?;
+            match system {
+                None => system = Some(bs),
+                Some(prev) if prev != bs => return Err(SceneError::MixedBandSystems),
+                _ => {}
+            }
+        }
+        for ext in &self.extended_sources {
+            let verts: &[[f64; 2]] = match &ext.geometry {
+                ExtentGeometry::Line { vertices } => vertices,
+                ExtentGeometry::Area { polygon } => polygon,
+            };
+            let min_v = if matches!(ext.geometry, ExtentGeometry::Area { .. }) { 3 } else { 2 };
+            if verts.len() < min_v {
+                return Err(SceneError::BadLwLength { source_id: ext.id.clone(), len: verts.len() });
+            }
+            if !all_finite(verts.iter().flat_map(|p| p.iter().copied()).chain([ext.z, ext.height_agl]))
+                || !all_finite(ext.lw.iter().copied())
+            {
+                return Err(SceneError::NonFinite { entity: format!("extended source '{}'", ext.id) });
+            }
+            let bs = band_system_for(ext.lw.len())
+                .ok_or(SceneError::BadLwLength { source_id: ext.id.clone(), len: ext.lw.len() })?;
             match system {
                 None => system = Some(bs),
                 Some(prev) if prev != bs => return Err(SceneError::MixedBandSystems),
@@ -532,6 +584,42 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                 });
             }
 
+            // Extended (line / area) sources: subdivide per this receiver into
+            // point sub-sources and energy-sum their contributions (§4).
+            let n = system.n_bands();
+            for ext in &scene.extended_sources {
+                let subs = match &ext.geometry {
+                    ExtentGeometry::Line { vertices } => extent::subdivide_line(vertices, [r.e, r.n]),
+                    ExtentGeometry::Area { polygon } => extent::subdivide_area(polygon, [r.e, r.n]),
+                };
+                let mut acc = vec![f64::NEG_INFINITY; n];
+                for (pos, lw_off) in subs {
+                    let ss = Vec3::new(pos[0], pos[1], ext.z);
+                    let lw_sub = BandSpectrum::from_iter(system, ext.lw.iter().map(|&x| x + lw_off));
+                    let (gs, gm, gr) = if scene.ground.regions.is_empty() {
+                        (g, g, g)
+                    } else {
+                        region_ground_factors([ss.e, ss.n], [r.e, r.n], ext.height_agl, rx.height_agl, &scene.ground.regions, g)
+                    };
+                    let lp = model.evaluate_general(&GeneralEval {
+                        lw: &lw_sub, source: ss, receiver: r,
+                        h_s: ext.height_agl, h_r: rx.height_agl,
+                        g_source: gs, g_middle: gm, g_receiver: gr,
+                        barriers: &walls, lateral: &lateral,
+                        dz_cap: scene.settings.dz_cap_db, atm,
+                        ground_method: scene.settings.ground_method,
+                    });
+                    let dp = ((r.e - ss.e).powi(2) + (r.n - ss.n).powi(2)).sqrt();
+                    let cmet = cmet_db(scene.settings.c0_db, ext.height_agl, rx.height_agl, dp);
+                    for (a, &b) in acc.iter_mut().zip(lp.bands.iter()) {
+                        *a = 10.0 * (10f64.powf(0.1 * *a) + 10f64.powf(0.1 * (b - cmet))).log10();
+                    }
+                }
+                if acc.iter().any(|v| v.is_finite()) {
+                    per_source.push(SourceContribution { source_id: ext.id.clone(), bands: acc });
+                }
+            }
+
             // Energy-sum per band across sources, then A-weight.
             let total_dba = if per_source.is_empty() {
                 None
@@ -575,6 +663,7 @@ mod tests {
                 height_agl: 5.0,
                 lw: vec![100.0; 10],
             }],
+            extended_sources: vec![],
             receivers: vec![Receiver { id: "r1".into(), position: [200.0, 0.0, 1.5], height_agl: 1.5 }],
             obstacles: vec![],
             reflectors: vec![],
