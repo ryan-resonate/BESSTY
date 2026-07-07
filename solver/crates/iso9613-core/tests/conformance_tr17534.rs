@@ -86,6 +86,19 @@ fn wall(a: [f64; 2], b: [f64; 2], top_z: f64) -> Obstacle {
     Obstacle::Wall { polyline: vec![a, b], base_z: vec![0.0, 0.0], height_agl: top_z }
 }
 
+// ── PENDING: building cases T11–T18 ──────────────────────────────────────────
+// These need the AROUND-THE-SIDE lateral path for a 2D footprint, which wraps
+// the taut string around BOTH corners of a side (a multi-edge lateral). The
+// single-edge lateral is TR-validated (T09 reproduces Dz = 7.21 exactly), and
+// the building OVER-TOP multi-edge is validated (T08 + T11's own top Dz), but
+// buildings currently emit single-edge-per-vertex laterals — which under-
+// estimate the detour (T11 needs the left-side Dz from Δz ≈ 4.43 m; the single
+// near corner gives 2.85 m, and even a two-corner taut string gives 4.11 m, so
+// the TR's plane-EL construction differs and isn't fully pinned from the text).
+// Deferred until the multi-corner lateral construction is nailed against the
+// figures. case_10's lateral component is likewise not yet TR-validated (its
+// over-top is). See docs / memory `solver-standalone`.
+
 /// Solve and return the 63 Hz–8 kHz band levels (8 values) + A-weighted total.
 fn run(scene: &Scene) -> (Vec<f64>, f64) {
     let res = solve(scene).unwrap();
