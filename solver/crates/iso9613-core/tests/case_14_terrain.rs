@@ -15,8 +15,8 @@
 use approx::assert_relative_eq;
 use iso9613_core::iso9613::terrain::Heightfield;
 use iso9613_core::scene::{
-    solve, Atmosphere, Ground, Receiver, Scene, Settings, Source, SourceKind, Standard, Terrain,
-    SCHEMA_VERSION,
+    solve, Amisc, Atmosphere, Ground, Receiver, Scene, Settings, Source, SourceKind, Standard,
+    Terrain, SCHEMA_VERSION,
 };
 
 /// A triangular ridge on a regular raster: `z = max(0, 10 − 0.2·|x − 100|)`,
@@ -60,6 +60,7 @@ fn scene(terrain: Option<Terrain>) -> Scene {
         receivers: vec![Receiver { id: "r".into(), position: [200.0, 0.0, 3.0], height_agl: 3.0 }],
         obstacles: vec![],
         reflectors: vec![],
+        amisc: Amisc::default(),
         settings: Settings::default(),
     }
 }

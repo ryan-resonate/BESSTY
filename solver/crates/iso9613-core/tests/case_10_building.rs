@@ -9,8 +9,8 @@
 
 use approx::assert_relative_eq;
 use iso9613_core::scene::{
-    solve, Atmosphere, Ground, Obstacle, Receiver, Scene, Settings, Source, SourceKind, Standard,
-    SCHEMA_VERSION,
+    solve, Amisc, Atmosphere, Ground, Obstacle, Receiver, Scene, Settings, Source, SourceKind,
+    Standard, SCHEMA_VERSION,
 };
 
 fn scene_with(obstacles: Vec<Obstacle>) -> Scene {
@@ -31,6 +31,7 @@ fn scene_with(obstacles: Vec<Obstacle>) -> Scene {
         receivers: vec![Receiver { id: "r".into(), position: [120.0, 0.0, 2.0], height_agl: 2.0 }],
         obstacles,
         reflectors: vec![],
+        amisc: Amisc::default(),
         settings: Settings::default(),
     }
 }

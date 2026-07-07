@@ -19,6 +19,7 @@ use crate::iso9613::barrier::path::DiffractionEdge;
 use crate::iso9613::barrier::{LateralEdge, WallBarrier};
 use crate::iso9613::ground::GroundMethod;
 use crate::iso9613::meteorology::cmet_db;
+use crate::iso9613::misc;
 use crate::iso9613::reflection;
 use crate::iso9613::terrain::Heightfield;
 use crate::spectrum::{BandSpectrum, BandSystem};
@@ -200,6 +201,53 @@ pub struct Reflector {
     pub alpha: f64,
 }
 
+/// A dense-foliage plan region (Annex A.1). `Afol` accrues with the path length
+/// crossing it. Assumes the ray lies within the canopy over the crossed extent
+/// (canopy-height gating is a later refinement).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FoliageRegion {
+    pub polygon: Vec<[f64; 2]>,
+}
+
+/// An industrial-installation plan region (Annex A.2). `Asite` accrues with the
+/// path length crossing it (each band capped at 10 dB).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SiteRegion {
+    pub polygon: Vec<[f64; 2]>,
+}
+
+/// A built-up (housing) plan region (Annex A.3). `Ahous` = `0.1·B·db` (density
+/// term) `+ −10·lg(1 − p/100)` (façade-row term), A-weighted / frequency-
+/// independent, from the path length `db` crossing it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HousingRegion {
+    pub polygon: Vec<[f64; 2]>,
+    /// Building plan density `B` (0…1).
+    pub b_density: f64,
+    /// Façade-row percentage `p` along the corridor (0…90); 0 ⇒ no façade term.
+    #[serde(default)]
+    pub facade_pct: f64,
+}
+
+/// Annex A miscellaneous attenuation `Amisc` — foliage / industrial / housing
+/// plan regions. Informative and **off by default** (all lists empty ⇒ 0 dB).
+/// Edition-independent (identical simplified form in 1996 and 2024).
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct Amisc {
+    #[serde(default)]
+    pub foliage: Vec<FoliageRegion>,
+    #[serde(default)]
+    pub site: Vec<SiteRegion>,
+    #[serde(default)]
+    pub housing: Vec<HousingRegion>,
+}
+
+impl Amisc {
+    fn is_empty(&self) -> bool {
+        self.foliage.is_empty() && self.site.is_empty() && self.housing.is_empty()
+    }
+}
+
 /// Ground-elevation model for terrain screening (§7.4 / ISO/TR 17534-3 §5.8).
 /// A relevant ground ridge between source and receiver breaks the line of sight
 /// and diffracts the ray like a barrier top edge (contributing no lateral edge,
@@ -243,6 +291,10 @@ pub struct Scene {
     pub obstacles: Vec<Obstacle>,
     #[serde(default)]
     pub reflectors: Vec<Reflector>,
+    /// Annex A miscellaneous attenuation regions (foliage / industrial /
+    /// housing). Default-empty ⇒ no `Amisc`.
+    #[serde(default)]
+    pub amisc: Amisc,
     pub settings: Settings,
 }
 
@@ -471,6 +523,92 @@ fn point_in_polygon(p: [f64; 2], poly: &[[f64; 2]]) -> bool {
     inside
 }
 
+/// Fraction (0…1) of the S→R plan segment that lies inside `poly`. Partitions
+/// the segment at its polygon-edge crossings and inside-tests each sub-segment's
+/// midpoint — exact for arbitrary simple polygons (convex or not).
+fn segment_fraction_in_polygon(s: [f64; 2], r: [f64; 2], poly: &[[f64; 2]]) -> f64 {
+    let n = poly.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let (dx, dy) = (r[0] - s[0], r[1] - s[1]);
+    if dx.abs() < 1e-12 && dy.abs() < 1e-12 {
+        return 0.0;
+    }
+    // Break points along t ∈ [0, 1]: endpoints + every edge crossing.
+    let mut ts = vec![0.0f64, 1.0];
+    for i in 0..n {
+        let a = poly[i];
+        let b = poly[(i + 1) % n];
+        let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
+        let det = ex * dy - ey * dx; // cross(E, D)
+        if det.abs() < 1e-12 {
+            continue; // parallel / degenerate edge
+        }
+        let (wx, wy) = (a[0] - s[0], a[1] - s[1]);
+        let t = (ex * wy - ey * wx) / det; // param along S→R
+        let u = (dx * wy - dy * wx) / det; // param along the edge
+        if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
+            ts.push(t);
+        }
+    }
+    ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut frac = 0.0;
+    for w in ts.windows(2) {
+        let mid = 0.5 * (w[0] + w[1]);
+        let p = [s[0] + mid * dx, s[1] + mid * dy];
+        if point_in_polygon(p, poly) {
+            frac += w[1] - w[0];
+        }
+    }
+    frac
+}
+
+/// Annex A `Amisc` per band (dB, to be SUBTRACTED) for one source→receiver path.
+/// `slant` is the 3D ray length; the plan-path fraction crossing each region
+/// scales it to a slant path length. Foliage/site are per-octave; housing is
+/// frequency-independent (added to every band), the total capped at 10 dB.
+///
+/// The `Afol`/`Asite` kernels are the Annex A OCTAVE tables (10 bands). For a
+/// one-third-octave scene, per-octave-band Amisc mapping is a later refinement,
+/// so only the frequency-independent housing term is applied there for now.
+fn amisc_spectrum(
+    amisc: &Amisc,
+    s: [f64; 2],
+    r: [f64; 2],
+    slant: f64,
+    system: BandSystem,
+) -> BandSpectrum {
+    let mut out = BandSpectrum::zeros(system);
+    if amisc.is_empty() || slant <= 0.0 {
+        return out;
+    }
+    let path_len = |poly: &[[f64; 2]]| segment_fraction_in_polygon(s, r, poly) * slant;
+    let ahous: f64 = amisc
+        .housing
+        .iter()
+        .map(|h| misc::ahous(h.b_density, path_len(&h.polygon), h.facade_pct))
+        .sum::<f64>()
+        .min(10.0);
+
+    // Octave-only foliage/site tables. Non-octave scenes get housing only.
+    if system.n_bands() != 10 {
+        for b in 0..system.n_bands() {
+            out.bands[b] = ahous;
+        }
+        return out;
+    }
+
+    let df: f64 = amisc.foliage.iter().map(|f| path_len(&f.polygon)).sum();
+    let ds: f64 = amisc.site.iter().map(|z| path_len(&z.polygon)).sum();
+    let afol = misc::afol(df);
+    let asite = misc::asite(ds);
+    for b in 0..10 {
+        out.bands[b] = afol[b] + asite[b] + ahous;
+    }
+    out
+}
+
 /// Ground factor at a plan-view point: the first region containing it, else
 /// `default_g`.
 fn g_at(p: [f64; 2], regions: &[GroundRegion], default_g: f64) -> f64 {
@@ -582,10 +720,20 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                     ),
                 };
 
+                // Annex A Amisc (foliage / industrial / housing) on the direct
+                // path. Reflected-path Amisc is deferred (distinct geometry).
+                let mut bands: Vec<f64> = lp.bands.iter().copied().collect();
+                if !scene.amisc.is_empty() && matches!(src.kind, SourceKind::General) {
+                    let slant = r.sub(s).length();
+                    let am = amisc_spectrum(&scene.amisc, [s.e, s.n], [r.e, r.n], slant, system);
+                    for (b, a) in bands.iter_mut().zip(am.bands.iter()) {
+                        *b -= a;
+                    }
+                }
+
                 // §7.5 first-order reflections (general sources): each valid
                 // facade adds an image-source contribution, energy-summed with
                 // the direct path per band (gated by the Fresnel size validity).
-                let mut bands: Vec<f64> = lp.bands.iter().copied().collect();
                 if matches!(src.kind, SourceKind::General) && !scene.reflectors.is_empty() {
                     let centres = system.centres();
                     for reflector in &scene.reflectors {
@@ -659,8 +807,13 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                     });
                     let dp = ((r.e - ss.e).powi(2) + (r.n - ss.n).powi(2)).sqrt();
                     let cmet = cmet_db(scene.settings.c0_db, ext.height_agl, rx.height_agl, dp);
-                    for (a, &b) in acc.iter_mut().zip(lp.bands.iter()) {
-                        *a = 10.0 * (10f64.powf(0.1 * *a) + 10f64.powf(0.1 * (b - cmet))).log10();
+                    let am = if scene.amisc.is_empty() {
+                        BandSpectrum::zeros(system)
+                    } else {
+                        amisc_spectrum(&scene.amisc, [ss.e, ss.n], [r.e, r.n], r.sub(ss).length(), system)
+                    };
+                    for (i, (a, &b)) in acc.iter_mut().zip(lp.bands.iter()).enumerate() {
+                        *a = 10.0 * (10f64.powf(0.1 * *a) + 10f64.powf(0.1 * (b - cmet - am.bands[i]))).log10();
                     }
                 }
                 if acc.iter().any(|v| v.is_finite()) {
@@ -716,6 +869,7 @@ mod tests {
             receivers: vec![Receiver { id: "r1".into(), position: [200.0, 0.0, 1.5], height_agl: 1.5 }],
             obstacles: vec![],
             reflectors: vec![],
+            amisc: Amisc::default(),
             settings: Settings::default(),
         }
     }

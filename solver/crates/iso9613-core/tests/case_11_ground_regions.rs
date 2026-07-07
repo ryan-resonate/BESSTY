@@ -10,7 +10,7 @@
 
 use approx::assert_relative_eq;
 use iso9613_core::scene::{
-    solve, Atmosphere, Ground, GroundRegion, Receiver, Scene, Settings, Source, SourceKind,
+    solve, Amisc, Atmosphere, Ground, GroundRegion, Receiver, Scene, Settings, Source, SourceKind,
     Standard, SCHEMA_VERSION,
 };
 
@@ -35,6 +35,7 @@ fn two_zone_scene() -> Scene {
         receivers: vec![Receiver { id: "r".into(), position: [200.0, 0.0, 2.0], height_agl: 2.0 }],
         obstacles: vec![],
         reflectors: vec![],
+        amisc: Amisc::default(),
         settings: Settings::default(),
     }
 }

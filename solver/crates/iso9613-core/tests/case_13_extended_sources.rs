@@ -7,8 +7,8 @@
 
 use approx::assert_relative_eq;
 use iso9613_core::scene::{
-    solve, Atmosphere, ExtendedSource, ExtentGeometry, Ground, Receiver, Scene, Settings, Source,
-    SourceKind, Standard, SCHEMA_VERSION,
+    solve, Amisc, Atmosphere, ExtendedSource, ExtentGeometry, Ground, Receiver, Scene, Settings,
+    Source, SourceKind, Standard, SCHEMA_VERSION,
 };
 
 fn base_scene(sources: Vec<Source>, extended: Vec<ExtendedSource>) -> Scene {
@@ -23,6 +23,7 @@ fn base_scene(sources: Vec<Source>, extended: Vec<ExtendedSource>) -> Scene {
         receivers: vec![Receiver { id: "r".into(), position: [50.0, 100.0, 2.0], height_agl: 2.0 }],
         obstacles: vec![],
         reflectors: vec![],
+        amisc: Amisc::default(),
         settings: Settings::default(),
     }
 }
