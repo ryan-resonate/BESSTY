@@ -34,7 +34,7 @@ fn scene_with(reflectors: Vec<Reflector>) -> Scene {
 
 /// A large hard facade along y = 0 (α = 0.1).
 fn facade() -> Reflector {
-    Reflector { segment: [[-100.0, 0.0], [200.0, 0.0]], base_z: 0.0, top_z: 200.0, alpha: 0.1 }
+    Reflector { segment: [[-100.0, 0.0], [200.0, 0.0]], base_z: 0.0, top_z: 200.0, alpha: 0.1, alpha_bands: None }
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn first_order_reflection_adds_a_coherent_image_path() {
 #[test]
 fn facade_that_the_specular_point_misses_adds_nothing() {
     // A tiny facade far from the specular point (x=50) → no reflection.
-    let tiny = Reflector { segment: [[-100.0, 0.0], [-90.0, 0.0]], base_z: 0.0, top_z: 200.0, alpha: 0.1 };
+    let tiny = Reflector { segment: [[-100.0, 0.0], [-90.0, 0.0]], base_z: 0.0, top_z: 200.0, alpha: 0.1, alpha_bands: None };
     let direct = solve(&scene_with(vec![])).unwrap().per_receiver[0].total_dba.unwrap();
     let with = solve(&scene_with(vec![tiny])).unwrap().per_receiver[0].total_dba.unwrap();
     assert_relative_eq!(direct, with, epsilon = 1e-9);
@@ -67,7 +67,7 @@ fn facade_that_the_specular_point_misses_adds_nothing() {
 #[test]
 fn perfectly_absorbing_facade_adds_nothing() {
     // α = 1 → 10·lg(0) = −∞ loss → the image contributes no energy.
-    let absorbing = Reflector { segment: [[-100.0, 0.0], [200.0, 0.0]], base_z: 0.0, top_z: 200.0, alpha: 1.0 };
+    let absorbing = Reflector { segment: [[-100.0, 0.0], [200.0, 0.0]], base_z: 0.0, top_z: 200.0, alpha: 1.0, alpha_bands: None };
     let direct = solve(&scene_with(vec![])).unwrap().per_receiver[0].total_dba.unwrap();
     let with = solve(&scene_with(vec![absorbing])).unwrap().per_receiver[0].total_dba.unwrap();
     assert_relative_eq!(direct, with, epsilon = 1e-6);

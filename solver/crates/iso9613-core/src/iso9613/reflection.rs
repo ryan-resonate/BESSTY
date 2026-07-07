@@ -52,10 +52,6 @@ fn mirror(s: Vec3, a: [f64; 2], b: [f64; 2]) -> Vec3 {
     Vec3::new(2.0 * foot[0] - s.e, 2.0 * foot[1] - s.n, s.z)
 }
 
-fn plan_dist(p: Vec3, q: [f64; 2]) -> f64 {
-    ((p.e - q[0]).powi(2) + (p.n - q[1]).powi(2)).sqrt()
-}
-
 /// First-order reflection of `source` off `facade` toward `receiver`, if the
 /// specular point lies on the finite facade (within the segment and its height
 /// band). `None` otherwise.
@@ -92,22 +88,23 @@ pub fn reflect(source: Vec3, receiver: Vec3, facade: &Facade) -> Option<Reflecti
 
 /// Fresnel size validity at wavelength `lambda` (Eq 26/27):
 /// `1/λ > (2/leff²)·(dso·dor/(dso+dor))`, with `leff = min(a·cos αa, h·cos αh)`.
-/// Here `a`/`h` are the available specular-zone half-extents at the reflection
-/// point (plan distance to the nearer segment end; height to the nearer band
-/// edge) and `αa`/`αh` the horizontal/vertical incidence angles of the S→P ray.
+/// Per Eq 27 `a` is the FULL horizontal extension of the reflecting surface and
+/// `h` its FULL vertical extension (NOT the half-extents from the reflection
+/// point — that made the gate far too strict; cross-checked against ISO/TR
+/// 17534-3 T19). `αa`/`αh` are the horizontal/vertical incidence angles of the
+/// S→reflection-point ray.
 pub fn fresnel_valid(refl: &Reflection, facade: &Facade, source: Vec3, lambda: f64) -> bool {
     let p = refl.refl_point;
-    let a_avail = plan_dist(p, facade.a).min(plan_dist(p, facade.b));
-    let h_avail = (p.z - facade.base_z).min(facade.top_z - p.z);
+    let (wx, wy) = (facade.b[0] - facade.a[0], facade.b[1] - facade.a[1]);
+    let a_ext = (wx * wx + wy * wy).sqrt().max(1e-9); // full horizontal extension
+    let h_ext = (facade.top_z - facade.base_z).max(0.0); // full vertical extension
     let sp = source.sub(p);
     let sp_horiz = (sp.e * sp.e + sp.n * sp.n).sqrt();
     let sp_len = sp.length().max(1e-9);
-    let cos_ah = sp_horiz / sp_len; // elevation incidence
-    let (wx, wy) = (facade.b[0] - facade.a[0], facade.b[1] - facade.a[1]);
-    let wlen = (wx * wx + wy * wy).sqrt().max(1e-9);
+    let cos_ah = sp_horiz / sp_len; // elevation incidence (vertical-plane angle)
     // Incident-ray horizontal component vs facade normal (−wy, wx).
-    let cos_aa = ((sp.e * (-wy) + sp.n * wx).abs() / (sp_horiz.max(1e-9) * wlen)).min(1.0);
-    let leff = (a_avail * cos_aa).min(h_avail * cos_ah);
+    let cos_aa = ((sp.e * (-wy) + sp.n * wx).abs() / (sp_horiz.max(1e-9) * a_ext)).min(1.0);
+    let leff = (a_ext * cos_aa).min(h_ext * cos_ah);
     if leff <= 0.0 {
         return false;
     }

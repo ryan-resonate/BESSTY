@@ -206,7 +206,13 @@ pub struct Reflector {
     pub segment: [[f64; 2]; 2],
     pub base_z: f64,
     pub top_z: f64,
+    /// Broadband absorption coefficient (0 = perfectly reflecting). Used for
+    /// every band unless `alpha_bands` is given.
     pub alpha: f64,
+    /// Optional per-band absorption (real façades are frequency-dependent). When
+    /// present its length must match the band system; it overrides `alpha`.
+    #[serde(default)]
+    pub alpha_bands: Option<Vec<f64>>,
 }
 
 /// A dense-foliage plan region (Annex A.1). `Afol` accrues with the path length
@@ -788,7 +794,18 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                             base_z: reflector.base_z, top_z: reflector.top_z, alpha: reflector.alpha,
                         };
                         let Some(refl) = reflection::reflect(s, r, &facade) else { continue };
-                        let img_lw = BandSpectrum::from_iter(system, src.lw.iter().map(|&x| x + refl.loss_db));
+                        // Per-band reflection loss 10·lg(1−α); α may vary by band.
+                        let img_lw = BandSpectrum::from_iter(
+                            system,
+                            src.lw.iter().enumerate().map(|(b, &x)| {
+                                let alpha = reflector
+                                    .alpha_bands
+                                    .as_ref()
+                                    .and_then(|ab| ab.get(b).copied())
+                                    .unwrap_or(reflector.alpha);
+                                x + 10.0 * (1.0 - alpha).max(1e-12).log10()
+                            }),
+                        );
                         let refl_lp = model.evaluate_general(&GeneralEval {
                             lw: &img_lw, source: refl.image_source, receiver: r,
                             h_s: src.height_agl, h_r: rx.height_agl,

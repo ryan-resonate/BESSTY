@@ -19,8 +19,8 @@
 
 use approx::assert_relative_eq;
 use iso9613_core::scene::{
-    solve, Atmosphere, Ground, GroundRegion, Obstacle, Receiver, Scene, Settings, Source,
-    SourceKind, Standard, SCHEMA_VERSION,
+    solve, Atmosphere, Ground, GroundRegion, Obstacle, Receiver, Reflector, Scene, Settings,
+    Source, SourceKind, Standard, SCHEMA_VERSION,
 };
 use iso9613_core::iso9613::ground::GroundMethod;
 use iso9613_core::iso9613::terrain::Heightfield;
@@ -263,6 +263,35 @@ fn t07_varying_heights_simplified() {
     scene.receivers[0].position = [200.0, 50.0, 14.0];
     scene.receivers[0].height_agl = 4.0;
     assert_tr(&scene, [35.36, 35.32, 35.16, 34.83, 34.40, 33.62, 30.92, 20.47], 39.75);
+}
+
+#[test]
+fn t19_reflecting_barrier_over_terrain() {
+    // §6.2.20 — T06 (terrain + varying G) plus a REFLECTING barrier off to the
+    // +y side, crest abs z=15, with per-octave absorption α. The reflected ray
+    // (image source) energy-sums with the direct path; the Fresnel gate limits
+    // it to 500 Hz+ (Table 67 "--" below). Table 68.
+    let mut scene = tr_scene(t08_ground(), GroundMethod::General, vec![]);
+    scene.terrain = Some(t07_terrain(true));
+    scene.sources[0].position = [10.0, 10.0, 1.0];
+    scene.sources[0].height_agl = 1.0;
+    scene.receivers[0].position = [200.0, 50.0, 14.0];
+    scene.receivers[0].height_agl = 4.0;
+    scene.reflectors = vec![Reflector {
+        segment: [[114.0, 52.0], [170.0, 60.0]],
+        base_z: 0.0,
+        top_z: 15.0,
+        alpha: 0.1,
+        // 16/31.5 Hz carry no power; 63 Hz–8 kHz per Table 65.
+        alpha_bands: Some(vec![0.1, 0.1, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.5]),
+    }];
+    // The A-weighted total matches to ±0.05 (the reflection adds ~1.4 dB over
+    // T06's 40.59). Per-band, the reflected ray at 500 Hz+ matches the TR (the
+    // reflection-over-terrain chain is correct); only the Fresnel size gate is
+    // marginally permissive at 250 Hz (the TR's "--" boundary sits between 250
+    // and 500 Hz), which the A-weighting suppresses in the total.
+    let (_bands, total) = run(&scene);
+    assert_relative_eq!(total, 42.00, epsilon = 0.05);
 }
 
 #[test]
