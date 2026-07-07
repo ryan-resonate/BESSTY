@@ -72,7 +72,8 @@ fn edition_switch_is_observable_end_to_end() {
     let walls = [WallBarrier { a_e: 50.0, a_n: -1000.0, b_e: 50.0, b_n: 1000.0, base_z_a: 0.0, base_z_b: 0.0, height_agl: 8.0 }];
     let lw = BandSpectrum::from_iter(OCTAVE, std::iter::repeat_n(100.0, 10));
     let mk = || GeneralEval {
-        lw: &lw, source: s, receiver: r, h_s: 5.0, h_r: 1.5, g: 0.5,
+        lw: &lw, source: s, receiver: r, h_s: 5.0, h_r: 1.5,
+        g_source: 0.5, g_middle: 0.5, g_receiver: 0.5,
         barriers: &walls, lateral: &[], dz_cap: None, atm: Atmosphere::iso_reference(),
         ground_method: GroundMethod::General,
     };

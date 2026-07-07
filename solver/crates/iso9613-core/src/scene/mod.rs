@@ -56,15 +56,31 @@ impl From<Atmosphere> for CoreAtmosphere {
     }
 }
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+/// A ground-cover polygon: a uniform ground factor over a closed plan-view
+/// region.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroundRegion {
+    /// Closed plan-view polygon (implicitly closed — last vertex joins first).
+    pub polygon: Vec<[f64; 2]>,
+    /// Ground factor G (0 hard … 1 porous) inside the polygon.
+    pub g: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Ground {
-    /// Uniform ground factor G (0 hard … 1 porous). Per-region ground
-    /// polygons arrive in Phase 3 as an additional field.
+    /// Ground factor outside every region (0 hard … 1 porous).
     pub default_g: f64,
+    /// Optional ground-cover polygons. Each source→receiver path's source /
+    /// middle / receiver region `G` is the length-weighted average of the
+    /// covers it crosses over that region's ground-plane extent (Eq 10). Empty
+    /// ⇒ uniform `default_g` everywhere. Where polygons overlap, the first
+    /// listed wins.
+    #[serde(default)]
+    pub regions: Vec<GroundRegion>,
 }
 
 impl Default for Ground {
-    fn default() -> Self { Self { default_g: 0.5 } }
+    fn default() -> Self { Self { default_g: 0.5, regions: Vec::new() } }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -331,6 +347,77 @@ impl Scene {
     }
 }
 
+/// Ray-casting point-in-polygon (even–odd rule) for an implicitly-closed
+/// polygon.
+fn point_in_polygon(p: [f64; 2], poly: &[[f64; 2]]) -> bool {
+    let n = poly.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = (poly[i][0], poly[i][1]);
+        let (xj, yj) = (poly[j][0], poly[j][1]);
+        if ((yi > p[1]) != (yj > p[1])) && (p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi) {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Ground factor at a plan-view point: the first region containing it, else
+/// `default_g`.
+fn g_at(p: [f64; 2], regions: &[GroundRegion], default_g: f64) -> f64 {
+    regions
+        .iter()
+        .find(|reg| point_in_polygon(p, &reg.polygon))
+        .map_or(default_g, |reg| reg.g)
+}
+
+/// Length-weighted average ground factor for the source / middle / receiver
+/// regions (§7.3.1) of the source→receiver path, from the ground-cover
+/// `regions` (Eq 10). Source region: `[0, min(30·hS, dp)]`; receiver region:
+/// `[max(0, dp − 30·hR), dp]`; middle: between them (empty ⇒ value unused, as
+/// the kernel's `q` zeroes `Am`). Sampled along the plan projection.
+fn region_ground_factors(
+    s: [f64; 2],
+    r: [f64; 2],
+    h_s: f64,
+    h_r: f64,
+    regions: &[GroundRegion],
+    default_g: f64,
+) -> (f64, f64, f64) {
+    let dp = ((r[0] - s[0]).powi(2) + (r[1] - s[1]).powi(2)).sqrt();
+    if dp < 1e-9 {
+        return (default_g, default_g, default_g);
+    }
+    // Midpoint-sample the extent `[lo, hi]` (metres along the path) and average
+    // the ground factor. ~0.2 m resolution, floor of 1 sample.
+    let avg = |lo: f64, hi: f64| -> f64 {
+        let span = hi - lo;
+        if span < 1e-9 {
+            return default_g;
+        }
+        let k = ((span / dp * 1000.0).ceil() as usize).max(1);
+        let mut acc = 0.0;
+        for i in 0..k {
+            let t = lo + (i as f64 + 0.5) / (k as f64) * span;
+            let frac = t / dp;
+            let p = [s[0] + frac * (r[0] - s[0]), s[1] + frac * (r[1] - s[1])];
+            acc += g_at(p, regions, default_g);
+        }
+        acc / k as f64
+    };
+    let src_end = (30.0 * h_s).min(dp);
+    let rx_start = (dp - 30.0 * h_r).max(0.0);
+    let gs = avg(0.0, src_end);
+    let gr = avg(rx_start, dp);
+    let gm = if src_end < rx_start { avg(src_end, rx_start) } else { default_g };
+    (gs, gm, gr)
+}
+
 /// One-shot point-receiver solve.
 pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
     let system = scene.validate()?;
@@ -355,6 +442,14 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
             for src in &scene.sources {
                 let s = Vec3::new(src.position[0], src.position[1], src.position[2]);
                 let lw = BandSpectrum::from_iter(system, src.lw.iter().copied());
+                let (g_source, g_middle, g_receiver) = if scene.ground.regions.is_empty() {
+                    (g, g, g)
+                } else {
+                    region_ground_factors(
+                        [s.e, s.n], [r.e, r.n], src.height_agl, rx.height_agl,
+                        &scene.ground.regions, g,
+                    )
+                };
                 let lp = match &src.kind {
                     SourceKind::General => model.evaluate_general(&GeneralEval {
                         lw: &lw,
@@ -362,7 +457,9 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                         receiver: r,
                         h_s: src.height_agl,
                         h_r: rx.height_agl,
-                        g,
+                        g_source,
+                        g_middle,
+                        g_receiver,
                         barriers: &walls,
                         lateral: &lateral,
                         dz_cap: scene.settings.dz_cap_db,
@@ -418,7 +515,7 @@ mod tests {
             schema_version: SCHEMA_VERSION,
             standard: Standard::Iso9613_2_2024,
             atmosphere: Atmosphere::default(),
-            ground: Ground { default_g: 0.5 },
+            ground: Ground { default_g: 0.5, regions: vec![] },
             sources: vec![Source {
                 id: "s1".into(),
                 kind: SourceKind::General,
@@ -490,6 +587,21 @@ mod tests {
 
     fn simp_ground(scene: &mut Scene) {
         scene.settings.ground_method = GroundMethod::Simplified;
+    }
+
+    #[test]
+    fn region_factors_classify_two_zone_path() {
+        // Hard zone x<100, porous zone x>100. S(0,0)→R(200,0), hS=hR=2 →
+        // source region [0,60] (hard), receiver [140,200] (porous), middle
+        // [60,140] straddles the boundary (40 m hard + 40 m porous → 0.5).
+        let regions = vec![
+            GroundRegion { polygon: vec![[-50.0, -50.0], [100.0, -50.0], [100.0, 50.0], [-50.0, 50.0]], g: 0.0 },
+            GroundRegion { polygon: vec![[100.0, -50.0], [250.0, -50.0], [250.0, 50.0], [100.0, 50.0]], g: 1.0 },
+        ];
+        let (gs, gm, gr) = region_ground_factors([0.0, 0.0], [200.0, 0.0], 2.0, 2.0, &regions, 0.5);
+        assert!((gs - 0.0).abs() < 1e-6, "gs = {gs}");
+        assert!((gr - 1.0).abs() < 1e-6, "gr = {gr}");
+        assert!((gm - 0.5).abs() < 0.01, "gm = {gm}");
     }
 
     #[test]
