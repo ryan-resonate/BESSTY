@@ -325,23 +325,45 @@ fn t14_polygonal_building_over_terrain() {
 // KNOWN LIMITATION — receiver ABOVE the roof (T12 z=15, T15 z=23 over a 10 m
 // roof). The around-the-side path then partly rides OVER the roof (a combined
 // lateral+vertical diffraction the TR still counts, Δz≈1.66). We don't yet build
-// that 3-D box path: the roof guard in footprint_lateral_paths drops the pure
-// side-wrap once a corner would clear the roof, so the result is OVER-attenuated
-// (conservative/safe) rather than the old catastrophic under-attenuation. T15's
-// total then reads ~47.1 vs the TR's 49.92; the test asserts only that safe
-// direction until the box path lands.
+// that 3-D box path. Without the roof guard the clamped wrap collapses to an
+// OPEN lateral that floors Abar to 0 — the building vanishes (T15 → 61 dB = free
+// field). The guard drops that invalid wrap, leaving the honest OVER-TOP-only
+// screening (T15 → ~47.1 dB). That is within the ISO ±3 dB method uncertainty of
+// the TR's wrap-inclusive 49.92, though ~2.8 dB on the LOW side (the TR's leaky
+// over-roof wraps raise the level back up). The exact box path is a refinement.
 #[test]
-fn t15_receiver_above_roof_is_conservative() {
+fn t15_receiver_above_roof_within_iso_uncertainty() {
     let octagon = vec![
         [10.96, 15.50], [12.00, 13.00], [14.50, 11.96], [17.00, 13.00],
         [18.04, 15.50], [17.00, 18.00], [14.50, 19.04], [12.00, 18.00],
     ];
     let scene = tr_scene_sr([8.0, 10.0, 1.0], [25.0, 20.0, 23.0], 0.2, vec![building(octagon, 10.0)]);
     let total = run(&scene).1;
-    // Conservative: never UNDER-predict the level (the old bug gave 61 dB, a
-    // 11 dB under-prediction). Within a few dB on the safe side of the TR's 49.92.
-    assert!(total <= 49.92 + 0.05, "must not under-predict: {total}");
-    assert!(total > 45.0, "but not wildly over-attenuated: {total}");
+    // Over-top-only (a standard ISO simplification) lands within ±3 dB of the
+    // TR's full value — and, unlike the un-guarded open wrap, it actually
+    // screens (does not treat the building as absent).
+    assert!((total - 49.92).abs() < 3.5, "outside ISO uncertainty: {total}");
+}
+
+// KNOWN LIMITATION — three-building CLUSTER (T16/T17/T18). The TR treats the
+// buildings as one screening system: a single over-top over all three roofs and
+// two laterals wrapping the WHOLE cluster (Figure 28's threaded ray). The engine
+// wraps each building independently, so its per-building laterals are shorter and
+// leak more → it OVER-predicts (T16 total 42.8 vs the TR's 32.54, ~10 dB high).
+// Safe (never under-predicts a cluster) but over-conservative; the cluster-wrap
+// (shortest path around the union of footprints, multi-height) is future work.
+// Coordinates read from the TR PDF (Table 51). The multi-object lateral is the
+// case the TR itself flags as "not solved" in general.
+#[test]
+fn t16_three_building_cluster_is_conservative() {
+    let h1 = building(vec![[55.0, 5.0], [65.0, 5.0], [65.0, 15.0], [55.0, 15.0]], 8.0);
+    let h2 = building(vec![[70.0, 14.5], [80.0, 10.17], [80.0, 20.17]], 12.0);
+    let h3 = building(vec![[90.11, 19.48], [93.27, 17.78], [87.27, 6.61], [84.11, 8.31]], 10.0);
+    let scene = tr_scene_sr([50.0, 10.0, 1.0], [100.0, 15.0, 5.0], 0.5, vec![h1, h2, h3]);
+    let total = run(&scene).1;
+    // Conservative: at least the TR's screened level (never treats the cluster
+    // as more transparent than reality).
+    assert!(total >= 32.54 - 0.05, "must not under-predict the cluster: {total}");
 }
 
 #[test]
