@@ -6,8 +6,10 @@
 # Windows) and silently drops it from version control.
 /Standards/
 
-# Build artefacts
+# Build artefacts — the workspace target plus any per-crate target dirs
+# (workspace-excluded crates like iso9613-py build to their own target/).
 solver/target/
+**/target/
 web/node_modules/
 web/dist/
 web/.vite/
