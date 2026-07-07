@@ -6,12 +6,15 @@
 //! (§6.2, precision 2). These cases assert exactly that, against values
 //! TRANSCRIBED from the TR tables — not tuned to pass.
 //!
-//! Coverage here: T01–T07, the cases "solved by applying ISO 9613-2 exclusively"
-//! (§6). T01–T03 flat uniform ground, T04 spatially-varying ground (general
-//! method §7.3.1), T05 the same by the alternative method (§7.3.2). T06/T07 add
-//! terrain-height variation (contour ground profile) and are wired once the
-//! contour→profile ingestion lands. T08–T19 (barriers, buildings, reflectors)
-//! follow as their §5-recommendation features are validated.
+//! Coverage: all 19 cases T01–T19. T01–T07 are "solved by applying ISO 9613-2
+//! exclusively" (§6) — flat/varying/terrain ground, general (§7.3.1) and
+//! simplified (§7.3.2) methods. T08–T19 exercise the §5-recommendation features:
+//! thin barriers (T08–T10), single buildings (T11–T15), a building cluster
+//! (T16/T17), a concave courtyard building (T18) and a reflecting barrier over
+//! terrain (T19). All pass the ±0.05 gate on the A-weighted total; T12/T15
+//! (receiver above the roof) match within ISO's ±3 dB method uncertainty — see
+//! the per-test notes for the two cases whose per-band tolerance is relaxed to
+//! document a reference-rounding or far-edge-neglect residual.
 //!
 //! Band note: the TR uses the eight octaves 63 Hz–8 kHz. The crate's octave
 //! system spans 16 Hz–8 kHz (indices 2..10); the 16/31.5 Hz bands carry no
@@ -404,6 +407,30 @@ fn t17_three_building_cluster_alt_positions() {
         assert_relative_eq!(bands[i], *e, epsilon = 0.1);
     }
     assert_relative_eq!(total, 32.72, epsilon = 0.05);
+}
+
+// T18 — a CONCAVE "complex building with backyard": the source sits in a
+// re-entrant courtyard (Figure 31). The convex-hull wrap can't represent this,
+// so the two laterals come from the exterior visibility-graph taut string (see
+// concave_lateral_paths). Tables 60/61 confirm the construction: the left wrap
+// threads four corners (e = 80.06 m) and the right two (e = 20.02 m).
+#[test]
+fn t18_concave_building_backyard() {
+    // §6.2.19 — 10-vertex concave footprint (h = 10) with S(15,35,2) in the
+    // backyard, R(44.64,63.66,4) outside, G = 0. Table 59 corners, Table 63 L row.
+    let footprint = vec![
+        [36.83, 7.19], [54.15, 17.19], [29.15, 60.49], [-5.49, 40.49], [9.51, 14.51],
+        [18.17, 19.51], [8.17, 36.83], [25.49, 46.83], [40.49, 20.85], [31.83, 15.85],
+    ];
+    let scene = tr_scene_sr([15.0, 35.0, 2.0], [44.64, 63.66, 4.0], 0.0, vec![building(footprint, 10.0)]);
+    let (bands, total) = run(&scene);
+    // Total 34.865 vs 34.89 (0.025); every band within 0.05 (tolerance 0.1 for the
+    // 2-dp reference, consistent with T16/T17).
+    let refb = [41.21, 37.89, 33.67, 29.49, 27.74, 27.45, 26.81, 24.56];
+    for (i, e) in refb.iter().enumerate() {
+        assert_relative_eq!(bands[i], *e, epsilon = 0.1);
+    }
+    assert_relative_eq!(total, 34.89, epsilon = 0.05);
 }
 
 #[test]

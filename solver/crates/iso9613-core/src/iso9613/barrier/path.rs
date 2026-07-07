@@ -150,8 +150,66 @@ struct CornerNode {
 }
 
 /// The two around-the-side lateral paths (one per side) for a **cluster** of
-/// building footprints treated as a single screening system. Each is the shortest
-/// taut string that wraps *all* the footprints' corners on that side, in 3-D.
+/// building footprints treated as a single screening system.
+///
+/// Convex footprints are wrapped together by [`convex_cluster_paths`] (one taut
+/// string per side over the pooled corners); any **concave** footprint (e.g. a
+/// courtyard building with the source in its backyard) is wrapped individually by
+/// [`concave_lateral_paths`], which needs a true visibility-graph taut string
+/// because the convex hull would cut across the concavity. A lone convex building
+/// is just a one-element convex cluster, so T11/T13/T14 are unchanged.
+pub fn cluster_lateral_paths(
+    source: Vec3,
+    receiver: Vec3,
+    footprints: &[FootprintLateral],
+) -> Vec<PathLengths> {
+    let (dx, dy) = (receiver.e - source.e, receiver.n - source.n);
+    if (dx * dx + dy * dy).sqrt() < 1e-9 || footprints.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut convex: Vec<&FootprintLateral> = Vec::new();
+    for fp in footprints {
+        if fp.verts.len() < 3 {
+            continue;
+        }
+        if is_convex(&fp.verts) {
+            convex.push(fp);
+        } else {
+            out.extend(concave_lateral_paths(source, receiver, fp));
+        }
+    }
+    if !convex.is_empty() {
+        out.extend(convex_cluster_paths(source, receiver, &convex));
+    }
+    out
+}
+
+/// Is a closed plan polygon convex? (All consecutive turns the same sign.)
+fn is_convex(verts: &[(f64, f64)]) -> bool {
+    let n = verts.len();
+    if n < 4 {
+        return true;
+    }
+    let mut sign = 0i32;
+    for i in 0..n {
+        let a = verts[i];
+        let b = verts[(i + 1) % n];
+        let c = verts[(i + 2) % n];
+        let cr = (b.0 - a.0) * (c.1 - b.1) - (b.1 - a.1) * (c.0 - b.0);
+        if cr.abs() > 1e-9 {
+            let s = if cr > 0.0 { 1 } else { -1 };
+            if sign == 0 {
+                sign = s;
+            } else if s != sign {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// The two around-the-side lateral paths for a cluster of **convex** footprints.
 ///
 /// Construction: work in `(t, d)` coordinates — `t` the along-`SR` distance,
 /// `d` the signed perpendicular plan offset. Pool the corners of every footprint;
@@ -163,14 +221,10 @@ struct CornerNode {
 /// "shortest polygon line around these edges" (§5.2) extended to Figure 28's
 /// multi-object threaded ray. The interior hull vertices are the active
 /// diffracting corners, each carrying its own building's `[base_z, top_z]`.
-///
-/// For a single footprint this is identical to the per-building wrap (the hull
-/// pools one polygon's corners), so T11/T13/T14 are unchanged; for three
-/// footprints it reproduces the T16–T18 cluster path.
-pub fn cluster_lateral_paths(
+fn convex_cluster_paths(
     source: Vec3,
     receiver: Vec3,
-    footprints: &[FootprintLateral],
+    footprints: &[&FootprintLateral],
 ) -> Vec<PathLengths> {
     let (dx, dy) = (receiver.e - source.e, receiver.n - source.n);
     let dp = (dx * dx + dy * dy).sqrt();
@@ -183,9 +237,6 @@ pub fn cluster_lateral_paths(
     // vertical face they belong to.
     let mut corners: Vec<(f64, f64, CornerNode)> = Vec::new(); // (t, d, node)
     for fp in footprints {
-        if fp.verts.len() < 3 {
-            continue;
-        }
         for &(e, n) in &fp.verts {
             let (rx, ry) = (e - source.e, n - source.n);
             let t = rx * ux + ry * uy;
@@ -317,6 +368,206 @@ fn wrap_path_lengths(
         e_total,
         delta_z: d_ss + d_sr + e_total - d_direct,
     })
+}
+
+/// Whether two open segments `p1p2` and `p3p4` properly cross (interiors meet).
+fn seg_cross_proper(p1: (f64, f64), p2: (f64, f64), p3: (f64, f64), p4: (f64, f64)) -> bool {
+    let cr = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    };
+    let d1 = cr(p3, p4, p1);
+    let d2 = cr(p3, p4, p2);
+    let d3 = cr(p1, p2, p3);
+    let d4 = cr(p1, p2, p4);
+    ((d1 > 0.0) != (d2 > 0.0)) && ((d3 > 0.0) != (d4 > 0.0))
+}
+
+/// Point-in-polygon (ray-cast, plan view).
+fn point_in_polygon(p: (f64, f64), verts: &[(f64, f64)]) -> bool {
+    let n = verts.len();
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = verts[i];
+        let (xj, yj) = verts[j];
+        if ((yi > p.1) != (yj > p.1)) && (p.0 < (xj - xi) * (p.1 - yi) / (yj - yi) + xi) {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// A point strictly inside the polygon (centroid, else a bbox grid scan).
+fn polygon_interior_point(verts: &[(f64, f64)]) -> Option<(f64, f64)> {
+    let n = verts.len() as f64;
+    let c = (
+        verts.iter().map(|v| v.0).sum::<f64>() / n,
+        verts.iter().map(|v| v.1).sum::<f64>() / n,
+    );
+    if point_in_polygon(c, verts) {
+        return Some(c);
+    }
+    let (mut lo, mut hi) = (verts[0], verts[0]);
+    for &(x, y) in verts {
+        lo = (lo.0.min(x), lo.1.min(y));
+        hi = (hi.0.max(x), hi.1.max(y));
+    }
+    for i in 1..20 {
+        for jk in 1..20 {
+            let p = (
+                lo.0 + (hi.0 - lo.0) * i as f64 / 20.0,
+                lo.1 + (hi.1 - lo.1) * jk as f64 / 20.0,
+            );
+            if point_in_polygon(p, verts) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// The two around-the-side lateral paths for a **concave** footprint — the source
+/// or receiver may sit in a re-entrant pocket (a courtyard), so the taut string
+/// must thread around the actual polygon outline, not its convex hull.
+///
+/// This is a shortest path in the exterior **visibility graph** (nodes = `S`, `R`
+/// and the footprint corners; an edge joins two nodes whose connecting segment
+/// stays outside the building). The two diffraction paths are the shortest routes
+/// in the two **homotopy classes** — the two ways around the building — separated
+/// by the parity of crossings of a cut ray from an interior point (Dijkstra over
+/// `(node, parity)` states). Reproduces ISO/TR 17534-3 T18 (Tables 60/61): the
+/// backyard case's left wrap `S→v6→v5→v4→v3→R` (e≈80 m) and right `S→v1→v2→R`.
+fn concave_lateral_paths(source: Vec3, receiver: Vec3, fp: &FootprintLateral) -> Vec<PathLengths> {
+    let verts = &fp.verts;
+    let n = verts.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let s = (source.e, source.n);
+    let r = (receiver.e, receiver.n);
+    let nn = n + 2;
+    // node k: 0 = S, 1 = R, 2+i = verts[i].
+    let node = |k: usize| -> (f64, f64) {
+        match k {
+            0 => s,
+            1 => r,
+            _ => verts[k - 2],
+        }
+    };
+
+    let interior = match polygon_interior_point(verts) {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let slope = 0.0007_f64; // cut ray direction (1, slope); off-axis to dodge vertices
+    let crosses_cut = |a: (f64, f64), b: (f64, f64)| -> bool {
+        // Segment a→b vs the ray interior + u·(1, slope), u ≥ 0. Solve for the
+        // segment parameter `sp` and ray parameter `t` (den = ey − ex·slope).
+        let (ex, ey) = (b.0 - a.0, b.1 - a.1);
+        let den = ey - ex * slope;
+        if den.abs() < 1e-12 {
+            return false;
+        }
+        let (ox, oy) = (interior.0 - a.0, interior.1 - a.1);
+        let sp = (oy - ox * slope) / den;
+        let t = (ex * oy - ey * ox) / den;
+        sp > 1e-9 && sp < 1.0 - 1e-9 && t > 1e-9
+    };
+
+    // Exterior visibility between node u and node w.
+    let visible = |u: usize, w: usize| -> bool {
+        let a = node(u);
+        let b = node(w);
+        // Adjacent footprint corners share a boundary wall — always visible.
+        if u >= 2 && w >= 2 {
+            let (i, j) = (u - 2, w - 2);
+            let d = i.abs_diff(j);
+            if d == 1 || d == n - 1 {
+                return true;
+            }
+        }
+        for i in 0..n {
+            let c = verts[i];
+            let d = verts[(i + 1) % n];
+            if a == c || a == d || b == c || b == d {
+                continue;
+            }
+            if seg_cross_proper(a, b, c, d) {
+                return false;
+            }
+        }
+        let mid = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+        !point_in_polygon(mid, verts)
+    };
+
+    // Dijkstra over (node, parity) states, state index = node*2 + parity.
+    let ns = nn * 2;
+    let mut dist = vec![f64::INFINITY; ns];
+    let mut prev = vec![usize::MAX; ns];
+    let mut done = vec![false; ns];
+    dist[0] = 0.0; // (S, parity 0)
+    for _ in 0..ns {
+        let mut u = usize::MAX;
+        let mut best = f64::INFINITY;
+        for (i, (&di, &fin)) in dist.iter().zip(done.iter()).enumerate() {
+            if !fin && di < best {
+                best = di;
+                u = i;
+            }
+        }
+        if u == usize::MAX {
+            break;
+        }
+        done[u] = true;
+        let (un, up) = (u / 2, u % 2);
+        for w in 0..nn {
+            if w == un || !visible(un, w) {
+                continue;
+            }
+            let flip = if crosses_cut(node(un), node(w)) { 1 } else { 0 };
+            let wp = up ^ flip;
+            let ws = w * 2 + wp;
+            let a = node(un);
+            let b = node(w);
+            let nd = dist[u] + ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
+            if nd < dist[ws] {
+                dist[ws] = nd;
+                prev[ws] = u;
+            }
+        }
+    }
+
+    // Reconstruct the two paths (R with parity 0 and parity 1) and score each.
+    let mut out = Vec::new();
+    for parity in 0..2 {
+        let mut state = 2 + parity; // node 1 (R) → index 1*2 + parity
+        if !dist[state].is_finite() {
+            continue;
+        }
+        let mut chain = Vec::new();
+        while state != usize::MAX {
+            chain.push(state / 2);
+            if state == 0 {
+                break;
+            }
+            state = prev[state];
+        }
+        chain.reverse();
+        // Interior nodes (drop S and R) become diffracting corners.
+        let cs: Vec<CornerNode> = chain
+            .iter()
+            .filter(|&&k| k >= 2)
+            .map(|&k| CornerNode { e: verts[k - 2].0, n: verts[k - 2].1, base_z: fp.base_z, top_z: fp.top_z })
+            .collect();
+        if cs.is_empty() {
+            continue;
+        }
+        if let Some(p) = wrap_path_lengths(source, receiver, &cs) {
+            out.push(p);
+        }
+    }
+    out
 }
 
 /// Project `barriers` into the vertical plane through `source` and `receiver`,
@@ -673,6 +924,27 @@ mod tests {
             );
             assert_relative_eq!(dz, 12.89, epsilon = 0.05);
         }
+    }
+
+    #[test]
+    fn concave_backyard_wrap_matches_tr_t18() {
+        // ISO/TR 17534-3 T18: a 10-vertex concave building with the source in its
+        // backyard. The two lateral taut strings (Table 61) wrap e ≈ 80 m (left,
+        // S→v6→v5→v4→v3→R) and e ≈ 20 m (right, S→v1→v2→R).
+        let fp = FootprintLateral {
+            verts: vec![
+                (36.83, 7.19), (54.15, 17.19), (29.15, 60.49), (-5.49, 40.49), (9.51, 14.51),
+                (18.17, 19.51), (8.17, 36.83), (25.49, 46.83), (40.49, 20.85), (31.83, 15.85),
+            ],
+            base_z: 0.0,
+            top_z: 10.0,
+        };
+        let paths = cluster_lateral_paths(Vec3::new(15.0, 35.0, 2.0), Vec3::new(44.64, 63.66, 4.0), &[fp]);
+        assert_eq!(paths.len(), 2, "two homotopy classes around the building");
+        let mut e: Vec<f64> = paths.iter().map(|p| p.e_total).collect();
+        e.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_relative_eq!(e[0], 20.02, epsilon = 0.1); // right wrap
+        assert_relative_eq!(e[1], 80.06, epsilon = 0.1); // left wrap
     }
 
     #[test]
