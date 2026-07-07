@@ -1,0 +1,22 @@
+[package]
+name = "iso9613-py"
+version = "0.5.0"
+edition = "2021"
+description = "Python bindings for the ISO 9613-2 engine. Proprietary — Resonate Consultants internal use only."
+license-file = "../../LICENSE"
+publish = false
+
+[lib]
+name = "iso9613"
+# cdylib for the Python extension module; rlib so it can also be a Rust dep.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+iso9613-core = { path = "../iso9613-core", features = ["parallel"] }
+serde_json = "1"
+# abi3 → one wheel works across CPython ≥ 3.9 (no per-version rebuild).
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
+
+[package.metadata.maturin]
+# Build the wheel with: `maturin build --release -m crates/iso9613-py/Cargo.toml`
+name = "iso9613"

@@ -1131,6 +1131,17 @@ pub fn solve_par(scene: &Scene, max_threads: usize) -> Result<Results, SceneErro
     pool.install(|| solve(scene))
 }
 
+/// FFI-friendly entry point: solve a JSON-encoded [`Scene`] and return
+/// JSON-encoded [`Results`]. The stable seam that language bindings (Python via
+/// PyO3, JS/WASM, C hosts through a string ABI) wrap — they never need to mirror
+/// the typed model. Errors (malformed JSON, an invalid scene) come back as the
+/// error string, so the binding surface stays `str -> Result<str, str>`.
+pub fn solve_json(scene_json: &str) -> Result<String, String> {
+    let scene: Scene = serde_json::from_str(scene_json).map_err(|e| format!("scene JSON: {e}"))?;
+    let results = solve(&scene).map_err(|e| e.to_string())?;
+    serde_json::to_string(&results).map_err(|e| format!("results JSON: {e}"))
+}
+
 /// Stateful, incremental solver for interactive hosts (a map UI, a live grid).
 ///
 /// Holds a VALIDATED scene plus the cached obstacle decomposition (over-top
@@ -1370,6 +1381,21 @@ mod tests {
         let json = serde_json::to_string(&scene).unwrap();
         let back: Scene = serde_json::from_str(&json).unwrap();
         assert_eq!(back.sources[0].id, "s1");
+    }
+
+    #[test]
+    fn solve_json_round_trips() {
+        let scene = basic_scene();
+        let json = serde_json::to_string(&scene).unwrap();
+        let out = solve_json(&json).unwrap();
+        let results: Results = serde_json::from_str(&out).unwrap();
+        let direct = solve(&scene).unwrap();
+        assert_eq!(
+            results.per_receiver[0].total_dba,
+            direct.per_receiver[0].total_dba,
+        );
+        // Malformed input surfaces as an error string, not a panic.
+        assert!(solve_json("{ not json").is_err());
     }
 
     #[test]

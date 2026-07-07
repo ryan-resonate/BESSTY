@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/iso9613-core", "crates/iso9613-wasm"]
+# Python bindings: built on demand via `maturin` (needs a CPython ≥ 3.9 dev
+# toolchain), so kept out of the default `cargo build`/`test` of the workspace.
+exclude = ["crates/iso9613-py"]
 
 # Shared release profile: LTO + single codegen unit does most of what wasm-opt
 # would (see crates/iso9613-wasm/Cargo.toml for why wasm-opt itself is off).
