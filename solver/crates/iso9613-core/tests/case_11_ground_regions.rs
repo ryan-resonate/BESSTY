@@ -26,6 +26,7 @@ fn two_zone_scene() -> Scene {
                 GroundRegion { polygon: vec![[100.0, -50.0], [250.0, -50.0], [250.0, 50.0], [100.0, 50.0]], g: 1.0 },
             ],
         },
+        terrain: None,
         sources: vec![Source {
             id: "s".into(), kind: SourceKind::General,
             position: [0.0, 0.0, 2.0], height_agl: 2.0, lw: vec![100.0; 10],

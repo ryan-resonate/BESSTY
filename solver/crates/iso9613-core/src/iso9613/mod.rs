@@ -10,6 +10,7 @@ pub mod ground;
 pub mod meteorology;
 pub mod misc;
 pub mod reflection;
+pub mod terrain;
 
 pub use atmosphere::Atmosphere;
 
@@ -104,6 +105,7 @@ pub fn evaluate_with_barriers(
         g_receiver: g,
         barriers,
         lateral,
+        terrain_edges: &[],
         dz_cap: dz_cap_db,
         atm,
         ground_method: ground::GroundMethod::General,

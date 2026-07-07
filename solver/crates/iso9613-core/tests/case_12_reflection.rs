@@ -18,6 +18,7 @@ fn scene_with(reflectors: Vec<Reflector>) -> Scene {
         standard: Standard::Iso9613_2_2024,
         atmosphere: Atmosphere::default(),
         ground: Ground { default_g: 0.0, regions: vec![] }, // hard ground
+        terrain: None,
         sources: vec![Source {
             id: "s".into(), kind: SourceKind::General,
             position: [30.0, 20.0, 30.0], height_agl: 30.0, lw: vec![100.0; 10],

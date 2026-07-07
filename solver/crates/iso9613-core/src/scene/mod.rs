@@ -15,10 +15,12 @@ pub mod extent;
 
 use crate::iso9613::annex_d::{self, WtgRules};
 use crate::iso9613::atmosphere::Atmosphere as CoreAtmosphere;
+use crate::iso9613::barrier::path::DiffractionEdge;
 use crate::iso9613::barrier::{LateralEdge, WallBarrier};
 use crate::iso9613::ground::GroundMethod;
 use crate::iso9613::meteorology::cmet_db;
 use crate::iso9613::reflection;
+use crate::iso9613::terrain::Heightfield;
 use crate::spectrum::{BandSpectrum, BandSystem};
 use crate::standards::{GeneralEval, Iso1996, Iso2024, StandardModel};
 use crate::units::Vec3;
@@ -198,12 +200,42 @@ pub struct Reflector {
     pub alpha: f64,
 }
 
+/// Ground-elevation model for terrain screening (§7.4 / ISO/TR 17534-3 §5.8).
+/// A relevant ground ridge between source and receiver breaks the line of sight
+/// and diffracts the ray like a barrier top edge (contributing no lateral edge,
+/// being an unbounded ridge). `#[non_exhaustive]` + tagged so contour/TIN
+/// ingestion can be added as new variants (parsed down to a raster upstream).
+#[non_exhaustive]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Terrain {
+    /// A regular gridded elevation raster (bilinearly sampled).
+    Heightfield(Heightfield),
+}
+
+impl Terrain {
+    /// Terrain-profile diffraction edges (absolute-elevation) in the vertical
+    /// plane of the source→receiver plan line. Empty when the plan distance is
+    /// degenerate.
+    fn profile_edges(&self, s: [f64; 2], r: [f64; 2]) -> Vec<DiffractionEdge> {
+        let dp = ((r[0] - s[0]).powi(2) + (r[1] - s[1]).powi(2)).sqrt();
+        match self {
+            Terrain::Heightfield(hf) => hf.profile_edges(s, r, dp),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Scene {
     pub schema_version: u32,
     pub standard: Standard,
     pub atmosphere: Atmosphere,
     pub ground: Ground,
+    /// Optional ground-elevation model. `None` ⇒ flat ground at each entity's
+    /// absolute z (no terrain screening). When present, a ground ridge between
+    /// source and receiver diffracts the ray (§7.4 / ISO/TR 17534-3 §5.8).
+    #[serde(default)]
+    pub terrain: Option<Terrain>,
     pub sources: Vec<Source>,
     #[serde(default)]
     pub extended_sources: Vec<ExtendedSource>,
@@ -522,6 +554,11 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                         &scene.ground.regions, g,
                     )
                 };
+                let terrain_edges = scene
+                    .terrain
+                    .as_ref()
+                    .map(|t| t.profile_edges([s.e, s.n], [r.e, r.n]))
+                    .unwrap_or_default();
                 let lp = match &src.kind {
                     SourceKind::General => model.evaluate_general(&GeneralEval {
                         lw: &lw,
@@ -534,6 +571,7 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                         g_receiver,
                         barriers: &walls,
                         lateral: &lateral,
+                        terrain_edges: &terrain_edges,
                         dz_cap: scene.settings.dz_cap_db,
                         atm,
                         ground_method: scene.settings.ground_method,
@@ -562,6 +600,10 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                             h_s: src.height_agl, h_r: rx.height_agl,
                             g_source, g_middle, g_receiver,
                             barriers: &walls, lateral: &lateral,
+                            // Terrain screening of the reflected ray (a distinct
+                            // image→R profile) is deferred; direct-path terrain
+                            // dominates in practice.
+                            terrain_edges: &[],
                             dz_cap: scene.settings.dz_cap_db, atm,
                             ground_method: scene.settings.ground_method,
                         });
@@ -601,11 +643,17 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                     } else {
                         region_ground_factors([ss.e, ss.n], [r.e, r.n], ext.height_agl, rx.height_agl, &scene.ground.regions, g)
                     };
+                    let terrain_edges = scene
+                        .terrain
+                        .as_ref()
+                        .map(|t| t.profile_edges([ss.e, ss.n], [r.e, r.n]))
+                        .unwrap_or_default();
                     let lp = model.evaluate_general(&GeneralEval {
                         lw: &lw_sub, source: ss, receiver: r,
                         h_s: ext.height_agl, h_r: rx.height_agl,
                         g_source: gs, g_middle: gm, g_receiver: gr,
                         barriers: &walls, lateral: &lateral,
+                        terrain_edges: &terrain_edges,
                         dz_cap: scene.settings.dz_cap_db, atm,
                         ground_method: scene.settings.ground_method,
                     });
@@ -656,6 +704,7 @@ mod tests {
             standard: Standard::Iso9613_2_2024,
             atmosphere: Atmosphere::default(),
             ground: Ground { default_g: 0.5, regions: vec![] },
+            terrain: None,
             sources: vec![Source {
                 id: "s1".into(),
                 kind: SourceKind::General,

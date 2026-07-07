@@ -1,7 +1,10 @@
 # Licensed ISO standards (single-user licence — must never be committed or
 # carried into any extracted repo). Canonical copies for all Resonate staff:
 #   T:\Literature\Standards\ISO
-Standards/
+# Repo-root-anchored (leading slash): an unanchored `Standards/` also matches
+# the `crates/iso9613-core/src/standards/` source module (case-insensitively on
+# Windows) and silently drops it from version control.
+/Standards/
 
 # Build artefacts
 solver/target/

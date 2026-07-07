@@ -333,13 +333,20 @@ fn select_lateral(
 
 /// Build the diffraction geometry for a source→receiver pair. Returns `None`
 /// when no obstacle top rises above the line of sight (unshielded).
+///
+/// `terrain_edges` are pre-sampled ground-profile diffraction candidates (in
+/// the SR vertical plane) — elevated ground that can screen the ray. They emit
+/// no lateral edges (unbounded ridges, per ISO/TR 17534-3 §5.8).
 pub fn build_geometry(
     source: Vec3,
     receiver: Vec3,
     barriers: &[WallBarrier],
     lateral_edges: &[LateralEdge],
+    terrain_edges: &[DiffractionEdge],
 ) -> Option<BarrierGeometry> {
-    let candidates = project_walls(source, receiver, barriers);
+    let mut candidates = project_walls(source, receiver, barriers);
+    candidates.extend_from_slice(terrain_edges);
+    candidates.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap());
     let s_in_plane = DiffractionEdge { x: 0.0, z: source.z };
     let dx = receiver.e - source.e;
     let dy = receiver.n - source.n;

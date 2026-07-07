@@ -19,6 +19,7 @@ fn scene_with(obstacles: Vec<Obstacle>) -> Scene {
         standard: Standard::Iso9613_2_2024,
         atmosphere: Atmosphere::default(),
         ground: Ground { default_g: 0.5, regions: vec![] },
+        terrain: None,
         sources: vec![Source {
             id: "s".into(),
             kind: SourceKind::General,

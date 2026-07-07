@@ -17,6 +17,7 @@ fn base_scene(sources: Vec<Source>, extended: Vec<ExtendedSource>) -> Scene {
         standard: Standard::Iso9613_2_2024,
         atmosphere: Atmosphere::default(),
         ground: Ground { default_g: 0.0, regions: vec![] },
+        terrain: None,
         sources,
         extended_sources: extended,
         receivers: vec![Receiver { id: "r".into(), position: [50.0, 100.0, 2.0], height_agl: 2.0 }],
