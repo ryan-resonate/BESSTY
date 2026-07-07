@@ -220,6 +220,21 @@ pub struct Reflector {
     pub alpha_bands: Option<Vec<f64>>,
 }
 
+/// A vertical cylindrical reflector (vessel, tank, curved façade) — ISO
+/// 9613-2:2024 §7.5.4. A first-order specular reflection off the tangent plane
+/// at the reflection point, weakened by the curvature attenuation `Acurv`
+/// (Eq 30). Higher-order reflections off curved surfaces are not considered.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CylindricalReflector {
+    pub centre: [f64; 2],
+    pub radius: f64,
+    pub base_z: f64,
+    pub top_z: f64,
+    pub alpha: f64,
+    #[serde(default)]
+    pub alpha_bands: Option<Vec<f64>>,
+}
+
 /// A dense-foliage plan region (Annex A.1). `Afol` accrues with the path length
 /// crossing it. Assumes the ray lies within the canopy over the crossed extent
 /// (canopy-height gating is a later refinement).
@@ -317,6 +332,9 @@ pub struct Scene {
     pub obstacles: Vec<Obstacle>,
     #[serde(default)]
     pub reflectors: Vec<Reflector>,
+    /// Cylindrical reflectors (2024 §7.5.4). First-order only.
+    #[serde(default)]
+    pub cylinders: Vec<CylindricalReflector>,
     /// Annex A miscellaneous attenuation regions (foliage / industrial /
     /// housing). Default-empty ⇒ no `Amisc`.
     #[serde(default)]
@@ -918,6 +936,52 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                     }
                 }
 
+                // §7.5.4 cylindrical reflections (2024): tangent-plane reflection
+                // weakened by the curvature attenuation Acurv (first order only).
+                if matches!(src.kind, SourceKind::General) && !scene.cylinders.is_empty() {
+                    let lambdas: Vec<f64> =
+                        system.centres_exact().iter().map(|c| 340.0 / c).collect();
+                    for cyl in &scene.cylinders {
+                        let c = reflection::Cylinder {
+                            centre: cyl.centre, radius: cyl.radius,
+                            base_z: cyl.base_z, top_z: cyl.top_z, alpha: cyl.alpha,
+                        };
+                        let Some(cr) = reflection::reflect_cylinder(s, r, &c, &lambdas) else {
+                            continue;
+                        };
+                        let img_lw = BandSpectrum::from_iter(
+                            system,
+                            src.lw.iter().enumerate().map(|(b, &x)| {
+                                let alpha = cyl
+                                    .alpha_bands
+                                    .as_ref()
+                                    .and_then(|ab| ab.get(b).copied())
+                                    .unwrap_or(cyl.alpha);
+                                x + 10.0 * (1.0 - alpha).max(1e-12).log10() - cr.a_curv
+                            }),
+                        );
+                        let refl_lp = model.evaluate_general(&GeneralEval {
+                            lw: &img_lw, source: cr.image_source, receiver: r,
+                            h_s: src.height_agl, h_r: rx.height_agl,
+                            g_source, g_middle, g_receiver,
+                            barriers: &walls, lateral: &lateral,
+                            terrain_edges: &[], footprints: &[],
+                            dz_cap: scene.settings.dz_cap_db, atm,
+                            ground_method: scene.settings.ground_method, hm_override,
+                        });
+                        for ((band, &v), &rl) in bands
+                            .iter_mut()
+                            .zip(cr.valid.iter())
+                            .zip(refl_lp.bands.iter())
+                        {
+                            if v {
+                                *band = 10.0
+                                    * (10f64.powf(0.1 * *band) + 10f64.powf(0.1 * rl)).log10();
+                            }
+                        }
+                    }
+                }
+
                 // §8 long-term meteorological correction (frequency-independent).
                 let dp = ((r.e - s.e).powi(2) + (r.n - s.n).powi(2)).sqrt();
                 let cmet = cmet_db(scene.settings.c0_db, src.height_agl, rx.height_agl, dp);
@@ -1050,6 +1114,7 @@ mod tests {
             receivers: vec![Receiver { id: "r1".into(), position: [200.0, 0.0, 1.5], height_agl: 1.5 }],
             obstacles: vec![],
             reflectors: vec![],
+            cylinders: vec![],
             amisc: Amisc::default(),
             settings: Settings::default(),
         }

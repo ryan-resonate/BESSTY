@@ -27,6 +27,7 @@ fn scene_with(reflectors: Vec<Reflector>) -> Scene {
         receivers: vec![Receiver { id: "r".into(), position: [70.0, 20.0, 30.0], height_agl: 30.0 }],
         obstacles: vec![],
         reflectors,
+        cylinders: vec![],
         amisc: Amisc::default(),
         settings: Settings::default(),
     }

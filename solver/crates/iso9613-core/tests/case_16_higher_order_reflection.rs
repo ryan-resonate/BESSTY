@@ -38,6 +38,7 @@ fn scene(max_order: u32) -> Scene {
         receivers: vec![Receiver { id: "r".into(), position: [30.0, 6.0, 5.0], height_agl: 5.0 }],
         obstacles: vec![],
         reflectors: walls(),
+        cylinders: vec![],
         amisc: Default::default(),
         settings: Settings { max_reflection_order: max_order, ..Default::default() },
     }

@@ -23,6 +23,7 @@ fn base_scene(sources: Vec<Source>, extended: Vec<ExtendedSource>) -> Scene {
         receivers: vec![Receiver { id: "r".into(), position: [50.0, 100.0, 2.0], height_agl: 2.0 }],
         obstacles: vec![],
         reflectors: vec![],
+        cylinders: vec![],
         amisc: Amisc::default(),
         settings: Settings::default(),
     }

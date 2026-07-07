@@ -143,6 +143,124 @@ pub fn reflect_chain(
     Some((ReflectionChain { image_source: images[k] }, valid))
 }
 
+/// A vertical cylindrical reflector (vessel, tank, curved façade) — ISO
+/// 9613-2:2024 §7.5.4. Plan `centre` + `radius`, height band, and absorption.
+#[derive(Copy, Clone, Debug)]
+pub struct Cylinder {
+    pub centre: [f64; 2],
+    pub radius: f64,
+    pub base_z: f64,
+    pub top_z: f64,
+    pub alpha: f64,
+}
+
+/// A first-order reflection off a cylinder: the planar reflection off the
+/// TANGENT plane at the reflection point P, plus the curvature attenuation
+/// `Acurv` (Eq 30) that accounts for the convex surface spreading the ray.
+pub struct CylinderReflection {
+    /// Image of `source` across the tangent plane at P (feeds the normal chain).
+    pub image_source: Vec3,
+    pub refl_point: Vec3,
+    pub dso: f64,
+    pub dor: f64,
+    /// Extra broadband attenuation from the curvature (dB, ≥ 0), on top of the
+    /// tangent-plane reflection loss.
+    pub a_curv: f64,
+    /// Per-band Fresnel validity of the tangent-plane reflection (§7.5.2), sized
+    /// by the cylinder's silhouette (diameter × height).
+    pub valid: Vec<bool>,
+}
+
+/// Locate the specular reflection point on a cylinder and build the tangent-
+/// plane reflection + `Acurv`. `None` if no convex reflection point faces both
+/// source and receiver, or the point lies outside the height band.
+pub fn reflect_cylinder(
+    source: Vec3,
+    receiver: Vec3,
+    cyl: &Cylinder,
+    lambdas: &[f64],
+) -> Option<CylinderReflection> {
+    let m = cyl.centre;
+    // Mirror condition: (unit(S−P) + unit(R−P)) ∥ outward normal n=(cosθ,sinθ).
+    // g(θ) = cross(unit(S−P)+unit(R−P), n) = 0 at the reflection point.
+    let g = |theta: f64| -> f64 {
+        let (c, sn) = (theta.cos(), theta.sin());
+        let (px, py) = (m[0] + cyl.radius * c, m[1] + cyl.radius * sn);
+        let (ix, iy) = (source.e - px, source.n - py);
+        let il = (ix * ix + iy * iy).sqrt();
+        let (ox, oy) = (receiver.e - px, receiver.n - py);
+        let ol = (ox * ox + oy * oy).sqrt();
+        if il < 1e-9 || ol < 1e-9 {
+            return 0.0;
+        }
+        let (sx, sy) = (ix / il + ox / ol, iy / il + oy / ol);
+        sx * sn - sy * c
+    };
+    // Scan the circle for a sign change on the convex (outward-facing) side.
+    let n_samp = 720;
+    let mut prev = (0.0_f64, g(0.0));
+    let mut hit = None;
+    for i in 1..=n_samp {
+        let theta = std::f64::consts::TAU * i as f64 / n_samp as f64;
+        let gv = g(theta);
+        if prev.1 * gv < 0.0 {
+            let (mut lo, mut hi) = (prev.0, theta);
+            for _ in 0..60 {
+                let mid = 0.5 * (lo + hi);
+                if g(lo) * g(mid) <= 0.0 { hi = mid } else { lo = mid }
+            }
+            let theta_r = 0.5 * (lo + hi);
+            let (c, sn) = (theta_r.cos(), theta_r.sin());
+            let (px, py) = (m[0] + cyl.radius * c, m[1] + cyl.radius * sn);
+            // Both rays must strike the OUTWARD face (convex reflection).
+            let s_dot = (source.e - px) * c + (source.n - py) * sn;
+            let r_dot = (receiver.e - px) * c + (receiver.n - py) * sn;
+            if s_dot > 0.0 && r_dot > 0.0 {
+                hit = Some((px, py, -sn, c)); // tangent dir = (−sinθ, cosθ)
+                break;
+            }
+        }
+        prev = (theta, gv);
+    }
+    let (px, py, tx, ty) = hit?;
+    // Planar reflection off the tangent plane through P.
+    let half = (cyl.radius + source.sub(receiver).length()).max(1.0);
+    let tangent = Facade {
+        a: [px - tx * half, py - ty * half],
+        b: [px + tx * half, py + ty * half],
+        base_z: cyl.base_z,
+        top_z: cyl.top_z,
+        alpha: cyl.alpha,
+    };
+    let refl = reflect(source, receiver, &tangent)?;
+    // Curvature attenuation, Eq 30. d = distance of the incident-ray LINE (S→P)
+    // from the centre M; k = d/r.
+    let (dsx, dsy) = (px - source.e, py - source.n);
+    let dlen = (dsx * dsx + dsy * dsy).sqrt().max(1e-9);
+    let d = ((m[0] - source.e) * dsy - (m[1] - source.n) * dsx).abs() / dlen;
+    let k = (d / cyl.radius).min(1.0 - 1e-9);
+    let a_curv = 10.0
+        * (1.0 + (2.0 * refl.dso * refl.dor) / (cyl.radius * (refl.dso + refl.dor)) * (1.0 - k * k).powf(-0.5))
+            .log10();
+    // Fresnel gate (§7.5.2) sized by the cylinder's silhouette (2r wide).
+    let gate = Facade {
+        a: [px - tx * cyl.radius, py - ty * cyl.radius],
+        b: [px + tx * cyl.radius, py + ty * cyl.radius],
+        base_z: cyl.base_z,
+        top_z: cyl.top_z,
+        alpha: cyl.alpha,
+    };
+    let valid = lambdas.iter().map(|&l| fresnel_valid(&refl, &gate, source, l)).collect();
+    Some(CylinderReflection {
+        image_source: refl.image_source,
+        refl_point: refl.refl_point,
+        dso: refl.dso,
+        dor: refl.dor,
+        a_curv: a_curv.max(0.0),
+        valid,
+    })
+}
+
 /// First-order reflection of `source` off `facade` toward `receiver`, if the
 /// specular point lies on the finite facade (within the segment and its height
 /// band). `None` otherwise.
@@ -248,6 +366,21 @@ mod tests {
         // |image − R| is the real bent path length.
         assert_relative_eq!(chain.image_source.sub(r).length(), (30.0f64.powi(2) + 18.0f64.powi(2)).sqrt(), epsilon = 1e-9);
         assert!(valid.iter().all(|&v| v), "large walls pass Fresnel at both bands");
+    }
+
+    #[test]
+    fn cylinder_symmetric_reflection_and_curvature() {
+        // Cylinder centre (0,0) r=5; S(−10,20) and R(10,20) symmetric → the
+        // reflection point is the top of the circle P=(0,5). Hand values:
+        // dS=dR=18.028, d=2.773, k=0.5546, Acurv=10·lg(5.333)=7.27 dB.
+        let cyl = Cylinder { centre: [0.0, 0.0], radius: 5.0, base_z: 0.0, top_z: 20.0, alpha: 0.0 };
+        let refl = reflect_cylinder(Vec3::new(-10.0, 20.0, 5.0), Vec3::new(10.0, 20.0, 5.0), &cyl, &[0.34]).unwrap();
+        assert_relative_eq!(refl.refl_point.e, 0.0, epsilon = 1e-4);
+        assert_relative_eq!(refl.refl_point.n, 5.0, epsilon = 1e-4);
+        assert_relative_eq!(refl.dso, 18.0278, epsilon = 1e-3);
+        assert_relative_eq!(refl.a_curv, 7.271, epsilon = 1e-2);
+        // Convex surface always weakens the reflection → Acurv > 0.
+        assert!(refl.a_curv > 0.0);
     }
 
     #[test]

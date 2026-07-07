@@ -63,6 +63,7 @@ fn tr_scene(ground: Ground, method: GroundMethod, obstacles: Vec<Obstacle>) -> S
         receivers: vec![Receiver { id: "R".into(), position: [200.0, 50.0, 4.0], height_agl: 4.0 }],
         obstacles,
         reflectors: vec![],
+        cylinders: vec![],
         amisc: Default::default(),
         settings: Settings { ground_method: method, ..Default::default() },
     }

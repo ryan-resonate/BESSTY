@@ -60,6 +60,7 @@ fn scene(terrain: Option<Terrain>) -> Scene {
         receivers: vec![Receiver { id: "r".into(), position: [200.0, 0.0, 3.0], height_agl: 3.0 }],
         obstacles: vec![],
         reflectors: vec![],
+        cylinders: vec![],
         amisc: Amisc::default(),
         settings: Settings::default(),
     }

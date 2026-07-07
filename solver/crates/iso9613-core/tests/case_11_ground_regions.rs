@@ -35,6 +35,7 @@ fn two_zone_scene() -> Scene {
         receivers: vec![Receiver { id: "r".into(), position: [200.0, 0.0, 2.0], height_agl: 2.0 }],
         obstacles: vec![],
         reflectors: vec![],
+        cylinders: vec![],
         amisc: Amisc::default(),
         settings: Settings::default(),
     }

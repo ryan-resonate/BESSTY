@@ -36,6 +36,7 @@ fn scene(s: [f64; 3], r: [f64; 3], amisc: Amisc) -> Scene {
         receivers: vec![Receiver { id: "r".into(), position: r, height_agl: r[2] }],
         obstacles: vec![],
         reflectors: vec![],
+        cylinders: vec![],
         amisc,
         settings: Settings::default(),
     }
