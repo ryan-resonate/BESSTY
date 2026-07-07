@@ -169,6 +169,28 @@ fn t05_spatially_varying_ground_simplified() {
 }
 
 #[test]
+fn t06_varying_ground_heights_general() {
+    // §6.2.7 — a 10 m plateau (Table 12) lifts the RECEIVER's local ground to
+    // z=10, so R sits at abs z=14 but only 4 m above its ground. The plateau is
+    // below the line of sight (no screening); its whole effect is the split
+    // z-datum — heights above LOCAL ground (hS=1, hR=4) drive Agr, while the
+    // absolute positions (d3=194.60) drive Adiv/Aatm. Same ground areas as
+    // T08, so Agr matches. Table 15.
+    let mut scene = tr_scene(t08_ground(), GroundMethod::General, vec![]);
+    scene.sources[0].position = [10.0, 10.0, 1.0];
+    scene.sources[0].height_agl = 1.0;
+    scene.receivers[0].position = [200.0, 50.0, 14.0]; // abs z on the plateau
+    scene.receivers[0].height_agl = 4.0; // above local (plateau) ground
+    assert_tr(&scene, [39.88, 35.65, 29.70, 29.24, 34.82, 35.83, 33.13, 22.68], 40.59);
+}
+
+// PENDING T07 (§6.2.8): the simplified method §7.3.2 over the SAME terrain needs
+// the mean propagation height hm above the undulating ground (TR hm=4.99). The
+// area-integral of the S→R ray over the plateau profile gives 6.71 here, so the
+// TR uses a different hm construction (not derivable from the text alone). The
+// GENERAL method over this terrain (T06) passes.
+
+#[test]
 fn t08_long_barrier() {
     // §6.2.9 — long thin barrier, upper edge (100,240,6)→(265,-180,6), over the
     // T08 ground areas. The ends are far off-path so lateral diffraction is
