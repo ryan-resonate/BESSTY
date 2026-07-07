@@ -11,12 +11,13 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::iso9613::annex_d::WtgRules;
+use crate::iso9613::annex_d::{self, WtgRules};
 use crate::iso9613::atmosphere::Atmosphere as CoreAtmosphere;
 use crate::iso9613::barrier::{LateralEdge, WallBarrier};
+use crate::iso9613::ground::GroundMethod;
 use crate::iso9613::meteorology::cmet_db;
-use crate::iso9613::{evaluate_with_barriers, annex_d::evaluate_wtg};
 use crate::spectrum::{BandSpectrum, BandSystem};
+use crate::standards::{GeneralEval, Iso1996, Iso2024, StandardModel};
 use crate::units::Vec3;
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -117,6 +118,9 @@ pub struct Settings {
     pub dz_cap_db: Option<f64>,
     /// §8 meteorological-correction factor C0 (dB). 0 disables Cmet.
     pub c0_db: f64,
+    /// §7.3 ground method (edition-independent). Default General.
+    #[serde(default)]
+    pub ground_method: GroundMethod,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -197,11 +201,9 @@ impl Scene {
         if self.schema_version != SCHEMA_VERSION {
             return Err(SceneError::UnsupportedSchemaVersion(self.schema_version));
         }
+        // Both editions are implemented (1996 + 2024).
         match self.standard {
-            Standard::Iso9613_2_2024 => {}
-            Standard::Iso9613_2_1996 => {
-                return Err(SceneError::StandardNotImplemented("ISO 9613-2:1996 (Phase 2)"));
-            }
+            Standard::Iso9613_2_1996 | Standard::Iso9613_2_2024 => {}
         }
         if !all_finite([
             self.atmosphere.temperature_c,
@@ -285,6 +287,14 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
     let (walls, lateral) = scene.barriers();
     let g = scene.ground.default_g;
 
+    // Edition dispatch (once) — general sources score through the standard's
+    // evaluator; WTG sources always use Annex D (2024-only), independent of the
+    // selected edition (1996 has no wind-turbine annex).
+    let model: &dyn StandardModel = match scene.standard {
+        Standard::Iso9613_2_1996 => &Iso1996,
+        Standard::Iso9613_2_2024 => &Iso2024,
+    };
+
     let per_receiver = scene
         .receivers
         .iter()
@@ -295,11 +305,20 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                 let s = Vec3::new(src.position[0], src.position[1], src.position[2]);
                 let lw = BandSpectrum::from_iter(system, src.lw.iter().copied());
                 let lp = match &src.kind {
-                    SourceKind::General => evaluate_with_barriers(
-                        &lw, s, r, src.height_agl, rx.height_agl, g, &walls, &lateral,
-                        scene.settings.dz_cap_db, atm,
-                    ),
-                    SourceKind::WindTurbine { rotor_diameter_m, apply_concave } => evaluate_wtg(
+                    SourceKind::General => model.evaluate_general(&GeneralEval {
+                        lw: &lw,
+                        source: s,
+                        receiver: r,
+                        h_s: src.height_agl,
+                        h_r: rx.height_agl,
+                        g,
+                        barriers: &walls,
+                        lateral: &lateral,
+                        dz_cap: scene.settings.dz_cap_db,
+                        atm,
+                        ground_method: scene.settings.ground_method,
+                    }),
+                    SourceKind::WindTurbine { rotor_diameter_m, apply_concave } => annex_d::evaluate_wtg(
                         &lw, s, r, src.height_agl, rx.height_agl, g, &walls, &lateral,
                         WtgRules::default(), *apply_concave, *rotor_diameter_m, atm,
                     ),
@@ -340,6 +359,7 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::iso9613::evaluate_with_barriers;
     use approx::assert_relative_eq;
 
     fn basic_scene() -> Scene {
@@ -386,10 +406,39 @@ mod tests {
     }
 
     #[test]
-    fn iso1996_not_implemented_yet() {
-        let mut scene = basic_scene();
-        scene.standard = Standard::Iso9613_2_1996;
-        assert!(matches!(solve(&scene), Err(SceneError::StandardNotImplemented(_))));
+    fn iso1996_solves_and_differs_from_2024_over_a_barrier() {
+        // A barrier makes the edition switch observable: 1996's Dz bracket
+        // (3 + X·Kmet) gives slightly MORE attenuation than 2024's
+        // (1 + (2+X)·Kmet), so the 1996 total is a touch lower.
+        let mut base = basic_scene();
+        base.obstacles.push(Obstacle::Wall {
+            polyline: vec![[100.0, -50.0], [100.0, 50.0]],
+            base_z: vec![0.0, 0.0],
+            height_agl: 8.0,
+        });
+        let mut s96 = base.clone();
+        s96.standard = Standard::Iso9613_2_1996;
+
+        let t24 = solve(&base).unwrap().per_receiver[0].total_dba.unwrap();
+        let t96 = solve(&s96).unwrap().per_receiver[0].total_dba.unwrap();
+        assert!(t96 < t24, "1996 barrier should attenuate more: 1996={t96} 2024={t24}");
+        assert!((t24 - t96) < 1.0, "edition delta should be small: {}", t24 - t96);
+    }
+
+    #[test]
+    fn simplified_ground_method_solves() {
+        // §7.3.2 selected via the setting — produces a finite result distinct
+        // from the General method for the same flat-ground scene.
+        let mut simp = basic_scene();
+        simp_ground(&mut simp);
+        let general = solve(&basic_scene()).unwrap().per_receiver[0].total_dba.unwrap();
+        let simplified = solve(&simp).unwrap().per_receiver[0].total_dba.unwrap();
+        assert!(simplified.is_finite());
+        assert!((simplified - general).abs() > 0.01, "simplified should differ from general");
+    }
+
+    fn simp_ground(scene: &mut Scene) {
+        scene.settings.ground_method = GroundMethod::Simplified;
     }
 
     #[test]

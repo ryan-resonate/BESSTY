@@ -14,8 +14,24 @@
 
 pub mod functions;
 pub mod general;
+pub mod simplified;
 
 pub use general::agr_spectrum;
+
+/// Which §7.3 method computes the ground effect. Both are identical across the
+/// 1996 and 2024 editions, so this is a **user setting** (not an `EditionSpec`
+/// field). Default `General`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GroundMethod {
+    /// §7.3.1 octave-band General method (with the edition's `GroundCombination`).
+    #[default]
+    General,
+    /// §7.3.2 simplified A-weighted method (Eq 14 + the Eq 15 `D` source term).
+    /// Valid only over porous/mixed ground for a broadband (non-tonal) source;
+    /// required by ISO/TR 17534-3 cases T05/T07.
+    Simplified,
+}
 
 /// How the per-region attenuations `AS + AR + Am` combine into the final
 /// `Agr` — the one place the ground term differs between editions

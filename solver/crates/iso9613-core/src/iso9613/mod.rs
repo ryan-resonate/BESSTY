@@ -102,5 +102,6 @@ pub fn evaluate_with_barriers(
         lateral,
         dz_cap: dz_cap_db,
         atm,
+        ground_method: ground::GroundMethod::General,
     })
 }
