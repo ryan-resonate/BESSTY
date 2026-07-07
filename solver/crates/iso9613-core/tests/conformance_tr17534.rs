@@ -322,6 +322,28 @@ fn t14_polygonal_building_over_terrain() {
     assert_tr(&scene, [34.93, 30.42, 25.18, 21.55, 20.14, 17.41, 12.00, -0.08], 25.38);
 }
 
+// KNOWN LIMITATION — receiver ABOVE the roof (T12 z=15, T15 z=23 over a 10 m
+// roof). The around-the-side path then partly rides OVER the roof (a combined
+// lateral+vertical diffraction the TR still counts, Δz≈1.66). We don't yet build
+// that 3-D box path: the roof guard in footprint_lateral_paths drops the pure
+// side-wrap once a corner would clear the roof, so the result is OVER-attenuated
+// (conservative/safe) rather than the old catastrophic under-attenuation. T15's
+// total then reads ~47.1 vs the TR's 49.92; the test asserts only that safe
+// direction until the box path lands.
+#[test]
+fn t15_receiver_above_roof_is_conservative() {
+    let octagon = vec![
+        [10.96, 15.50], [12.00, 13.00], [14.50, 11.96], [17.00, 13.00],
+        [18.04, 15.50], [17.00, 18.00], [14.50, 19.04], [12.00, 18.00],
+    ];
+    let scene = tr_scene_sr([8.0, 10.0, 1.0], [25.0, 20.0, 23.0], 0.2, vec![building(octagon, 10.0)]);
+    let total = run(&scene).1;
+    // Conservative: never UNDER-predict the level (the old bug gave 61 dB, a
+    // 11 dB under-prediction). Within a few dB on the safe side of the TR's 49.92.
+    assert!(total <= 49.92 + 0.05, "must not under-predict: {total}");
+    assert!(total > 45.0, "but not wildly over-attenuated: {total}");
+}
+
 #[test]
 fn t08_long_barrier() {
     // §6.2.9 — long thin barrier, upper edge (100,240,6)→(265,-180,6), over the

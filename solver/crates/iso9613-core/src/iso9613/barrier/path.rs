@@ -234,10 +234,21 @@ fn wrap_path_lengths(
         return None;
     }
     // Unfolded height along the path (linear S.z → R.z), clamped to the face.
-    let height_at = |k: usize| {
-        let h = source.z + (receiver.z - source.z) * cum[k] / total;
-        clamp_height(h, fp.base_z, fp.top_z)
-    };
+    let unfolded = |k: usize| source.z + (receiver.z - source.z) * cum[k] / total;
+    let height_at = |k: usize| clamp_height(unfolded(k), fp.base_z, fp.top_z);
+
+    // If an interior corner's taut height rises ABOVE the roof, the ray clears
+    // over the top there rather than diffracting around the vertical edge — this
+    // side has no valid pure around-the-side wrap (the over-top path carries it).
+    // Emitting the roof-clamped wrap anyway would fabricate a near-open lateral
+    // that cancels the screening (receiver-above-roof). Returning None here is
+    // conservative; the exact combined over-roof + around-corner path (ISO/TR
+    // T12/T15) is a later refinement.
+    for k in 1..plan.len() - 1 {
+        if unfolded(k) > fp.top_z + 1e-6 {
+            return None;
+        }
+    }
 
     // 3-D node positions (plan + unfolded height).
     let node = |k: usize| -> (f64, f64, f64) {
