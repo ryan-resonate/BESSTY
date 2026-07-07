@@ -53,19 +53,19 @@ fn building_screens_over_top_and_around_the_sides() {
     let t_with = with.per_receiver[0].total_dba.unwrap();
     let t_without = without.per_receiver[0].total_dba.unwrap();
 
-    // Independently computed (oracle.py): over-top multi-edge diffraction
-    // combined (Eq 25) with the best-per-side lateral paths (the near corners,
-    // Δz = 3.69) → 38.54 dB(A), a 14.79 dB drop. (Over-top alone would be
-    // 36.98 dB(A); the sides leak ~1.6 dB back in.)
-    assert_relative_eq!(t_with, 38.54, epsilon = 0.3);
+    // The building composes over-top MULTI-EDGE diffraction (near+far walls,
+    // Eq 25 — the mechanism validated against ISO/TR 17534-3 T08 and case_04)
+    // with the best-per-side LATERAL combine (validated against TR T09): the
+    // over-top Dz takes the Agr adjustment first, then energy-sums with the two
+    // around-the-corner paths (no Kmet, no cap). → 38.26 dB(A), a 15.07 dB drop.
+    assert_relative_eq!(t_with, 38.26, epsilon = 0.3);
     assert_relative_eq!(t_without, 53.33, epsilon = 0.3);
 
-    // Per-band Lp (oracle.py) — pins down the lateral selection + Eq-25 combine.
-    // Evaluated at the exact ISO 266 centres (α and λ); vs the nominal-centre
-    // derivation only the high bands shift materially (4k +0.06, 8k +0.19 dB),
-    // tracking the atmospheric-absorption change validated against ISO/TR
-    // 17534-3's α row.
-    let expected = [48.67, 47.70, 46.38, 41.72, 38.43, 35.40, 33.67, 30.14, 24.42, 11.39];
+    // Per-band Lp at the exact ISO 266 centres. (Vs the pre-fix barrier logic
+    // the 250 Hz band drops ~0.9 dB — that band's Agr is large & positive, and
+    // the fix subtracts it from the over-top path before the lateral combine,
+    // not from the combined total.)
+    let expected = [48.49, 47.52, 46.23, 41.57, 37.50, 35.11, 33.51, 29.99, 24.26, 11.24];
     let bands = &with.per_receiver[0].per_source[0].bands;
     for (i, exp) in expected.iter().enumerate() {
         assert_relative_eq!(bands[i], *exp, epsilon = 0.15);

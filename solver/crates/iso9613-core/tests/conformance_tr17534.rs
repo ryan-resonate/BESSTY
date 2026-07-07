@@ -19,8 +19,8 @@
 
 use approx::assert_relative_eq;
 use iso9613_core::scene::{
-    solve, Atmosphere, Ground, GroundRegion, Receiver, Scene, Settings, Source, SourceKind,
-    Standard, SCHEMA_VERSION,
+    solve, Atmosphere, Ground, GroundRegion, Obstacle, Receiver, Scene, Settings, Source,
+    SourceKind, Standard, SCHEMA_VERSION,
 };
 use iso9613_core::iso9613::ground::GroundMethod;
 
@@ -43,7 +43,7 @@ fn tr_atm() -> Atmosphere {
 }
 
 /// A TR scene: ISO 9613-2:1996, S(10,10,1) → R(200,50,4) (Table 1), 20 °C/70 %.
-fn tr_scene(ground: Ground, method: GroundMethod) -> Scene {
+fn tr_scene(ground: Ground, method: GroundMethod, obstacles: Vec<Obstacle>) -> Scene {
     Scene {
         schema_version: SCHEMA_VERSION,
         standard: Standard::Iso9613_2_1996,
@@ -59,11 +59,31 @@ fn tr_scene(ground: Ground, method: GroundMethod) -> Scene {
         }],
         extended_sources: vec![],
         receivers: vec![Receiver { id: "R".into(), position: [200.0, 50.0, 4.0], height_agl: 4.0 }],
-        obstacles: vec![],
+        obstacles,
         reflectors: vec![],
         amisc: Default::default(),
         settings: Settings { ground_method: method, ..Default::default() },
     }
+}
+
+/// Ground areas for T08/T09 (Table 11): SAME rectangles as T04 but the G
+/// assignment is reversed — A1 = 0.9, A2 = 0.5, A3 = 0.2.
+fn t08_ground() -> Ground {
+    Ground {
+        default_g: 0.5,
+        regions: vec![
+            GroundRegion { polygon: vec![[0.0, 60.0], [50.0, 60.0], [50.0, -10.0], [0.0, -10.0]], g: 0.9 },
+            GroundRegion { polygon: vec![[50.0, 60.0], [150.0, 60.0], [150.0, -10.0], [50.0, -10.0]], g: 0.5 },
+            GroundRegion { polygon: vec![[150.0, 60.0], [210.0, 60.0], [210.0, -10.0], [150.0, -10.0]], g: 0.2 },
+        ],
+    }
+}
+
+/// A thin screen from its two upper-edge endpoints (TR barrier tables). The
+/// endpoints' z is the absolute top; the ground under this scene is flat at 0,
+/// so `height_agl = top_z`.
+fn wall(a: [f64; 2], b: [f64; 2], top_z: f64) -> Obstacle {
+    Obstacle::Wall { polyline: vec![a, b], base_z: vec![0.0, 0.0], height_agl: top_z }
 }
 
 /// Solve and return the 63 Hz–8 kHz band levels (8 values) + A-weighted total.
@@ -100,34 +120,60 @@ fn t04_ground() -> Ground {
 #[test]
 fn t01_reflecting_ground_g0() {
     // §6.2.2 — uniform G = 0. Table 4.
-    let scene = tr_scene(Ground { default_g: 0.0, regions: vec![] }, GroundMethod::General);
+    let scene = tr_scene(Ground { default_g: 0.0, regions: vec![] }, GroundMethod::General, vec![]);
     assert_tr(&scene, [39.90, 39.86, 39.70, 39.37, 38.95, 38.17, 35.47, 25.04], 44.29);
 }
 
 #[test]
 fn t02_mixed_ground_g05() {
     // §6.2.3 — uniform G = 0.5. Table 5.
-    let scene = tr_scene(Ground { default_g: 0.5, regions: vec![] }, GroundMethod::General);
+    let scene = tr_scene(Ground { default_g: 0.5, regions: vec![] }, GroundMethod::General, vec![]);
     assert_tr(&scene, [39.90, 36.17, 33.02, 33.20, 36.11, 36.33, 33.63, 23.20], 41.53);
 }
 
 #[test]
 fn t03_porous_ground_g1() {
     // §6.2.4 — uniform G = 1. Table 6.
-    let scene = tr_scene(Ground { default_g: 1.0, regions: vec![] }, GroundMethod::General);
+    let scene = tr_scene(Ground { default_g: 1.0, regions: vec![] }, GroundMethod::General, vec![]);
     assert_tr(&scene, [39.90, 32.48, 26.33, 27.03, 33.27, 34.49, 31.79, 21.36], 39.14);
 }
 
 #[test]
 fn t04_spatially_varying_ground_general() {
     // §6.2.5 — three ground areas, general method §7.3.1. Table 9.
-    let scene = tr_scene(t04_ground(), GroundMethod::General);
+    let scene = tr_scene(t04_ground(), GroundMethod::General, vec![]);
     assert_tr(&scene, [39.90, 36.24, 35.23, 36.04, 36.95, 36.57, 33.87, 23.45], 42.23);
 }
 
 #[test]
 fn t05_spatially_varying_ground_simplified() {
     // §6.2.6 — identical to T04 but the alternative method §7.3.2. Table 10.
-    let scene = tr_scene(t04_ground(), GroundMethod::Simplified);
+    let scene = tr_scene(t04_ground(), GroundMethod::Simplified, vec![]);
     assert_tr(&scene, [34.90, 34.86, 34.71, 34.38, 33.95, 33.17, 30.48, 20.05], 39.30);
+}
+
+#[test]
+fn t08_long_barrier() {
+    // §6.2.9 — long thin barrier, upper edge (100,240,6)→(265,-180,6), over the
+    // T08 ground areas. The ends are far off-path so lateral diffraction is
+    // negligible; over-top screening dominates. Table 21.
+    let scene = tr_scene(
+        t08_ground(),
+        GroundMethod::General,
+        vec![wall([100.0, 240.0], [265.0, -180.0], 6.0)],
+    );
+    assert_tr(&scene, [34.86, 30.85, 29.72, 29.01, 27.26, 26.01, 21.04, 8.02], 32.48);
+}
+
+#[test]
+fn t09_short_barrier() {
+    // §6.2.10 — short thin barrier, upper edge (175,50,6)→(190,10,6). The ends
+    // are near the path, so the around-the-side (lateral) paths combine with
+    // the over-top path (Eq 25). Table 23.
+    let scene = tr_scene(
+        t08_ground(),
+        GroundMethod::General,
+        vec![wall([175.0, 50.0], [190.0, 10.0], 6.0)],
+    );
+    assert_tr(&scene, [36.99, 32.36, 29.72, 29.21, 27.84, 26.51, 21.46, 8.40], 32.93);
 }

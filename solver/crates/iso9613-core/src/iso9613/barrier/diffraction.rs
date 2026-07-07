@@ -71,20 +71,35 @@ pub fn k_met(lengths: &PathLengths, z_min_val: f64, variant: BarrierVariant) -> 
     }
 }
 
-/// `Dz` (dB) for the given path, without the 20/25 dB cap (caller applies that
-/// to the over-top path only). `X = (C2/λ)·C3·z`.
+/// `Dz` (dB) for the OVER-TOP path, without the 20/25 dB cap (caller applies
+/// that separately). `X = (C2/λ)·C3·z`. Includes the meteorological correction
+/// `Kmet`.
 ///
 /// - `V2024` (Eq 18): `Dz = 10·lg[1 + (2 + X)·Kmet]`.
 /// - `V1996` (Eq 14): `Dz = 10·lg[3 + X·Kmet]`.
 ///
 /// Both give `Dz = 0` for `z ≤ zmin`.
 pub fn dz_uncapped(lengths: &PathLengths, lambda: f64, variant: BarrierVariant) -> f64 {
+    dz_with_met(lengths, lambda, variant, true)
+}
+
+/// `Dz` (dB) for a LATERAL (around-the-end) path — identical to
+/// [`dz_uncapped`] but with **no meteorological correction** (`Kmet = 1`).
+/// Downward atmospheric refraction curves the ray over the barrier TOP, not
+/// around its sides, so lateral paths take no `Kmet` (ISO 9613-2 §7.4; matches
+/// ISO/TR 17534-3 §6 step values — e.g. T09 edge1 `Dz = 7.21`, which needs
+/// `Kmet = 1`; with the over-top `Kmet ≈ 0.66` it would read 6.54).
+pub fn dz_uncapped_lateral(lengths: &PathLengths, lambda: f64, variant: BarrierVariant) -> f64 {
+    dz_with_met(lengths, lambda, variant, false)
+}
+
+fn dz_with_met(lengths: &PathLengths, lambda: f64, variant: BarrierVariant, apply_met: bool) -> f64 {
     let c3_val = c3(lengths.e_total, lambda);
     let z_min_val = z_min(lambda, c3_val);
     if lengths.delta_z <= z_min_val {
         return 0.0;
     }
-    let kmet = k_met(lengths, z_min_val, variant);
+    let kmet = if apply_met { k_met(lengths, z_min_val, variant) } else { 1.0 };
     let x = C2 * c3_val * lengths.delta_z / lambda;
     match variant {
         BarrierVariant::V1996 => 10.0 * (3.0 + x * kmet).log10(),

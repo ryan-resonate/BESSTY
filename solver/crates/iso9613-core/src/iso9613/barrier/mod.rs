@@ -73,41 +73,44 @@ pub fn abar_spectrum(
     // Exact ISO 266 centres for λ = c/f (matches ISO/TR 17534-3 step values).
     for (band_idx, &f_centre) in system.centres_exact().iter().enumerate() {
         let lambda = 340.0 / f_centre;
-        // Over-top path — capped (§5.3).
+        // Over-top path — capped (§5.3, over-top only).
         let dz_top = diffraction::cap(
             diffraction::dz_uncapped(lengths, lambda, variant),
             lengths.e_total,
             dz_cap_db,
         );
 
-        // §7.4.4 Eq 25 — energy-sum the over-top path with each around-the-end
-        // (lateral) path into one effective Dz:
-        //   Dz_eff = −10·log10( 10^(−Dz_top/10) + Σ 10^(−Dz_lat/10) ).
-        // More paths ⇒ more sound ⇒ less attenuation. A fully open end
-        // (Dz_lat = 0 → term = 1) drives Dz_eff ≤ 0, i.e. the wall is bypassed.
-        // Lateral paths are NOT capped (§5.3).
-        let dz_eff = if lat_lengths.is_empty() {
+        // Literal ISO (Eqs 16/17, TR §5.5): the OVER-TOP diffraction takes the
+        // ground attenuation off first — subtract a positive Agr from Dz_top
+        // (never a negative Agr, which is a boost; Agr is carried separately by
+        // the caller so the over-top net is Dz). This Agr adjustment applies to
+        // the over-top path ALONE, before combining with the laterals (the
+        // around-the-side paths don't travel over the screened ground top).
+        let agr_band = agr.bands[band_idx];
+        let abar_top = if agr_band > 0.0 && dz_top > 0.0 {
+            (dz_top - agr_band).max(0.0)
+        } else {
             dz_top
+        };
+
+        // §7.4.4 Eq 25 — energy-sum the (Agr-adjusted) over-top path with each
+        // around-the-end (lateral) path into one effective attenuation:
+        //   Dz_eff = −10·log10( 10^(−Abar_top/10) + Σ 10^(−Dz_lat/10) ).
+        // More paths ⇒ more sound ⇒ less attenuation. A fully open path
+        // (term = 1) drives Dz_eff ≤ 0, i.e. the obstacle is bypassed. Lateral
+        // paths take no Agr, no cap (§5.3), and no Kmet (refraction curves the
+        // ray over the top, not around the sides).
+        abar.bands[band_idx] = if lat_lengths.is_empty() {
+            abar_top
         } else {
             let neg_inv_ten = -LN10 / 10.0;
-            let mut sum = (dz_top * neg_inv_ten).exp();
+            let mut sum = (abar_top * neg_inv_ten).exp();
             for ll in lat_lengths {
-                let dz_lat = diffraction::dz_uncapped(ll, lambda, variant);
+                let dz_lat = diffraction::dz_uncapped_lateral(ll, lambda, variant);
                 sum += (dz_lat * neg_inv_ten).exp();
             }
             let combined = -10.0 * sum.log10();
             if combined < 0.0 { 0.0 } else { combined }
-        };
-
-        // Literal ISO (Eqs 16/17, TR §5.5): subtract Agr only when it is a
-        // genuine ground attenuation (Agr > 0) and the barrier screens
-        // (Dz > 0); never subtract a negative Agr (a boost). Agr is added back
-        // by the caller, so the over-top net is Dz.
-        let agr_band = agr.bands[band_idx];
-        abar.bands[band_idx] = if agr_band > 0.0 && dz_eff > 0.0 {
-            (dz_eff - agr_band).max(0.0)
-        } else {
-            dz_eff
         };
     }
 

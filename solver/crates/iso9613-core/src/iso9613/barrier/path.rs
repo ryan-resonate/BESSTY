@@ -281,43 +281,32 @@ pub struct BarrierGeometry {
     pub lateral: Vec<PathLengths>,
 }
 
-/// Perpendicular distance of point `p` from the line through `a` and `b` in the
-/// SR vertical plane (`(x, z)` coordinates).
-fn perp_distance(a: DiffractionEdge, b: DiffractionEdge, p: DiffractionEdge) -> f64 {
-    let (abx, abz) = (b.x - a.x, b.z - a.z);
-    let (apx, apz) = (p.x - a.x, p.z - a.z);
-    let len = (abx * abx + abz * abz).sqrt();
-    if len < 1e-9 { 0.0 } else { (abx * apz - abz * apx).abs() / len }
-}
-
-/// Signed side (via the plan-view cross product) and perpendicular plan offset
-/// of an edge from the source→receiver line.
-fn plan_side_offset(source: Vec3, receiver: Vec3, e: f64, n: f64) -> (f64, f64) {
+/// Signed side of an edge relative to the source→receiver line (plan-view cross
+/// product): ≥ 0 one side, < 0 the other. Used to keep one lateral edge per side.
+fn plan_side(source: Vec3, receiver: Vec3, e: f64, n: f64) -> f64 {
     let (dx, dy) = (receiver.e - source.e, receiver.n - source.n);
     let (ex, ey) = (e - source.e, n - source.n);
-    let cross = dx * ey - dy * ex;
-    let len = (dx * dx + dy * dy).sqrt();
-    let offset = if len < 1e-9 { 0.0 } else { cross.abs() / len };
-    (cross, offset)
+    dx * ey - dy * ex
 }
 
 /// Select the lateral paths per ISO/TR 17534-3 §5.2: at most two — the
-/// most‑transmitting (smallest `Δz`) edge on each side of the S–R line — and
-/// neglect any whose plan offset from that line exceeds `8×` the over‑top
-/// ribbon's `ev_offset` (its max edge height above the direct line).
-fn select_lateral(
-    source: Vec3,
-    receiver: Vec3,
-    edges: &[LateralEdge],
-    ev_offset: f64,
-) -> Vec<PathLengths> {
+/// most‑transmitting (smallest `Δz`) edge on **each side** of the S–R line
+/// (Figure 3, "the two calculation rays in plane EL").
+///
+/// The TR's factor-8 neglect (drop an edge whose distance from the S–R line
+/// exceeds 8× the over-top edges' in-plane distance) is a COMPUTATIONAL
+/// shortcut, not a physics step: a far vertical edge has a large path-length
+/// difference `Δz`, hence a large `Dz`, hence a near-zero energy term in the
+/// Eq-25 combine — it self-suppresses. Applying the neglect too eagerly drops
+/// a genuinely-contributing near edge (e.g. ISO/TR T09's second edge at 37 m,
+/// `Dz = 20 dB`, which still shifts the combined `Dz` by ~0.09 dB and is part
+/// of the reference result). Keeping both best-per-side edges is therefore
+/// strictly at-least-as-accurate; the `Dz` energy weighting handles the rest.
+fn select_lateral(source: Vec3, receiver: Vec3, edges: &[LateralEdge]) -> Vec<PathLengths> {
     let mut best_left: Option<PathLengths> = None;
     let mut best_right: Option<PathLengths> = None;
     for edge in edges {
-        let (side, offset) = plan_side_offset(source, receiver, edge.e, edge.n);
-        if ev_offset > 1e-9 && offset > 8.0 * ev_offset {
-            continue; // factor-8 neglect
-        }
+        let side = plan_side(source, receiver, edge.e, edge.n);
         let ll = lateral_path_lengths(source, receiver, edge);
         let slot = if side >= 0.0 { &mut best_left } else { &mut best_right };
         let keep = match slot {
@@ -359,13 +348,7 @@ pub fn build_geometry(
     }
 
     let over_top = path_lengths(s_in_plane, r_in_plane, &active);
-    // The over-top ribbon's max edge height above the direct S–R line, for the
-    // §5.2 factor-8 lateral‑neglect comparison.
-    let ev_offset = active
-        .iter()
-        .map(|e| perp_distance(s_in_plane, r_in_plane, *e))
-        .fold(0.0_f64, f64::max);
-    let lateral = select_lateral(source, receiver, lateral_edges, ev_offset);
+    let lateral = select_lateral(source, receiver, lateral_edges);
     Some(BarrierGeometry { over_top, lateral })
 }
 
