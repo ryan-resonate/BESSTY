@@ -16,6 +16,7 @@ use crate::iso9613::atmosphere::Atmosphere as CoreAtmosphere;
 use crate::iso9613::barrier::{LateralEdge, WallBarrier};
 use crate::iso9613::ground::GroundMethod;
 use crate::iso9613::meteorology::cmet_db;
+use crate::iso9613::reflection;
 use crate::spectrum::{BandSpectrum, BandSystem};
 use crate::standards::{GeneralEval, Iso1996, Iso2024, StandardModel};
 use crate::units::Vec3;
@@ -155,6 +156,20 @@ pub struct Settings {
     pub ground_method: GroundMethod,
 }
 
+/// A reflecting vertical facade: a plan-view segment `[A, B]`, its height band
+/// `[base_z, top_z]` (absolute m), and absorption `alpha` (0 = perfectly
+/// reflecting; 0.1 typical). First-order specular reflections off it are
+/// energy-summed with the direct path (§7.5). Reflectors are listed separately
+/// from screening `obstacles` so the reflected ray isn't also diffracted by the
+/// same surface.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Reflector {
+    pub segment: [[f64; 2]; 2],
+    pub base_z: f64,
+    pub top_z: f64,
+    pub alpha: f64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Scene {
     pub schema_version: u32,
@@ -164,6 +179,8 @@ pub struct Scene {
     pub sources: Vec<Source>,
     pub receivers: Vec<Receiver>,
     pub obstacles: Vec<Obstacle>,
+    #[serde(default)]
+    pub reflectors: Vec<Reflector>,
     pub settings: Settings,
 }
 
@@ -474,12 +491,44 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
                         WtgRules::default(), *apply_concave, *rotor_diameter_m, atm,
                     ),
                 };
+
+                // §7.5 first-order reflections (general sources): each valid
+                // facade adds an image-source contribution, energy-summed with
+                // the direct path per band (gated by the Fresnel size validity).
+                let mut bands: Vec<f64> = lp.bands.iter().copied().collect();
+                if matches!(src.kind, SourceKind::General) && !scene.reflectors.is_empty() {
+                    let centres = system.centres();
+                    for reflector in &scene.reflectors {
+                        let facade = reflection::Facade {
+                            a: reflector.segment[0], b: reflector.segment[1],
+                            base_z: reflector.base_z, top_z: reflector.top_z, alpha: reflector.alpha,
+                        };
+                        let Some(refl) = reflection::reflect(s, r, &facade) else { continue };
+                        let img_lw = BandSpectrum::from_iter(system, src.lw.iter().map(|&x| x + refl.loss_db));
+                        let refl_lp = model.evaluate_general(&GeneralEval {
+                            lw: &img_lw, source: refl.image_source, receiver: r,
+                            h_s: src.height_agl, h_r: rx.height_agl,
+                            g_source, g_middle, g_receiver,
+                            barriers: &walls, lateral: &lateral,
+                            dz_cap: scene.settings.dz_cap_db, atm,
+                            ground_method: scene.settings.ground_method,
+                        });
+                        for b in 0..system.n_bands() {
+                            let lambda = 340.0 / centres[b];
+                            if reflection::fresnel_valid(&refl, &facade, s, lambda) {
+                                bands[b] = 10.0
+                                    * (10f64.powf(0.1 * bands[b]) + 10f64.powf(0.1 * refl_lp.bands[b])).log10();
+                            }
+                        }
+                    }
+                }
+
                 // §8 long-term meteorological correction (frequency-independent).
                 let dp = ((r.e - s.e).powi(2) + (r.n - s.n).powi(2)).sqrt();
                 let cmet = cmet_db(scene.settings.c0_db, src.height_agl, rx.height_agl, dp);
                 per_source.push(SourceContribution {
                     source_id: src.id.clone(),
-                    bands: lp.bands.iter().map(|b| b - cmet).collect(),
+                    bands: bands.iter().map(|b| b - cmet).collect(),
                 });
             }
 
@@ -528,6 +577,7 @@ mod tests {
             }],
             receivers: vec![Receiver { id: "r1".into(), position: [200.0, 0.0, 1.5], height_agl: 1.5 }],
             obstacles: vec![],
+            reflectors: vec![],
             settings: Settings::default(),
         }
     }

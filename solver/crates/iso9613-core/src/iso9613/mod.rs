@@ -9,6 +9,7 @@ pub mod divergence;
 pub mod ground;
 pub mod meteorology;
 pub mod misc;
+pub mod reflection;
 
 pub use atmosphere::Atmosphere;
 

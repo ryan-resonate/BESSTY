@@ -28,6 +28,7 @@ fn scene_with(obstacles: Vec<Obstacle>) -> Scene {
         }],
         receivers: vec![Receiver { id: "r".into(), position: [120.0, 0.0, 2.0], height_agl: 2.0 }],
         obstacles,
+        reflectors: vec![],
         settings: Settings::default(),
     }
 }
