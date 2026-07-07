@@ -304,7 +304,16 @@ no web lateral).
 *Gate:* met — 56 tests green (golden regenerated + spot-checked vs oracle); clippy clean. BEESTY
 re‑validation vs Tarong `V1`/`V2` on the wasm rebuild.
 
-**Phase 2 — ISO 9613‑2:1996 mode (per 17534‑3 §5) + own validation suite.**
+**Phase 2 — ISO 9613‑2:1996 mode (per 17534‑3 §5) + own validation suite. ✅ DONE (2026‑07).**
+`evaluate_general` became an edition‑agnostic `StandardModel` default method parameterised by
+`self.spec()`; `Iso1996`/`ISO_1996` wired (the `V1996`/`Sum` kernel arms from Phase 1 are now
+reachable); `scene::solve` dispatches by `scene.standard` (1996 no longer `StandardNotImplemented`;
+WTG always Annex D/2024). Simplified §7.3.2 method implemented (`ground::simplified`: Eq 14 `Agr` +
+Eq 15 `D` + flat‑ground `hm`) behind a `GroundMethod` setting (default General; terrain‑profile `hm`
+Phase 3, TR T05/T07 per‑band cross‑check Phase 4). `case_09` proves the 1996↔2024 ground and barrier
+deltas per band match an independent Python oracle. *Gate met:* 14 test targets green, clippy clean.
+Original intent below (kept for reference):
+
 Implement `Iso1996`, incorporating the **17534‑3 §5 recommendations** (implementation‑notes doc) —
 which align 1996 with 2024 on ray construction, lateral rules, caps, the barrier‑vs‑ground convention
 and higher‑order reflections (→ these become **shared** code, not an edition fork). The genuinely
