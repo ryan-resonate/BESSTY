@@ -108,7 +108,23 @@ pub enum Obstacle {
         base_z: Vec<f64>,
         height_agl: f64,
     },
-    // Building / Solid3D variants arrive in Phase 3.
+    /// A 2D building footprint extruded to a flat roof: a closed plan-view
+    /// polygon (implicitly closed — the last vertex joins the first), a single
+    /// base ground elevation, and a constant height above it. Each footprint
+    /// edge becomes a `WallBarrier`, so a source→receiver ray crossing the
+    /// footprint diffracts over the near+far walls (multi-edge over the roof).
+    ///
+    /// Opaque, per ISO 9613-2 (no transmission). Per-vertex eave heights /
+    /// pitched roofs (per-vertex `Solid3D`) and around-building lateral
+    /// diffraction (needs the Fix-4 best-per-side selection) are later
+    /// increments; buildings screen **over-top** only for now. Façade
+    /// reflections arrive with the reflection engine.
+    Building {
+        footprint: Vec<[f64; 2]>,
+        base_z: f64,
+        height_agl: f64,
+    },
+    // Solid3D (true 3D objects) arrives later in Phase 3.
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -164,6 +180,7 @@ pub enum SceneError {
     BadLwLength { source_id: String, len: usize },
     MixedBandSystems,
     DegenerateWall { index: usize, reason: &'static str },
+    DegenerateBuilding { index: usize, reason: &'static str },
 }
 
 impl std::fmt::Display for SceneError {
@@ -176,7 +193,8 @@ impl std::fmt::Display for SceneError {
                 f, "source '{source_id}': lw has {len} bands (expected 10 octave or 31 third-octave)"
             ),
             Self::MixedBandSystems => write!(f, "all sources must use the same band system"),
-            Self::DegenerateWall { index, reason } => write!(f, "obstacle {index}: {reason}"),
+            Self::DegenerateWall { index, reason } => write!(f, "wall obstacle {index}: {reason}"),
+            Self::DegenerateBuilding { index, reason } => write!(f, "building obstacle {index}: {reason}"),
         }
     }
 }
@@ -236,18 +254,32 @@ impl Scene {
             }
         }
         for (i, ob) in self.obstacles.iter().enumerate() {
-            let Obstacle::Wall { polyline, base_z, height_agl } = ob;
-            if polyline.len() < 2 {
-                return Err(SceneError::DegenerateWall { index: i, reason: "polyline needs ≥ 2 vertices" });
-            }
-            if base_z.len() != polyline.len() {
-                return Err(SceneError::DegenerateWall { index: i, reason: "base_z length must match polyline" });
-            }
-            if !height_agl.is_finite() || *height_agl < 0.0 {
-                return Err(SceneError::DegenerateWall { index: i, reason: "height_agl must be finite and ≥ 0" });
-            }
-            if !all_finite(polyline.iter().flat_map(|p| p.iter().copied()).chain(base_z.iter().copied())) {
-                return Err(SceneError::NonFinite { entity: format!("obstacle {i}") });
+            match ob {
+                Obstacle::Wall { polyline, base_z, height_agl } => {
+                    if polyline.len() < 2 {
+                        return Err(SceneError::DegenerateWall { index: i, reason: "polyline needs ≥ 2 vertices" });
+                    }
+                    if base_z.len() != polyline.len() {
+                        return Err(SceneError::DegenerateWall { index: i, reason: "base_z length must match polyline" });
+                    }
+                    if !height_agl.is_finite() || *height_agl < 0.0 {
+                        return Err(SceneError::DegenerateWall { index: i, reason: "height_agl must be finite and ≥ 0" });
+                    }
+                    if !all_finite(polyline.iter().flat_map(|p| p.iter().copied()).chain(base_z.iter().copied())) {
+                        return Err(SceneError::NonFinite { entity: format!("obstacle {i}") });
+                    }
+                }
+                Obstacle::Building { footprint, base_z, height_agl } => {
+                    if footprint.len() < 3 {
+                        return Err(SceneError::DegenerateBuilding { index: i, reason: "footprint needs ≥ 3 vertices" });
+                    }
+                    if !height_agl.is_finite() || *height_agl < 0.0 || !base_z.is_finite() {
+                        return Err(SceneError::DegenerateBuilding { index: i, reason: "base_z/height_agl must be finite, height ≥ 0" });
+                    }
+                    if !all_finite(footprint.iter().flat_map(|p| p.iter().copied())) {
+                        return Err(SceneError::NonFinite { entity: format!("obstacle {i}") });
+                    }
+                }
             }
         }
         // Default to octave when there are no sources (empty scene solves to silence).
@@ -259,21 +291,40 @@ impl Scene {
         let mut walls = Vec::new();
         let mut lateral = Vec::new();
         for ob in &self.obstacles {
-            let Obstacle::Wall { polyline, base_z, height_agl } = ob;
-            for i in 0..polyline.len() - 1 {
-                walls.push(WallBarrier {
-                    a_e: polyline[i][0], a_n: polyline[i][1],
-                    b_e: polyline[i + 1][0], b_n: polyline[i + 1][1],
-                    base_z_a: base_z[i], base_z_b: base_z[i + 1],
-                    height_agl: *height_agl,
-                });
-            }
-            // Finite screens diffract around their two ends (§7.4.3).
-            for v in [0, polyline.len() - 1] {
-                lateral.push(LateralEdge {
-                    e: polyline[v][0], n: polyline[v][1],
-                    base_z: base_z[v], top_z: base_z[v] + height_agl,
-                });
+            match ob {
+                Obstacle::Wall { polyline, base_z, height_agl } => {
+                    for i in 0..polyline.len() - 1 {
+                        walls.push(WallBarrier {
+                            a_e: polyline[i][0], a_n: polyline[i][1],
+                            b_e: polyline[i + 1][0], b_n: polyline[i + 1][1],
+                            base_z_a: base_z[i], base_z_b: base_z[i + 1],
+                            height_agl: *height_agl,
+                        });
+                    }
+                    // Finite screens diffract around their two ends (§7.4.3).
+                    for v in [0, polyline.len() - 1] {
+                        lateral.push(LateralEdge {
+                            e: polyline[v][0], n: polyline[v][1],
+                            base_z: base_z[v], top_z: base_z[v] + height_agl,
+                        });
+                    }
+                }
+                Obstacle::Building { footprint, base_z, height_agl } => {
+                    // Each footprint edge is a wall (implicitly closed loop). A
+                    // ray crossing the footprint hits two edges → multi-edge
+                    // over-the-roof diffraction. Around-building lateral
+                    // diffraction needs the Fix-4 best-per-side selection (TR
+                    // §5.2) and is a later increment — no lateral edges yet.
+                    let n = footprint.len();
+                    for i in 0..n {
+                        let a = footprint[i];
+                        let b = footprint[(i + 1) % n];
+                        walls.push(WallBarrier {
+                            a_e: a[0], a_n: a[1], b_e: b[0], b_n: b[1],
+                            base_z_a: *base_z, base_z_b: *base_z, height_agl: *height_agl,
+                        });
+                    }
+                }
             }
         }
         (walls, lateral)
