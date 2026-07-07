@@ -25,7 +25,10 @@ exchange shapefiles + DXF + ASCII grids + the QSI standard.
    a conformant QSI exporter is more work and needs the standard
    purchased / reverse-engineered from a sample QSI file. Flagged as the
    gold-standard option if cross-package exchange becomes a core
-   workflow.
+   workflow. **See the dedicated "QSI (DIN 45687) — export format,
+   detailed" section below** for the full file-set architecture, the
+   master-file structure, the spectra model, and the sample-file
+   reverse-engineering checklist.
 
 2. **Shapefile bundle (+ DGM grid + README)** — the pragmatic path. Uses
    only formats whose specs we already implement (shapefile writer
@@ -68,6 +71,194 @@ The shapefile/ASCII/Excel import wizard maps source-file columns →
 SoundPLAN object properties, **including sound-power levels and per-band
 spectra**. That attribute-mapping step is the linchpin that makes this
 feasible.
+
+## QSI (DIN 45687) — export format, detailed
+
+This section is the deep-dive requested in #19: how we would actually
+*create* a QSI dataset. Everything below is confirmed from vendor
+documentation and the published national supplements; the gaps (exact
+DBF column names) are called out explicitly, because those are what the
+sample QSI files will close.
+
+### What QSI actually is
+
+"QSI" = **Q**ualitätssicherung für **S**oftware-Produkte zur
+**I**mmissionsberechnung (quality assurance for immission-calculation
+software). The *data format* of the same name is the GIS-based
+interchange model defined alongside the QA scheme. Lineage:
+
+- **DIN 45687:2006-05** — the parent standard (the QSI data format is
+  its **Annex D**).
+- **DIN 45687 Beiblatt 1 (2006-04)** — the supplement literally titled
+  *"…QSI-Dataformat and QSI-Model-File"*; this is the format-spec
+  document (purchasable from DIN Media / Beuth).
+- **"Dokumentation 1 – QSI-Datenschnittstelle – DIN 45687"** — the
+  living committee document that fully specifies the interface,
+  maintained by **NA 001 BR-02 SO** (formerly NALS Bei-SoA QS). It is
+  **co-authored by DataKustik (CadnaA), Wölfel (IMMI) and SoundPLAN**
+  — the three major vendors jointly own the format, which is exactly
+  why all three read and write it interchangeably. *This is the
+  document to obtain* if we commit to a QSI exporter.
+- Restructuring in progress (2024–): DIN 45687 is being recast as a
+  national supplement to **DIN ISO 17534-1**, and the QSI format
+  fundamentals are migrating into **DIN/TR 8998-1**. No evidence the
+  format itself is changing — only where it's documented. (Buy the
+  current DIN 45687 Beiblatt 1; track DIN/TR 8998-1 for the successor.)
+
+### File-set architecture (confirmed)
+
+QSI is **not a single file**. A QSI dataset is:
+
+1. **One INI-style master/index file `<name>.qsi`** — plain text, with
+   bracketed sections. Confirmed from the Austrian CNOSSOS-AT supplement
+   (co-authored by all three vendors): a `[Meta]` section carrying
+   keywords including
+   - a **`fmt…` family** that declares the emission/calculation method
+     per source category — e.g. `fmtflight=CNOSSOS-AT` /
+     `fmtflight=CNOSSOS-DE` (and by analogy road/rail/industry tokens).
+     This tells the importer *which regulation's emission model* the
+     numbers follow.
+   - **`YOffset`** — a coordinate offset.
+   - **`epsg=<code>`** — the CRS as an EPSG code (added by the Austrian
+     supplement right after `YOffset`; the base German version declares
+     the CRS too). For us this is where the MGA/UTM zone goes
+     (e.g. `epsg=28355` for MGA Zone 55 / GDA94).
+
+2. **A set of ESRI-shapefile triplets (`.SHP`/`.DBF`/`.SHX`), one per
+   object type**, named `<name>_XXXX.{SHP,DBF,SHX}`. The geometry rides
+   in the `.SHP`; the acoustic/semantic attributes ride in the `.DBF`.
+
+3. **DBF-only relational tables** for data that doesn't have geometry —
+   crucially the **spectra** and **diurnal patterns**, referenced by ID
+   from the source records.
+
+Object-type suffixes (confirmed from CadnaA's QSI writer, which follows
+the DIN suffix convention):
+
+| Suffix | Object | Geometry |
+|---|---|---|
+| `_SRCP` | point source | Point |
+| `_SRCL` | line source | PolyLine |
+| `_SRCA` | area source | Polygon |
+| `_ROAD` | road | PolyLine |
+| `_RAIL` | railway | PolyLine |
+| `_PARK` | parking lot | Polygon |
+| `_RECV` | receivers | Point |
+| `_BLDG` | buildings | Polygon |
+| `_BARR` | barriers / noise walls | PolyLine |
+| `_HLIN` | contour / height lines | PolyLine |
+| `_HGPT` | spot heights | Point |
+| `_GABS` | ground-absorption areas | Polygon |
+| `_AREA` | attenuation areas (e.g. foliage, built-up) | Polygon |
+| `_CROS` | crossing / signalised junction | Point |
+| `_SPEC` | **spectra table** | — (DBF only) |
+| `_DIPA` | **diurnal patterns** (day/evening/night PWL corrections + operating times) | — (DBF only) |
+| `_TRCL` | train classes | — (DBF only) |
+| `_DRCT` | directivity | — (DBF only; **CadnaA extension, not core DIN**) |
+
+Note: **vertical area sources are not representable in QSI** and are
+silently dropped by CadnaA's exporter — fine for us (we have none).
+
+### Geometry & height conventions (confirmed)
+
+- Coordinates live in the `.SHP` in the project CRS (declared via
+  `epsg=`/`YOffset` in the master file).
+- **Heights are absolute** — top edges ("Oberkanten"), *not* height
+  above local ground. So when we emit a WTG hub at 100 m AGL we must
+  write `groundElevation + 100` as the absolute Z. We hold the DEM, so
+  this is a lookup-and-add, but it's a real conversion step (our
+  internal model stores height-above-ground).
+- Heights are written **in metres**.
+- **Multi-receivers are expanded** into individual receiver points (one
+  feature each) — matches how we'd want to emit a receiver grid anyway.
+
+### The spectra model (the crux of a QSI writer)
+
+This is the part that differs most from the flat shapefile-bundle plan
+and is where the sample files matter most. The design is **relational**:
+
+- A source feature in `_SRCP`/`_SRCL`/`_SRCA` carries its geometry,
+  identifiers, and (almost certainly) an **overall L<sub>WA</sub> plus a
+  foreign-key ID into `_SPEC.DBF`**. The per-band spectrum is *not*
+  inlined as 8/31 columns on the source record (that's the
+  shapefile-bundle approach) — it lives in `_SPEC.DBF`, keyed by that
+  ID, so several sources can share one spectrum.
+- `_DIPA.DBF` holds **day/evening/night** level corrections and
+  operating times, again keyed back to the source — this is how QSI
+  encodes time-of-day operation, which maps cleanly onto our
+  day/evening/night periods.
+- Octave **and** third-octave are both supported (consistent with the
+  SoundPLAN frequency findings above), so we keep our native band
+  system; no forced fold.
+
+### What we can build today vs. what needs the spec / a sample
+
+**Confident now (no spec needed):**
+
+- the master `.qsi` INI writer — `[Meta]` with the right `fmt*` token,
+  `epsg`, `YOffset`;
+- the per-object shapefile triplets with the correct `_XXXX` suffixes
+  (our shapefile writer in `exporters.ts` already produces
+  `.shp/.dbf/.shx`);
+- absolute-height conversion (DEM lookup + add), metre units,
+  multi-receiver expansion, CRS/EPSG wiring (reuse `lib/projections.ts`).
+
+**Cannot finalise without DIN 45687 Beiblatt 1 / Dokumentation 1, *or* a
+sample QSI dataset:**
+
+- the **exact DBF column names and types** in each object file — in
+  particular the name of the foreign-key column linking a source to its
+  spectrum, and which attributes are mandatory;
+- the **`_SPEC.DBF` layout** — one row per band vs. one column per band;
+  how bands are labelled; whether levels are L<sub>W</sub> or
+  L<sub>W</sub>″ (per-metre / per-m²) for line/area sources; **Z- vs
+  A-weighting** convention; the centre-frequency set;
+- the **`_DIPA.DBF` layout** — column names for the D/E/N corrections
+  and operating times;
+- the exact **`fmt*` token for a generic ISO 9613-2 industrial point
+  source** (our WTG/BESS case) as distinct from road/rail/aircraft.
+
+### Reverse-engineering checklist (for the sample QSI files)
+
+When you supply sample QSI datasets, here is exactly what to pull out —
+ideally one sample that contains **point sources with spectra** (closest
+to our WTG/BESS case):
+
+1. **The master `.qsi`** — open it as text and capture every section
+   (`[Meta]`, and any `[…]` listing the member shapefiles) and every
+   keyword/value, especially the `fmt*` token(s), `epsg`, `YOffset`, and
+   how the object files are referenced.
+2. **`_SRCP.DBF` field schema** — dump the DBF header: every field
+   name, type (C/N/F), width, decimals. Flag which field holds the
+   overall level and which holds the spectrum/diurnal foreign key.
+3. **`_SPEC.DBF`** — the full header *and* a couple of data rows, so we
+   can see band labelling, row-vs-column layout, weighting, and how a
+   row links back to a source.
+4. **`_DIPA.DBF`** — header + a sample row (D/E/N corrections +
+   operating-time columns).
+5. **One source's geometry** — confirm the `.SHP` shape type and that
+   the Z/height value is absolute (compare against the DEM).
+6. **`_RECV.DBF`** — receiver field schema (name, height, any limit
+   columns).
+7. If present, **`_BARR.DBF`** — barrier height/absorption fields.
+
+`pdftotext`/a DBF dump (`dbview`, or our own DBF reader) is enough; I can
+write a tiny throwaway DBF-header dumper to parse them if that's easier
+than opening in CadnaA/SoundPLAN.
+
+### Effort & recommendation for QSI specifically
+
+A conformant QSI exporter is a **multi-day** effort (vs. ~1 day for the
+shapefile bundle): the master-file INI writer, the relational
+source→spectrum→diurnal split, absolute-height conversion, and the
+per-file DBF schemas are all new. But it reuses our existing shapefile
+writer and reprojection, and it is the **only** target that hands
+SoundPLAN (and CadnaA and IMMI) a *single, complete, importable model*
+including spectra and time-of-day operation — no per-file wizard
+mapping. Recommended sequence: **(a)** obtain a sample QSI set (fastest)
+and/or DIN 45687 Beiblatt 1; **(b)** lock the DBF schemas from the
+sample; **(c)** build, validating round-trip by re-importing our own
+output into SoundPLAN.
 
 ## Mapping BESSTY → SoundPLAN
 
@@ -225,10 +416,15 @@ Two open questions to confirm with the user before building:
    (cross-check path), or also emit a separate per-wind-speed table for
    users who want SoundPLAN to interpolate? The former is simpler and
    covers the main use case.
-3. **(New) Which target first** — the shapefile bundle (recommended,
-   ~1 day, low risk) or invest in a QSI/DIN-45687 exporter (higher
-   fidelity, single-file model exchange, but needs the DIN standard and
-   is a multi-day effort)?
+3. **Which target first** — the shapefile bundle (recommended, ~1 day,
+   low risk) or invest in a QSI/DIN-45687 exporter (higher fidelity,
+   single complete model exchange — see the QSI section above)? The QSI
+   path is now de-risked structurally (file-set architecture, master
+   INI file, relational spectra model all mapped); the only remaining
+   unknowns are the per-file **DBF column schemas**, which a **sample
+   QSI dataset** (you offered to source some) would close in an
+   afternoon. Best first artefact to obtain: a sample containing **point
+   sources with spectra**.
 
 ## Sources consulted
 
@@ -251,6 +447,34 @@ Two open questions to confirm with the user before building:
 - ESRI shapefile / DBF 10-char field-name limit (drives the short
   `LW63`… column naming) — Esri ArcGIS Pro documentation + knowledge
   base.
+- **QSI / DIN 45687 format detail:**
+  - CadnaA QSI export documentation — the `_SRCP/_SRCL/_SRCA/_ROAD/
+    _RAIL/_PARK/_RECV/_BLDG/_BARR/_HLIN/_HGPT/_GABS/_AREA/_CROS` object
+    suffixes and the `_SPEC/_DIPA/_TRCL/_DRCT` DBF tables; "_DIPA.DBF"
+    diurnal patterns; "vertical area sources not exported".
+    https://doku.datakustik.com/CadnaA/en/Export_QSI.html
+  - G&P (Swiss CadnaA) QSI export page — absolute-height ("Oberkanten")
+    convention, metre units, multi-receiver expansion.
+    http://slip.gundp.ch/doc/G/QNNC4BFN5CY.htm
+  - Austrian BMK/BMIMI "QSI-Datenschnittstelle … CNOSSOS-AT in
+    Erweiterung der DIN 45687" (2021) — confirms the INI-style
+    `<name>.qsi` master file with `[Meta]`, the `fmt*` keyword family,
+    `YOffset`, `epsg=<code>`; names "Dokumentation 1 –
+    QSI-Datenschnittstelle – DIN 45687" as the base spec and lists
+    DataKustik / Wölfel / SoundPLAN as joint authors.
+    https://www.bmimi.gv.at/dam/jcr:7d7773a4-136a-49ae-9dad-01071390d5eb/QSI-Datenschnittstelle_UA.pdf
+  - DIN 45687 Beiblatt 1 (2006-04), *"QSI-Dataformat and QSI-Model-
+    File"* — the purchasable format-spec supplement.
+    https://www.dinmedia.de/en/draft-technical-rule/din-45687-beiblatt-1/87754398
+  - Wölfel blog — DIN 45687 becoming a national supplement to DIN ISO
+    17534-1; QSI format fundamentals moving to DIN/TR 8998-1.
+    https://www.woelfel.de/en/blog/article-view/new-quality-assurance-rules-for-noise-prediction-software.html
+
+  Note: the per-file **DBF column schemas** (field names/types, the
+  source→spectrum foreign key, the `_SPEC.DBF` band layout) are *not*
+  reproduced anywhere freely online — they live in the purchased DIN
+  45687 Beiblatt 1 / Dokumentation 1, or can be read straight off a
+  sample QSI dataset. No open-source QSI reader/writer exists.
 
 Note: SoundPLAN's native binary project / Geo-Database format is not
 publicly documented; this research deliberately targets the documented

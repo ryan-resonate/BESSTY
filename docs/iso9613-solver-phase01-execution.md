@@ -162,23 +162,32 @@ core functions. Gradient exports are dropped (web no longer imports them).
 2. Route `evaluate_with_barriers` / `evaluate_wtg` through `Iso2024::attenuate`.
 3. Golden file must still match — refactor is inert.
 
-### 2.3 The four documented fixes (behaviour changes; golden + cases regenerate WITH hand-calcs)
+### 2.3 The documented physics fixes (behaviour changes; golden + cases regenerated)
 
-| # | Fix | Wrong (current) | Correct (2024 PDF p.16 / TR §5) |
+**Done in commit "barrier physics fixes":**
+
+| # | Fix | Wrong (was) | Correct (2024 PDF p.16 / TR §5) |
 |---|---|---|---|
 | 1 | `Dz` bracket | `10·lg[1+(3+(C2/λ)C3·z)·Kmet]` | `10·lg[1+(2+(C2/λ)C3·z)·Kmet]` (Eq 18) |
 | 2 | `zmin` | `−λ/(C2·C3)` | `−2λ/(C2·C3)` (Eq 19) |
 | 3 | Caps | applied to every path | over-top only (TR §5.3); lateral uncapped |
-| 4 | Lateral selection | all wall-end edges summed | best path per side (≤2) + factor-8 rule (TR §5.2); combination `≥ 0` (TR §5.6) |
+| **5** | **`C3`** (found during recompute) | **`(1+(5/e)²)/(1/3+(5/e)²)`** — no `λ`, freq-independent | **`(1+(5λ/e)²)/(1/3+(5λ/e)²)`** (Eq 20) |
 
-Plus: **delete `BarrierConvention`** — single behaviour per the standard's algebra (Eq 5 keeps
+Plus: **deleted `BarrierConvention`** — single behaviour per the standard's algebra (Eq 5 keeps
 `Agr`; `Abar = Dz − Agr ≥ 0` when `Agr > 0` and `Dz > 0`, else `Abar = Dz`; never applied with
-`Agr < 0` per TR §5.5 — this is the current `DzMinusMaxAgr0` = BEESTY's default). The wasm shim
-keeps accepting the `barrier_convention` int and ignores it (log-once deprecation note in the JS).
+`Agr < 0` per TR §5.5 — the old `DzMinusMaxAgr0` = the correct one). The wasm shim keeps accepting
+the `barrier_convention` int and ignores it.
 
-For each fix: recompute affected expected values by hand (cases 03, 04, 07, 08 + goldens), cite the
-clause in the commit, and re-validate BEESTY against the Tarong/SoundPLAN reference data
-(`validation/V1`, `validation/V2`) before merging.
+**Deferred to Phase 3** (needs geometry it doesn't yet carry):
+
+| # | Item | Why deferred |
+|---|---|---|
+| 4 | Lateral selection: best-per-side (≤2) + factor-8 neglect (TR §5.2) | Only bites with **multiple** obstacles (buildings), which arrive in Phase 3 and bring the per-edge side/offset geometry the rule needs. For a single finite wall the two supplied end edges already ARE the best left/right paths, so the current sum is correct; and the web supplies no lateral edges yet (empty `NO_LATERAL`). The Eq-25 combination + the `≥ 0` floor (TR §5.6) and lateral-uncapping (Fix 3) are already in. |
+
+Expected values for cases 03/04/07 were **recomputed independently** with a fresh Python
+implementation of the standard (`scratchpad/oracle.py`, not ported from the Rust); the Rust then
+matched that oracle to < 0.1 dB/band (case 03: 40.93 dB(A), case 04: 36.18 dB(A)). BEESTY
+re-validation against Tarong `validation/V1`/`V2` follows the wasm rebuild.
 
 ### 2.4 Phase 1 definition of done
 

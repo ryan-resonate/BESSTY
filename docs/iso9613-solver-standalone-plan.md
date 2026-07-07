@@ -290,19 +290,19 @@ the core — its full migration to `Scene`/`Session` happens once `Session` exis
 migrate once, not twice.
 *Gate:* all existing tests green; BEESTY output byte‑identical through the shim.
 
-**Phase 1 — Path engine + evaluator split + known‑bug fixes.**
-Introduce `PropagationPath`, `PathFinder::Planar25D`, `StandardModel` trait + `EditionSpec`; refactor
-existing 2024 terms into `Iso2024` over paths; add `Standard` to `Scene` (2024 wired). **Fix the
-known deviations found in review** (they are behaviour changes, made deliberately here, with
-recomputed expected values): (a) `Dz` bracket `3+…` → `2+…` and `zmin = −λ/(C2C3)` → `−2λ/(C2C3)`
-(differences §8.1 warning box); (b) cap over‑top only, never lateral (impl‑notes §5.3); (c) lateral
-paths = best‑left + best‑right only, with the factor‑8 rule (impl‑notes §5.2); (d) collapse the two
-barrier/ground conventions to the single literal‑ISO combination (Eq 5 keeps `Agr`; `Abar = Dz − Agr
-≥ 0` when `Agr > 0` ⇒ net `= max(Dz, Agr)`) — the current `IsoEq16` variant drops `Agr` from the
-total (net `Dz − Agr`), which matches neither the standard's algebra nor the reference tools; the
-current default `DzMinusMaxAgr0` is the correct behaviour and becomes the only one.
-*Gate:* regression identical **except** the four documented fixes, each covered by a recomputed
-hand‑calc case; BEESTY re‑validated against Tarong/SoundPLAN data after the fix.
+**Phase 1 — Path engine + evaluator split + known‑bug fixes. ✅ DONE (2026‑07).**
+Introduced `barrier::path::build_geometry` (path engine), `StandardModel`/`Iso2024`/`EditionSpec`
+(seam), threaded the `GroundCombination` + `BarrierVariant` edition choices; `evaluate_with_barriers`
+is now a thin wrapper over `Iso2024`. Fixed the barrier deviations (behaviour changes, expected
+values recomputed independently via a fresh Python oracle — see execution addendum §2.3): (a) `Dz`
+bracket `3+…` → `2+…` (Eq 18); (b) `zmin = −λ/(C2C3)` → `−2λ/(C2C3)` (Eq 19); (c) `C3` gains the
+missing `λ` → `5λ/e` (Eq 20; found during recompute); (d) cap over‑top only (§5.3); (e) collapsed the
+two barrier/ground conventions to the single literal‑ISO combination (deleted `BarrierConvention`;
+the old default was already correct). **Deferred to Phase 3:** lateral best‑per‑side + factor‑8
+selection (§5.2) — needs the multi‑obstacle geometry buildings bring; harmless today (single wall /
+no web lateral).
+*Gate:* met — 56 tests green (golden regenerated + spot-checked vs oracle); clippy clean. BEESTY
+re‑validation vs Tarong `V1`/`V2` on the wasm rebuild.
 
 **Phase 2 — ISO 9613‑2:1996 mode (per 17534‑3 §5) + own validation suite.**
 Implement `Iso1996`, incorporating the **17534‑3 §5 recommendations** (implementation‑notes doc) —

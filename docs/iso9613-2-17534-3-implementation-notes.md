@@ -46,9 +46,11 @@ which means that code is **shared**, and the genuine edition switch narrows to a
   paths are ambiguous and defers a general strategy ("a common strategy will be developed") — document
   our choice (shortest polygon per side). **Factor‑8 rule:** neglect a lateral path if the maximum
   offset of its diffracting edges from the direct S–R line exceeds 8× the corresponding maximum offset
-  of the over‑top (EV) rubber band. ⚠ The current BEESTY code instead energy‑sums **every** wall‑end
-  lateral edge and applies **no** factor‑8 test — must be corrected in the rewrite (over‑predicts
-  leakage with many walls).
+  of the over‑top (EV) rubber band. **DEFERRED to Phase 3** (Phase‑1 review): best‑per‑side selection
+  + factor‑8 need the per‑edge side/offset geometry buildings introduce, and only bite with multiple
+  obstacles; for a single finite wall the two ends already ARE the best left/right paths, and the web
+  currently supplies no lateral edges. The Eq‑25 combination + `≥ 0` floor and lateral‑uncapping are
+  already in.
 - **2024:** adopted (Eq 22, §7.4.3).
 
 ### 5.3 Cap applies to over‑top only  [C]
@@ -57,8 +59,7 @@ which means that code is **shared**, and the genuine edition switch narrows to a
 - **Recommendation:** apply the 20 dB (single) / 25 dB (multiple) cap **only to over‑top diffraction**,
   not to the lateral paths.
 - **Impl:** cap `Abar,top` before the Eq (25) combination; don't cap `Abar,side*`. → **Shared with 2024.**
-  ⚠ The current BEESTY code caps the lateral `Dz` too (`diffraction::cap` applied to every path) —
-  contrary to this rule; correct in the rewrite.
+  ✅ Fixed in Phase 1 — `abar_spectrum` caps only the over‑top path.
 - **2024:** adopted (§7.4.4 wording).
 
 ### 5.4 Two‑step `Dz` with `zmin`  [B]

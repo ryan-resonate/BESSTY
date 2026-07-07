@@ -213,15 +213,13 @@ and the caps: **single ≤ 20 dB, multiple ≤ 25 dB**.
 2024 Eq (19):  zmin = −2λ / (C2·C3)
 ```
 
-> **⚠ CURRENT-CODE DEVIATION (found in the 2026‑07 plan review; fix in Phase 1).** The existing
-> `solver/src/iso9613/barrier/diffraction.rs` implements `Dz = 10·lg[1 + (3 + (C2/λ)C3·z)·Kmet]` and
-> `zmin = −λ/(C2·C3)` — the bracket constant should be **2** and `zmin` should be **−2λ/(C2·C3)**
-> (verified visually against the 2024 PDF, printed p.16). Effect: `Dz` overestimated by up to
-> ~1.25 dB near grazing (`10lg4` vs `10lg3` at `z=0, Kmet=1`) and the shadow‑boundary cutoff sits at
-> half the standard's clearance. The existing hand‑calc validation cases encode the same misreading
-> (they were derived from a garbled text extraction), so they pass despite the error — the expected
-> values for barrier cases must be recomputed when this is fixed. Do NOT tune the fix to the old
-> cases.
+> **✅ FIXED in Phase 1 (2026‑07).** The code previously implemented `Dz = 10·lg[1 + (3 + (C2/λ)C3·z)
+> ·Kmet]` with `zmin = −λ/(C2·C3)` and `C3 = (1+(5/e)²)/(1/3+(5/e)²)` (no `λ`). All three were wrong
+> vs the 2024 PDF (printed p.16): the bracket constant is **2** (Eq 18), `zmin` is **−2λ/(C2·C3)**
+> (Eq 19), and `C3` is **`(1+(5λ/e)²)/(1/3+(5λ/e)²)`** (Eq 20, frequency-dependent). The old barrier
+> validation cases encoded the same misreadings; they were **recomputed independently** (fresh
+> Python implementation, not ported from the Rust) — case 03 → 40.93 dB(A), case 04 → 36.18 dB(A).
+> See the execution addendum §2.3.
 - When `Kmet = 1` (e.g. lateral paths, or the grazing region): `1 + (2 + X) = 3 + X` — the two
   forms are **identical**.
 - When `Kmet < 1` (downwind correction active): 1996 leaves the constant `3` un‑attenuated and scales
