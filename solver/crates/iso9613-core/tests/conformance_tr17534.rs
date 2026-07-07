@@ -322,27 +322,35 @@ fn t14_polygonal_building_over_terrain() {
     assert_tr(&scene, [34.93, 30.42, 25.18, 21.55, 20.14, 17.41, 12.00, -0.08], 25.38);
 }
 
-// KNOWN LIMITATION — receiver ABOVE the roof (T12 z=15, T15 z=23 over a 10 m
-// roof). The around-the-side path then partly rides OVER the roof (a combined
-// lateral+vertical diffraction the TR still counts, Δz≈1.66). We don't yet build
-// that 3-D box path. Without the roof guard the clamped wrap collapses to an
-// OPEN lateral that floors Abar to 0 — the building vanishes (T15 → 61 dB = free
-// field). The guard drops that invalid wrap, leaving the honest OVER-TOP-only
-// screening (T15 → ~47.1 dB). That is within the ISO ±3 dB method uncertainty of
-// the TR's wrap-inclusive 49.92, though ~2.8 dB on the LOW side (the TR's leaky
-// over-roof wraps raise the level back up). The exact box path is a refinement.
+// Receiver ABOVE the roof (T12 z=15, T15 z=23 over a 10 m roof). The around-the-
+// side taut string now correctly keeps its real endpoint heights — only the
+// interior corners clamp to the roof (fixing a bug where clamping R down to the
+// roof made Δz negative and OPENED the barrier). The remaining gap to the TR is
+// the exact multi-edge over-roof construction (the TR's Δz is a touch smaller);
+// both cases now land within ISO's ±3 dB method uncertainty.
 #[test]
-fn t15_receiver_above_roof_within_iso_uncertainty() {
+fn t12_cubic_building_receiver_high() {
+    // §6.2.13 — T11's box, receiver at z=15 (5 m above the roof). Table 34.
+    let scene = tr_scene_sr(
+        [50.0, 10.0, 1.0], [70.0, 10.0, 15.0], 0.5,
+        vec![building(vec![[55.0, 5.0], [65.0, 5.0], [65.0, 15.0], [55.0, 15.0]], 10.0)],
+    );
+    let total = run(&scene).1;
+    // 43.66 vs 43.81 — within 0.2 dB.
+    assert_relative_eq!(total, 43.81, epsilon = 0.5);
+}
+
+#[test]
+fn t15_polygonal_building_receiver_high() {
+    // §6.2.16 — the T13 octagon, receiver at z=23 (13 m above the roof). Table 49.
     let octagon = vec![
         [10.96, 15.50], [12.00, 13.00], [14.50, 11.96], [17.00, 13.00],
         [18.04, 15.50], [17.00, 18.00], [14.50, 19.04], [12.00, 18.00],
     ];
     let scene = tr_scene_sr([8.0, 10.0, 1.0], [25.0, 20.0, 23.0], 0.2, vec![building(octagon, 10.0)]);
     let total = run(&scene).1;
-    // Over-top-only (a standard ISO simplification) lands within ±3 dB of the
-    // TR's full value — and, unlike the un-guarded open wrap, it actually
-    // screens (does not treat the building as absent).
-    assert!((total - 49.92).abs() < 3.5, "outside ISO uncertainty: {total}");
+    // 48.81 vs 49.92 — within 1.1 dB (ISO method uncertainty is ±3 dB).
+    assert_relative_eq!(total, 49.92, epsilon = 1.5);
 }
 
 // KNOWN LIMITATION — three-building CLUSTER (T16/T17/T18). The TR treats the
