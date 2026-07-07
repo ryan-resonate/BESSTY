@@ -354,25 +354,56 @@ fn t15_polygonal_building_receiver_high() {
     assert_relative_eq!(total, 49.92, epsilon = 1.5);
 }
 
-// KNOWN LIMITATION — three-building CLUSTER (T16/T17/T18). The TR treats the
-// buildings as one screening system: a single over-top over all three roofs and
-// two laterals wrapping the WHOLE cluster (Figure 28's threaded ray). The engine
-// wraps each building independently, so its per-building laterals are shorter and
-// leak more → it OVER-predicts (T16 total 42.8 vs the TR's 32.54, ~10 dB high).
-// Safe (never under-predicts a cluster) but over-conservative; the cluster-wrap
-// (shortest path around the union of footprints, multi-height) is future work.
-// Coordinates read from the TR PDF (Table 51). The multi-object lateral is the
-// case the TR itself flags as "not solved" in general.
+// Three-building CLUSTER (T16). The TR treats the buildings as one screening
+// system: a single over-top over all three roofs plus two laterals that wrap the
+// WHOLE cluster (Figure 28's threaded ray). The engine now does the same — the
+// over-top is the upper hull of every building's wall crossings, and the laterals
+// are the two cluster taut strings (`cluster_lateral_paths` pools all footprint
+// corners into one hull per side, each corner clamped to ITS building's roof).
+// Because every footprint is convex, the union lies inside the convex hull of the
+// pooled corners, so the taut string never cuts a building. Coordinates read from
+// the TR PDF (Table 51). This is the case the TR itself flags as "not solved" in
+// general; the convex-cluster construction resolves this instance exactly.
 #[test]
-fn t16_three_building_cluster_is_conservative() {
+fn t16_three_building_cluster() {
+    // §6.2.17 — three buildings (heights 8/12/10) between S(50,10,1) and
+    // R(100,15,5), flat G=0.5. Table 52 (the unweighted L row + 32.54 total).
     let h1 = building(vec![[55.0, 5.0], [65.0, 5.0], [65.0, 15.0], [55.0, 15.0]], 8.0);
     let h2 = building(vec![[70.0, 14.5], [80.0, 10.17], [80.0, 20.17]], 12.0);
     let h3 = building(vec![[90.11, 19.48], [93.27, 17.78], [87.27, 6.61], [84.11, 8.31]], 10.0);
     let scene = tr_scene_sr([50.0, 10.0, 1.0], [100.0, 15.0, 5.0], 0.5, vec![h1, h2, h3]);
-    let total = run(&scene).1;
-    // Conservative: at least the TR's screened level (never treats the cluster
-    // as more transparent than reality).
-    assert!(total >= 32.54 - 0.05, "must not under-predict the cluster: {total}");
+    let (bands, total) = run(&scene);
+    // The A-weighted total (the engineering result) matches to ±0.05 — exact to
+    // 0.001 dB. Per-band the reference L row is printed to 2 dp; 7 of 8 bands land
+    // within ±0.05, the 63 Hz band at 0.052 (its true value lies in [41.025,41.035)
+    // around the printed 41.03, so within rounding it is inside ±0.05). Band
+    // tolerance 0.1 documents that rounding-boundary residual — tighter than the
+    // ±0.15 the T10 multi-edge case needs.
+    let refb = [41.03, 34.28, 29.33, 26.64, 26.45, 25.68, 24.22, 21.07];
+    for (i, e) in refb.iter().enumerate() {
+        assert_relative_eq!(bands[i], *e, epsilon = 0.1);
+    }
+    assert_relative_eq!(total, 32.54, epsilon = 0.05);
+}
+
+// T17 — the T16 cluster with source and receiver moved (Figure 29). Table 56's
+// ray geometry confirms the construction: the right lateral is a single-edge wrap
+// (e = 0.00, one active corner) while the left is multi-edge (e = 13.76), which
+// the pooled-corner hull reproduces automatically.
+#[test]
+fn t17_three_building_cluster_alt_positions() {
+    // §6.2.18 — identical buildings to T16, S(50,19,1) → R(98,3.5,5), G=0.5.
+    // Table 57 (unweighted L row + 32.72 total).
+    let h1 = building(vec![[55.0, 5.0], [65.0, 5.0], [65.0, 15.0], [55.0, 15.0]], 8.0);
+    let h2 = building(vec![[70.0, 14.5], [80.0, 10.17], [80.0, 20.17]], 12.0);
+    let h3 = building(vec![[90.11, 19.48], [93.27, 17.78], [87.27, 6.61], [84.11, 8.31]], 10.0);
+    let scene = tr_scene_sr([50.0, 19.0, 1.0], [98.0, 3.5, 5.0], 0.5, vec![h1, h2, h3]);
+    let (bands, total) = run(&scene);
+    let refb = [41.54, 35.28, 30.55, 27.18, 26.39, 25.63, 24.17, 21.02];
+    for (i, e) in refb.iter().enumerate() {
+        assert_relative_eq!(bands[i], *e, epsilon = 0.1);
+    }
+    assert_relative_eq!(total, 32.72, epsilon = 0.05);
 }
 
 #[test]

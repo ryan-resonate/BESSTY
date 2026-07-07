@@ -126,47 +126,85 @@ pub struct FootprintLateral {
     pub top_z: f64,
 }
 
-/// The two around-the-side lateral paths (one per side) for a building
-/// footprint blocking the direct ray. Each is the shortest taut string wrapping
-/// the footprint corners on that side, in 3-D (heights on the vertical edges set
-/// by unfolding). Empty when the plan line misses the footprint (no shadow).
-///
-/// Construction: work in `(t, d)` coordinates — `t` the along-`SR` distance,
-/// `d` the signed perpendicular plan offset. The corners on one side (same sign
-/// of `d`) plus `S`(t=0,d=0) and `R`(t=dp,d=0) have an outer convex chain (the
-/// taut string) given by the monotone-hull that bulges away from the `SR` line;
-/// its interior vertices are the active diffracting corners. This reproduces
-/// ISO/TR 17534-3's "shortest polygon lines around these edges" (§5.2) and, with
-/// the multi-edge `C3` from `e_total`, matches the T11 step values.
+/// The two around-the-side lateral paths (one per side) for a **single** building
+/// footprint. Thin wrapper over [`cluster_lateral_paths`] with one footprint —
+/// the taut string wraps the corners on each side, in 3-D (heights on the vertical
+/// edges set by unfolding). Empty when the plan line misses the footprint.
 pub fn footprint_lateral_paths(
     source: Vec3,
     receiver: Vec3,
     fp: &FootprintLateral,
 ) -> Vec<PathLengths> {
+    cluster_lateral_paths(source, receiver, std::slice::from_ref(fp))
+}
+
+/// One diffracting corner on a cluster taut string: its plan position and the
+/// `[base_z, top_z]` extent of the vertical face it belongs to (each building in
+/// a cluster may have a different roof height, so the clamp is per-corner).
+#[derive(Copy, Clone, Debug)]
+struct CornerNode {
+    e: f64,
+    n: f64,
+    base_z: f64,
+    top_z: f64,
+}
+
+/// The two around-the-side lateral paths (one per side) for a **cluster** of
+/// building footprints treated as a single screening system. Each is the shortest
+/// taut string that wraps *all* the footprints' corners on that side, in 3-D.
+///
+/// Construction: work in `(t, d)` coordinates — `t` the along-`SR` distance,
+/// `d` the signed perpendicular plan offset. Pool the corners of every footprint;
+/// those on one side (same sign of `d`) plus `S`(t=0,d=0) and `R`(t=dp,d=0) have
+/// an outer convex chain (the taut string) given by the monotone upper hull that
+/// bulges away from the `SR` line. Because every footprint is convex, the union
+/// of the footprints lies inside the convex hull of their corners, so the hull
+/// string never cuts through a building — it is exactly ISO/TR 17534-3's
+/// "shortest polygon line around these edges" (§5.2) extended to Figure 28's
+/// multi-object threaded ray. The interior hull vertices are the active
+/// diffracting corners, each carrying its own building's `[base_z, top_z]`.
+///
+/// For a single footprint this is identical to the per-building wrap (the hull
+/// pools one polygon's corners), so T11/T13/T14 are unchanged; for three
+/// footprints it reproduces the T16–T18 cluster path.
+pub fn cluster_lateral_paths(
+    source: Vec3,
+    receiver: Vec3,
+    footprints: &[FootprintLateral],
+) -> Vec<PathLengths> {
     let (dx, dy) = (receiver.e - source.e, receiver.n - source.n);
     let dp = (dx * dx + dy * dy).sqrt();
-    if dp < 1e-9 || fp.verts.len() < 3 {
+    if dp < 1e-9 || footprints.is_empty() {
         return Vec::new();
     }
     let (ux, uy) = (dx / dp, dy / dp); // unit along SR (plan)
 
-    // (t, d) for each corner: t along SR, d signed perpendicular offset.
-    let td: Vec<(f64, f64)> = fp
-        .verts
-        .iter()
-        .map(|&(e, n)| {
+    // Pool every footprint's corners with their (t, d) plan coordinates and the
+    // vertical face they belong to.
+    let mut corners: Vec<(f64, f64, CornerNode)> = Vec::new(); // (t, d, node)
+    for fp in footprints {
+        if fp.verts.len() < 3 {
+            continue;
+        }
+        for &(e, n) in &fp.verts {
             let (rx, ry) = (e - source.e, n - source.n);
-            (rx * ux + ry * uy, ux * ry - uy * rx) // (along, cross)
-        })
-        .collect();
+            let t = rx * ux + ry * uy;
+            let d = ux * ry - uy * rx;
+            corners.push((t, d, CornerNode { e, n, base_z: fp.base_z, top_z: fp.top_z }));
+        }
+    }
+    if corners.is_empty() {
+        return Vec::new();
+    }
 
     let mut out = Vec::new();
     for side in [1.0_f64, -1.0] {
-        // Corners strictly on this side, in the SR plane, plus the S/R anchors.
+        // Anchors + all corners on this side, folded to a common positive-d side.
+        // The third tuple element indexes `corners`; `usize::MAX` marks an anchor.
         let mut pts: Vec<(f64, f64, usize)> = vec![(0.0, 0.0, usize::MAX)];
-        for (i, &(t, d)) in td.iter().enumerate() {
+        for (i, &(t, d, _)) in corners.iter().enumerate() {
             if d * side > 1e-9 {
-                pts.push((t, d * side, i)); // fold to a common (positive-d) side
+                pts.push((t, d * side, i));
             }
         }
         pts.push((dp, 0.0, usize::MAX));
@@ -175,7 +213,7 @@ pub fn footprint_lateral_paths(
         }
         pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-        // Upper hull in (t, d): the taut string over the side's corners.
+        // Upper hull in (t, d): the taut string over this side's pooled corners.
         let mut hull: Vec<(f64, f64, usize)> = Vec::new();
         for &p in &pts {
             while hull.len() >= 2 {
@@ -191,35 +229,35 @@ pub fn footprint_lateral_paths(
             hull.push(p);
         }
         // Active corners = interior hull vertices (exclude the S/R anchors).
-        let corners: Vec<usize> = hull
+        let active: Vec<CornerNode> = hull
             .iter()
             .filter(|p| p.2 != usize::MAX)
-            .map(|p| p.2)
+            .map(|p| corners[p.2].2)
             .collect();
-        if corners.is_empty() {
+        if active.is_empty() {
             continue;
         }
-        if let Some(path) = wrap_path_lengths(source, receiver, &corners, fp) {
+        if let Some(path) = wrap_path_lengths(source, receiver, &active) {
             out.push(path);
         }
     }
     out
 }
 
-/// 3-D taut-string path lengths through an ordered run of footprint corners,
-/// with each diffraction height set by unfolding the plan polyline and clamping
-/// to the vertical face `[base_z, top_z]`.
+/// 3-D taut-string path lengths through an ordered run of cluster corners, with
+/// each diffraction height set by unfolding the plan polyline and clamping to
+/// *that corner's* vertical face `[base_z, top_z]` (buildings in a cluster differ
+/// in height, so the clamp is per-node).
 fn wrap_path_lengths(
     source: Vec3,
     receiver: Vec3,
-    corners: &[usize],
-    fp: &FootprintLateral,
+    corners: &[CornerNode],
 ) -> Option<PathLengths> {
     // Plan polyline S → corners → R and its cumulative plan length.
     let mut plan: Vec<(f64, f64)> = Vec::with_capacity(corners.len() + 2);
     plan.push((source.e, source.n));
-    for &i in corners {
-        plan.push(fp.verts[i]);
+    for c in corners {
+        plan.push((c.e, c.n));
     }
     plan.push((receiver.e, receiver.n));
 
@@ -234,7 +272,7 @@ fn wrap_path_lengths(
         return None;
     }
     // Unfolded height along the path (linear S.z → R.z). Only the interior
-    // CORNERS diffract at the vertical face, so only they clamp to `[base, top]`;
+    // CORNERS diffract at a vertical face, so only they clamp to `[base, top]`;
     // the endpoints S and R keep their real heights (clamping R to the roof when
     // it is above the roof would terminate the path at a fake lowered receiver
     // and make Δz negative — an impossible "shortcut" that opened the barrier).
@@ -246,7 +284,8 @@ fn wrap_path_lengths(
         } else if k == last {
             receiver.z
         } else {
-            clamp_height(unfolded(k), fp.base_z, fp.top_z)
+            let c = corners[k - 1];
+            clamp_height(unfolded(k), c.base_z, c.top_z)
         }
     };
 
@@ -515,12 +554,11 @@ pub fn build_geometry(
     }
 
     let over_top = path_lengths(s_in_plane, r_in_plane, &active);
-    // Around-the-side paths: thin-wall ends (single-edge, best per side) plus
-    // each blocking building's two multi-corner wraps.
+    // Around-the-side paths: thin-wall ends (single-edge, best per side) plus the
+    // two multi-corner wraps around the building CLUSTER (one taut string per side
+    // over all footprints together — a lone building is just a one-element cluster).
     let mut lateral = select_lateral(source, receiver, lateral_edges);
-    for fp in footprints {
-        lateral.extend(footprint_lateral_paths(source, receiver, fp));
-    }
+    lateral.extend(cluster_lateral_paths(source, receiver, footprints));
     Some(BarrierGeometry { over_top, lateral })
 }
 
