@@ -675,16 +675,18 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
 
     // Edition dispatch (once) — general sources score through the standard's
     // evaluator; WTG sources always use Annex D (2024-only), independent of the
-    // selected edition (1996 has no wind-turbine annex).
-    let model: &dyn StandardModel = match scene.standard {
+    // selected edition (1996 has no wind-turbine annex). `+ Sync` lets the
+    // per-receiver closure run on a rayon worker pool under the `parallel`
+    // feature (the unit-struct evaluators are trivially Sync).
+    let model: &(dyn StandardModel + Sync) = match scene.standard {
         Standard::Iso9613_2_1996 => &Iso1996,
         Standard::Iso9613_2_2024 => &Iso2024,
     };
 
-    let per_receiver = scene
-        .receivers
-        .iter()
-        .map(|rx| {
+    // Each receiver is an independent, read-only-over-`scene` computation — the
+    // natural parallelism unit. Bound once so the serial and rayon paths share
+    // one body.
+    let compute = |rx: &Receiver| -> ReceiverResult {
             let r = Vec3::new(rx.position[0], rx.position[1], rx.position[2]);
             let mut per_source = Vec::with_capacity(scene.sources.len());
             for src in &scene.sources {
@@ -848,10 +850,34 @@ pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
             };
 
             ReceiverResult { receiver_id: rx.id.clone(), total_dba, per_source }
-        })
-        .collect();
+    };
+
+    // Fan out over receivers. The rayon pool is configured by `solve_par`; a
+    // bare `solve()` under the feature uses rayon's global pool (all cores).
+    #[cfg(feature = "parallel")]
+    let per_receiver: Vec<ReceiverResult> = {
+        use rayon::prelude::*;
+        scene.receivers.par_iter().map(compute).collect()
+    };
+    #[cfg(not(feature = "parallel"))]
+    let per_receiver: Vec<ReceiverResult> = scene.receivers.iter().map(compute).collect();
 
     Ok(Results { per_receiver })
+}
+
+/// Multithreaded solve with an explicit concurrency budget (native only).
+///
+/// `max_threads` caps the rayon worker count for THIS solve: `0` uses all
+/// logical cores (100 % of the machine); a smaller value leaves headroom so an
+/// interactive host (e.g. a web backend) stays responsive. Runs on a private
+/// pool, so it never disturbs rayon's global pool or other solves.
+#[cfg(feature = "parallel")]
+pub fn solve_par(scene: &Scene, max_threads: usize) -> Result<Results, SceneError> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(max_threads) // 0 ⇒ rayon default (all logical cores)
+        .build()
+        .map_err(|_| SceneError::StandardNotImplemented("rayon thread pool"))?;
+    pool.install(|| solve(scene))
 }
 
 #[cfg(test)]
@@ -988,5 +1014,39 @@ mod tests {
         let json = serde_json::to_string(&scene).unwrap();
         let back: Scene = serde_json::from_str(&json).unwrap();
         assert_eq!(back.sources[0].id, "s1");
+    }
+
+    /// The multithreaded solve must be bit-for-bit identical to the serial one,
+    /// regardless of thread count (results collected in receiver order).
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn solve_par_matches_serial_bit_for_bit() {
+        let mut scene = basic_scene();
+        scene.obstacles.push(Obstacle::Wall {
+            polyline: vec![[100.0, -50.0], [100.0, 50.0]],
+            base_z: vec![0.0, 0.0],
+            height_agl: 8.0,
+        });
+        // A grid of receivers so the fan-out actually has work to split.
+        scene.receivers = (0..200)
+            .map(|i| Receiver {
+                id: format!("r{i}"),
+                position: [150.0 + i as f64, (i as f64 * 0.5) - 50.0, 1.5],
+                height_agl: 1.5,
+            })
+            .collect();
+
+        let serial = solve(&scene).unwrap();
+        for threads in [0usize, 1, 4] {
+            let par = solve_par(&scene, threads).unwrap();
+            assert_eq!(par.per_receiver.len(), serial.per_receiver.len());
+            for (a, b) in par.per_receiver.iter().zip(&serial.per_receiver) {
+                assert_eq!(a.receiver_id, b.receiver_id, "order preserved");
+                assert_eq!(a.total_dba, b.total_dba, "identical total (threads={threads})");
+                for (x, y) in a.per_source[0].bands.iter().zip(&b.per_source[0].bands) {
+                    assert_eq!(x, y, "identical per-band (threads={threads})");
+                }
+            }
+        }
     }
 }

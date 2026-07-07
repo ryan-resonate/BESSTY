@@ -9,6 +9,13 @@ publish = false
 [dependencies]
 smallvec = "1.13"
 serde = { version = "1", features = ["derive"] }
+rayon = { version = "1", optional = true }
+
+[features]
+# Native multithreading over receivers/grid points via rayon. OFF by default so
+# wasm builds stay single-threaded (the web target drives concurrency with its
+# own Web-Worker pool, not rayon/SharedArrayBuffer).
+parallel = ["dep:rayon"]
 
 [dev-dependencies]
 approx = "0.5"
