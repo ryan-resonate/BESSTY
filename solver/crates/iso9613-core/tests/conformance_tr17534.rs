@@ -295,6 +295,34 @@ fn t19_reflecting_barrier_over_terrain() {
 }
 
 #[test]
+fn t14_polygonal_building_over_terrain() {
+    // §6.2.15 — octagonal building (h=30) over the T06 terrain, ground areas
+    // A1=0.5/A2=0.9/A3=0.2, S(10,10,1) → R(200,50,28.5). Table 45. The footprint
+    // straddles the plateau edge (x=185), but the building is so tall (roof
+    // abs 30) that the over-roof diffraction dominates and the base elevation is
+    // immaterial — a single base_z=0 reproduces the reference to ±0.05.
+    let ground = Ground {
+        default_g: 0.5,
+        regions: vec![
+            GroundRegion { polygon: vec![[0.0, 60.0], [50.0, 60.0], [50.0, -10.0], [0.0, -10.0]], g: 0.5 },
+            GroundRegion { polygon: vec![[50.0, 60.0], [150.0, 60.0], [150.0, -10.0], [50.0, -10.0]], g: 0.9 },
+            GroundRegion { polygon: vec![[150.0, 60.0], [210.0, 60.0], [210.0, -10.0], [150.0, -10.0]], g: 0.2 },
+        ],
+    };
+    let octagon = vec![
+        [169.39, 41.00], [172.50, 33.50], [180.00, 30.39], [187.50, 33.50],
+        [190.61, 41.00], [187.50, 48.50], [180.00, 51.61], [172.50, 48.50],
+    ];
+    let mut scene = tr_scene(ground, GroundMethod::General, vec![building(octagon, 30.0)]);
+    scene.terrain = Some(t07_terrain(true));
+    scene.sources[0].position = [10.0, 10.0, 1.0];
+    scene.sources[0].height_agl = 1.0;
+    scene.receivers[0].position = [200.0, 50.0, 28.5];
+    scene.receivers[0].height_agl = 18.5;
+    assert_tr(&scene, [34.93, 30.42, 25.18, 21.55, 20.14, 17.41, 12.00, -0.08], 25.38);
+}
+
+#[test]
 fn t08_long_barrier() {
     // §6.2.9 — long thin barrier, upper edge (100,240,6)→(265,-180,6), over the
     // T08 ground areas. The ends are far off-path so lateral diffraction is
