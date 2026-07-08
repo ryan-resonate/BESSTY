@@ -6,15 +6,15 @@
 //! (§6.2, precision 2). These cases assert exactly that, against values
 //! TRANSCRIBED from the TR tables — not tuned to pass.
 //!
-//! Coverage: all 19 cases T01–T19. T01–T07 are "solved by applying ISO 9613-2
-//! exclusively" (§6) — flat/varying/terrain ground, general (§7.3.1) and
-//! simplified (§7.3.2) methods. T08–T19 exercise the §5-recommendation features:
-//! thin barriers (T08–T10), single buildings (T11–T15), a building cluster
-//! (T16/T17), a concave courtyard building (T18) and a reflecting barrier over
-//! terrain (T19). All pass the ±0.05 gate on the A-weighted total; T12/T15
-//! (receiver above the roof) match within ISO's ±3 dB method uncertainty — see
-//! the per-test notes for the two cases whose per-band tolerance is relaxed to
-//! document a reference-rounding or far-edge-neglect residual.
+//! Coverage: all 19 cases T01–T19, every one passing the TR's ±0.05 dB gate on
+//! the A-weighted total. T01–T07 are "solved by applying ISO 9613-2 exclusively"
+//! (§6) — flat/varying/terrain ground, general (§7.3.1) and simplified (§7.3.2)
+//! methods. T08–T19 exercise the §5-recommendation features: thin barriers
+//! (T08–T10), single buildings (T11–T15, incl. receiver-above-roof T12/T15), a
+//! building cluster (T16/T17), a concave courtyard building (T18) and a
+//! reflecting barrier over terrain (T19). A few cases relax the *per-band*
+//! tolerance to document a printed-reference rounding or far-edge-neglect
+//! residual — the total is always held to ±0.05; see the per-test notes.
 //!
 //! Band note: the TR uses the eight octaves 63 Hz–8 kHz. The crate's octave
 //! system spans 16 Hz–8 kHz (indices 2..10); the 16/31.5 Hz bands carry no
@@ -326,12 +326,11 @@ fn t14_polygonal_building_over_terrain() {
     assert_tr(&scene, [34.93, 30.42, 25.18, 21.55, 20.14, 17.41, 12.00, -0.08], 25.38);
 }
 
-// Receiver ABOVE the roof (T12 z=15, T15 z=23 over a 10 m roof). The around-the-
-// side taut string now correctly keeps its real endpoint heights — only the
-// interior corners clamp to the roof (fixing a bug where clamping R down to the
-// roof made Δz negative and OPENED the barrier). The remaining gap to the TR is
-// the exact multi-edge over-roof construction (the TR's Δz is a touch smaller);
-// both cases now land within ISO's ±3 dB method uncertainty.
+// Receiver ABOVE the roof (T12 z=15, T15 z=23 over a 10 m roof). The lateral
+// diffraction is built in the tilted LATERAL PLANE (§7.4.3): when the receiver is
+// high the plane clears the far corner post above the roof and cuts the roof edge
+// instead, so the taut string rides over the top with a short `e` — matching the
+// TR exactly, where the old plan-view wrap forced the far corner to roof height.
 #[test]
 fn t12_cubic_building_receiver_high() {
     // §6.2.13 — T11's box, receiver at z=15 (5 m above the roof). Table 34.
@@ -339,9 +338,7 @@ fn t12_cubic_building_receiver_high() {
         [50.0, 10.0, 1.0], [70.0, 10.0, 15.0], 0.5,
         vec![building(vec![[55.0, 5.0], [65.0, 5.0], [65.0, 15.0], [55.0, 15.0]], 10.0)],
     );
-    let total = run(&scene).1;
-    // 43.66 vs 43.81 — within 0.2 dB.
-    assert_relative_eq!(total, 43.81, epsilon = 0.5);
+    assert_tr(&scene, [51.04, 46.71, 42.19, 38.70, 36.70, 36.26, 35.57, 34.07], 43.81);
 }
 
 #[test]
@@ -352,9 +349,7 @@ fn t15_polygonal_building_receiver_high() {
         [18.04, 15.50], [17.00, 18.00], [14.50, 19.04], [12.00, 18.00],
     ];
     let scene = tr_scene_sr([8.0, 10.0, 1.0], [25.0, 20.0, 23.0], 0.2, vec![building(octagon, 10.0)]);
-    let total = run(&scene).1;
-    // 48.81 vs 49.92 — within 1.1 dB (ISO method uncertainty is ±3 dB).
-    assert_relative_eq!(total, 49.92, epsilon = 1.5);
+    assert_tr(&scene, [53.49, 51.71, 49.59, 47.21, 44.60, 41.33, 37.76, 34.05], 49.92);
 }
 
 // Three-building CLUSTER (T16). The TR treats the buildings as one screening

@@ -209,88 +209,133 @@ fn is_convex(verts: &[(f64, f64)]) -> bool {
     true
 }
 
-/// The two around-the-side lateral paths for a cluster of **convex** footprints.
+/// The two around-the-side lateral paths for a cluster of **convex** footprints,
+/// per ISO 9613-2:2024 §7.4.3 — the "rubber band type polygon line in a **lateral
+/// plane** containing the source and receiver, perpendicular to the vertical
+/// plane". The supporting points are the intersections of that plane with the
+/// buildings' **edges** (each vertical corner post *and* each roof edge).
 ///
-/// Construction: work in `(t, d)` coordinates — `t` the along-`SR` distance,
-/// `d` the signed perpendicular plan offset. Pool the corners of every footprint;
-/// those on one side (same sign of `d`) plus `S`(t=0,d=0) and `R`(t=dp,d=0) have
-/// an outer convex chain (the taut string) given by the monotone upper hull that
-/// bulges away from the `SR` line. Because every footprint is convex, the union
-/// of the footprints lies inside the convex hull of their corners, so the hull
-/// string never cuts through a building — it is exactly ISO/TR 17534-3's
-/// "shortest polygon line around these edges" (§5.2) extended to Figure 28's
-/// multi-object threaded ray. The interior hull vertices are the active
-/// diffracting corners, each carrying its own building's `[base_z, top_z]`.
+/// Working in the lateral plane fixes the receiver-above-roof cases (T12/T15):
+/// when the receiver is high the tilted plane clears a corner post above the roof
+/// and instead cuts the roof edge, so the taut string rides over the top with a
+/// short `e` — exactly the TR's construction, rather than the old plan-view wrap
+/// that forced the far corner down to roof height. For a low receiver the plane
+/// cuts the posts below the roof and the result is the same side wrap as before.
+///
+/// The plane is spanned by `u1` (the 3-D `S→R` unit) and `u2` (the horizontal
+/// perpendicular). A point's in-plane coordinates are `(s, t)` = its projections
+/// onto `u1`/`u2`; `S`=(0,0), `R`=(L,0) with `L=|SR|`. The taut string on each
+/// side is the monotone hull of the supporting points there; `Δz` = hull length −
+/// `L`. Pooling every building's edges gives the whole-cluster threaded ray.
 fn convex_cluster_paths(
     source: Vec3,
     receiver: Vec3,
     footprints: &[&FootprintLateral],
 ) -> Vec<PathLengths> {
-    let (dx, dy) = (receiver.e - source.e, receiver.n - source.n);
-    let dp = (dx * dx + dy * dy).sqrt();
-    if dp < 1e-9 || footprints.is_empty() {
+    let s0 = (source.e, source.n, source.z);
+    let d = (receiver.e - s0.0, receiver.n - s0.1, receiver.z - s0.2);
+    let l = (d.0 * d.0 + d.1 * d.1 + d.2 * d.2).sqrt();
+    let dp = (d.0 * d.0 + d.1 * d.1).sqrt();
+    if l < 1e-9 || dp < 1e-9 || footprints.is_empty() {
         return Vec::new();
     }
-    let (ux, uy) = (dx / dp, dy / dp); // unit along SR (plan)
+    let u1 = (d.0 / l, d.1 / l, d.2 / l); // 3-D along S→R
+    let u2 = (-d.1 / dp, d.0 / dp, 0.0); // horizontal, ⟂ to S→R in plan
+    let nrm = (
+        u1.1 * u2.2 - u1.2 * u2.1,
+        u1.2 * u2.0 - u1.0 * u2.2,
+        u1.0 * u2.1 - u1.1 * u2.0,
+    ); // lateral-plane normal = u1 × u2
 
-    // Pool every footprint's corners with their (t, d) plan coordinates and the
-    // vertical face they belong to.
-    let mut corners: Vec<(f64, f64, CornerNode)> = Vec::new(); // (t, d, node)
+    // Supporting points: where each building EDGE (roof edge + corner post)
+    // crosses the lateral plane, in (s, t) in-plane coordinates.
+    let mut sup: Vec<(f64, f64)> = Vec::new();
+    let add_edge = |p: (f64, f64, f64), q: (f64, f64, f64), out: &mut Vec<(f64, f64)>| {
+        let dp_ = (p.0 - s0.0) * nrm.0 + (p.1 - s0.1) * nrm.1 + (p.2 - s0.2) * nrm.2;
+        let dq_ = (q.0 - s0.0) * nrm.0 + (q.1 - s0.1) * nrm.1 + (q.2 - s0.2) * nrm.2;
+        if (dp_ - dq_).abs() < 1e-12 {
+            return;
+        }
+        let lam = dp_ / (dp_ - dq_);
+        if (-1e-9..=1.0 + 1e-9).contains(&lam) {
+            let x = (
+                p.0 + lam * (q.0 - p.0),
+                p.1 + lam * (q.1 - p.1),
+                p.2 + lam * (q.2 - p.2),
+            );
+            let (vx, vy, vz) = (x.0 - s0.0, x.1 - s0.1, x.2 - s0.2);
+            out.push((
+                vx * u1.0 + vy * u1.1 + vz * u1.2,
+                vx * u2.0 + vy * u2.1 + vz * u2.2,
+            ));
+        }
+    };
     for fp in footprints {
-        for &(e, n) in &fp.verts {
-            let (rx, ry) = (e - source.e, n - source.n);
-            let t = rx * ux + ry * uy;
-            let d = ux * ry - uy * rx;
-            corners.push((t, d, CornerNode { e, n, base_z: fp.base_z, top_z: fp.top_z }));
+        let nv = fp.verts.len();
+        for i in 0..nv {
+            let a = fp.verts[i];
+            let b = fp.verts[(i + 1) % nv];
+            // roof edge at top_z, and the corner post at vertex a.
+            add_edge((a.0, a.1, fp.top_z), (b.0, b.1, fp.top_z), &mut sup);
+            add_edge((a.0, a.1, fp.base_z), (a.0, a.1, fp.top_z), &mut sup);
         }
     }
-    if corners.is_empty() {
+    if sup.is_empty() {
         return Vec::new();
     }
 
     let mut out = Vec::new();
     for side in [1.0_f64, -1.0] {
-        // Anchors + all corners on this side, folded to a common positive-d side.
-        // The third tuple element indexes `corners`; `usize::MAX` marks an anchor.
-        let mut pts: Vec<(f64, f64, usize)> = vec![(0.0, 0.0, usize::MAX)];
-        for (i, &(t, d, _)) in corners.iter().enumerate() {
-            if d * side > 1e-9 {
-                pts.push((t, d * side, i));
+        // S/R anchors + supporting points on this side, folded to a common +t.
+        let mut pts: Vec<(f64, f64, bool)> = vec![(0.0, 0.0, false)];
+        for &(sc, tc) in &sup {
+            if tc * side > 1e-9 {
+                pts.push((sc, tc * side, true));
             }
         }
-        pts.push((dp, 0.0, usize::MAX));
+        pts.push((l, 0.0, false));
         if pts.len() < 3 {
-            continue; // no corner shadows this side
+            continue;
         }
         pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-        // Upper hull in (t, d): the taut string over this side's pooled corners.
-        let mut hull: Vec<(f64, f64, usize)> = Vec::new();
+        // Upper hull in (s, t) — the rubber band over this side's supports.
+        let mut hull: Vec<(f64, f64, bool)> = Vec::new();
         for &p in &pts {
             while hull.len() >= 2 {
                 let a = hull[hull.len() - 2];
                 let b = hull[hull.len() - 1];
                 let cross = (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0);
                 if cross >= 0.0 {
-                    hull.pop(); // b is below the a→p line → not on the upper hull
+                    hull.pop();
                 } else {
                     break;
                 }
             }
             hull.push(p);
         }
-        // Active corners = interior hull vertices (exclude the S/R anchors).
-        let active: Vec<CornerNode> = hull
-            .iter()
-            .filter(|p| p.2 != usize::MAX)
-            .map(|p| corners[p.2].2)
-            .collect();
-        if active.is_empty() {
+        let corners: Vec<(f64, f64)> = hull.iter().filter(|p| p.2).map(|p| (p.0, p.1)).collect();
+        if corners.is_empty() {
             continue;
         }
-        if let Some(path) = wrap_path_lengths(source, receiver, &active) {
-            out.push(path);
+        // Path lengths straight from the in-plane polyline S → corners → R.
+        let mut chain = vec![(0.0, 0.0)];
+        chain.extend(corners.iter().copied());
+        chain.push((l, 0.0));
+        let seg = |a: (f64, f64), b: (f64, f64)| ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
+        let d_ss = seg(chain[0], chain[1]);
+        let d_sr = seg(chain[chain.len() - 2], chain[chain.len() - 1]);
+        let mut e_total = 0.0;
+        for w in chain[1..chain.len() - 1].windows(2) {
+            e_total += seg(w[0], w[1]);
         }
+        out.push(PathLengths {
+            d_direct: l,
+            d_ss,
+            d_sr,
+            e_total,
+            delta_z: d_ss + e_total + d_sr - l,
+        });
     }
     out
 }
