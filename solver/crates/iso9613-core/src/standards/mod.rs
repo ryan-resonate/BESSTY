@@ -15,7 +15,7 @@
 //! ([`Iso2024`]/[`ISO_2024`]) are wired. No future-standard names appear here.
 
 use crate::iso9613::atmosphere::{self, Atmosphere};
-use crate::iso9613::barrier::path::{DiffractionEdge, FootprintLateral};
+use crate::iso9613::barrier::path::{DiffractionEdge, FootprintLateral, Solid3D};
 use crate::iso9613::barrier::{self, BarrierVariant, LateralEdge, WallBarrier};
 use crate::iso9613::divergence;
 use crate::iso9613::ground::{self, GroundCombination, GroundMethod};
@@ -72,6 +72,8 @@ pub struct GeneralEval<'a> {
     pub terrain_edges: &'a [DiffractionEdge],
     /// Building footprints for around-the-side (multi-corner) lateral wraps.
     pub footprints: &'a [FootprintLateral],
+    /// 3-D solids / pitched roofs — over-top and lateral both read their edges.
+    pub solids: &'a [Solid3D],
     pub dz_cap: Option<f64>,
     pub atm: Atmosphere,
     /// §7.3 method for the ground effect — a user setting, edition-independent.
@@ -125,7 +127,7 @@ pub trait StandardModel {
 
         // Geometry (path engine) is separate from scoring (this evaluator).
         let geometry = barrier::path::build_geometry(
-            i.source, i.receiver, i.barriers, i.lateral, i.terrain_edges, i.footprints,
+            i.source, i.receiver, i.barriers, i.lateral, i.terrain_edges, i.footprints, i.solids,
         );
         let abar = barrier::abar_spectrum(geometry.as_ref(), &agr, system, i.dz_cap, spec.barrier);
 

@@ -62,6 +62,20 @@ pub struct LateralEdge {
     pub top_z: f64,
 }
 
+/// A general 3-D diffracting solid given by its wireframe `edges` (corner posts,
+/// eave/roof edges, and — for pitched roofs or arbitrary polyhedra — ridge, hip
+/// and valley edges), each an absolute-coordinate segment.
+///
+/// The whole diffraction model is symmetric in the two planes: the **over-top**
+/// path comes from intersecting these edges with the vertical S→R plane
+/// ([`project_solid_edges`]) and the **around-the-side** paths from intersecting
+/// them with the lateral plane ([`lateral_plane_hull`]). A pitched roof is then
+/// just a solid whose edge list includes the ridge — no special casing.
+#[derive(Clone, Debug)]
+pub struct Solid3D {
+    pub edges: Vec<(Vec3, Vec3)>,
+}
+
 /// Clamp of `v` to `[lo, hi]`.
 fn clamp_height(v: f64, lo: f64, hi: f64) -> f64 {
     if v < lo {
@@ -232,11 +246,32 @@ fn convex_cluster_paths(
     receiver: Vec3,
     footprints: &[&FootprintLateral],
 ) -> Vec<PathLengths> {
+    // Each flat footprint contributes its roof edges (at `top_z`) and corner posts
+    // (base_z → top_z) to the shared lateral-plane construction.
+    let mut edges: Vec<(Vec3, Vec3)> = Vec::new();
+    for fp in footprints {
+        let nv = fp.verts.len();
+        for i in 0..nv {
+            let a = fp.verts[i];
+            let b = fp.verts[(i + 1) % nv];
+            edges.push((Vec3::new(a.0, a.1, fp.top_z), Vec3::new(b.0, b.1, fp.top_z)));
+            edges.push((Vec3::new(a.0, a.1, fp.base_z), Vec3::new(a.0, a.1, fp.top_z)));
+        }
+    }
+    lateral_plane_hull(source, receiver, &edges)
+}
+
+/// The two around-the-side lateral paths for a **convex** diffracting solid given
+/// directly by its 3-D `edges` (corner posts, roof edges, and — for pitched roofs
+/// or general polyhedra — ridge/hip/valley edges). This is the shared core of the
+/// lateral-plane construction; [`convex_cluster_paths`] feeds it flat-footprint
+/// edges, and a 3-D `Solid` obstacle feeds it its full wireframe.
+pub fn lateral_plane_hull(source: Vec3, receiver: Vec3, edges: &[(Vec3, Vec3)]) -> Vec<PathLengths> {
     let s0 = (source.e, source.n, source.z);
     let d = (receiver.e - s0.0, receiver.n - s0.1, receiver.z - s0.2);
     let l = (d.0 * d.0 + d.1 * d.1 + d.2 * d.2).sqrt();
     let dp = (d.0 * d.0 + d.1 * d.1).sqrt();
-    if l < 1e-9 || dp < 1e-9 || footprints.is_empty() {
+    if l < 1e-9 || dp < 1e-9 || edges.is_empty() {
         return Vec::new();
     }
     let u1 = (d.0 / l, d.1 / l, d.2 / l); // 3-D along S→R
@@ -247,37 +282,27 @@ fn convex_cluster_paths(
         u1.0 * u2.1 - u1.1 * u2.0,
     ); // lateral-plane normal = u1 × u2
 
-    // Supporting points: where each building EDGE (roof edge + corner post)
-    // crosses the lateral plane, in (s, t) in-plane coordinates.
+    // Supporting points: where each solid EDGE crosses the lateral plane, in
+    // (s, t) in-plane coordinates.
     let mut sup: Vec<(f64, f64)> = Vec::new();
-    let add_edge = |p: (f64, f64, f64), q: (f64, f64, f64), out: &mut Vec<(f64, f64)>| {
-        let dp_ = (p.0 - s0.0) * nrm.0 + (p.1 - s0.1) * nrm.1 + (p.2 - s0.2) * nrm.2;
-        let dq_ = (q.0 - s0.0) * nrm.0 + (q.1 - s0.1) * nrm.1 + (q.2 - s0.2) * nrm.2;
+    for &(p, q) in edges {
+        let dp_ = (p.e - s0.0) * nrm.0 + (p.n - s0.1) * nrm.1 + (p.z - s0.2) * nrm.2;
+        let dq_ = (q.e - s0.0) * nrm.0 + (q.n - s0.1) * nrm.1 + (q.z - s0.2) * nrm.2;
         if (dp_ - dq_).abs() < 1e-12 {
-            return;
+            continue;
         }
         let lam = dp_ / (dp_ - dq_);
         if (-1e-9..=1.0 + 1e-9).contains(&lam) {
             let x = (
-                p.0 + lam * (q.0 - p.0),
-                p.1 + lam * (q.1 - p.1),
-                p.2 + lam * (q.2 - p.2),
+                p.e + lam * (q.e - p.e),
+                p.n + lam * (q.n - p.n),
+                p.z + lam * (q.z - p.z),
             );
             let (vx, vy, vz) = (x.0 - s0.0, x.1 - s0.1, x.2 - s0.2);
-            out.push((
+            sup.push((
                 vx * u1.0 + vy * u1.1 + vz * u1.2,
                 vx * u2.0 + vy * u2.1 + vz * u2.2,
             ));
-        }
-    };
-    for fp in footprints {
-        let nv = fp.verts.len();
-        for i in 0..nv {
-            let a = fp.verts[i];
-            let b = fp.verts[(i + 1) % nv];
-            // roof edge at top_z, and the corner post at vertex a.
-            add_edge((a.0, a.1, fp.top_z), (b.0, b.1, fp.top_z), &mut sup);
-            add_edge((a.0, a.1, fp.base_z), (a.0, a.1, fp.top_z), &mut sup);
         }
     }
     if sup.is_empty() {
@@ -672,6 +697,45 @@ pub fn project_walls(source: Vec3, receiver: Vec3, barriers: &[WallBarrier]) -> 
     edges
 }
 
+/// Project a 3-D solid's diffracting `edges` into the vertical S→R plane,
+/// returning the `(x, z)` points where each edge crosses it — the over-top
+/// diffraction candidates for a pitched roof or general solid. Analogous to
+/// [`project_walls`] for flat walls, but the crest can be a ridge at any height,
+/// not a single flat top; the upper-hull selection then picks the active peaks.
+pub fn project_solid_edges(
+    source: Vec3,
+    receiver: Vec3,
+    edges: &[(Vec3, Vec3)],
+) -> Vec<DiffractionEdge> {
+    let (dx, dy) = (receiver.e - source.e, receiver.n - source.n);
+    let dp = (dx * dx + dy * dy).sqrt();
+    if dp < 1e-9 {
+        return Vec::new();
+    }
+    let (ux, uy) = (dx / dp, dy / dp); // along S→R (plan)
+    let (nx, ny) = (-dy / dp, dx / dp); // horizontal normal of the vertical plane
+    let mut out = Vec::new();
+    for &(p, q) in edges {
+        let dpn = (p.e - source.e) * nx + (p.n - source.n) * ny;
+        let dqn = (q.e - source.e) * nx + (q.n - source.n) * ny;
+        if (dpn - dqn).abs() < 1e-12 {
+            continue; // edge parallel to the vertical plane
+        }
+        let lam = dpn / (dpn - dqn);
+        if !(-1e-9..=1.0 + 1e-9).contains(&lam) {
+            continue;
+        }
+        let x = (
+            p.e + lam * (q.e - p.e),
+            p.n + lam * (q.n - p.n),
+            p.z + lam * (q.z - p.z),
+        );
+        let along = (x.0 - source.e) * ux + (x.1 - source.n) * uy;
+        out.push(DiffractionEdge { x: along, z: x.2 });
+    }
+    out
+}
+
 /// Andrew's monotone chain — upper convex hull of the source, edges, and
 /// receiver in the vertical plane. Returns the edges that lie on the hull
 /// (the "active" diffracting edges).
@@ -834,9 +898,15 @@ pub fn build_geometry(
     lateral_edges: &[LateralEdge],
     terrain_edges: &[DiffractionEdge],
     footprints: &[FootprintLateral],
+    solids: &[Solid3D],
 ) -> Option<BarrierGeometry> {
     let mut candidates = project_walls(source, receiver, barriers);
     candidates.extend_from_slice(terrain_edges);
+    // 3-D solids / pitched roofs: their over-top crest is wherever their edges
+    // cross the vertical S→R plane (a ridge peak, not a single flat top).
+    for solid in solids {
+        candidates.extend(project_solid_edges(source, receiver, &solid.edges));
+    }
     candidates.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap());
     let s_in_plane = DiffractionEdge { x: 0.0, z: source.z };
     let dx = receiver.e - source.e;
@@ -850,11 +920,14 @@ pub fn build_geometry(
     }
 
     let over_top = path_lengths(s_in_plane, r_in_plane, &active);
-    // Around-the-side paths: thin-wall ends (single-edge, best per side) plus the
+    // Around-the-side paths: thin-wall ends (single-edge, best per side), the
     // two multi-corner wraps around the building CLUSTER (one taut string per side
-    // over all footprints together — a lone building is just a one-element cluster).
+    // over all footprints), and each 3-D solid's lateral-plane wraps.
     let mut lateral = select_lateral(source, receiver, lateral_edges);
     lateral.extend(cluster_lateral_paths(source, receiver, footprints));
+    for solid in solids {
+        lateral.extend(lateral_plane_hull(source, receiver, &solid.edges));
+    }
     Some(BarrierGeometry { over_top, lateral })
 }
 

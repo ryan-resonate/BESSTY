@@ -16,7 +16,7 @@ pub mod extent;
 use crate::iso9613::annex_b;
 use crate::iso9613::annex_d::{self, WtgRules};
 use crate::iso9613::atmosphere::Atmosphere as CoreAtmosphere;
-use crate::iso9613::barrier::path::{DiffractionEdge, FootprintLateral};
+use crate::iso9613::barrier::path::{DiffractionEdge, FootprintLateral, Solid3D};
 use crate::iso9613::barrier::{LateralEdge, WallBarrier};
 use crate::iso9613::ground::GroundMethod;
 use crate::iso9613::meteorology::cmet_db;
@@ -175,17 +175,80 @@ pub enum Obstacle {
     /// edge becomes a `WallBarrier`, so a source→receiver ray crossing the
     /// footprint diffracts over the near+far walls (multi-edge over the roof).
     ///
-    /// Opaque, per ISO 9613-2 (no transmission). Per-vertex eave heights /
-    /// pitched roofs (per-vertex `Solid3D`) and around-building lateral
-    /// diffraction (needs the Fix-4 best-per-side selection) are later
-    /// increments; buildings screen **over-top** only for now. Façade
-    /// reflections arrive with the reflection engine.
+    /// Opaque, per ISO 9613-2 (no transmission). Both the over-top (multi-edge
+    /// over the near+far walls) and the around-the-side diffraction are modelled;
+    /// façade reflections arrive with the reflection engine. For a **pitched
+    /// roof** or any true 3-D shape use [`Obstacle::Solid`] instead.
     Building {
         footprint: Vec<[f64; 2]>,
         base_z: f64,
         height_agl: f64,
     },
-    // Solid3D (true 3D objects) arrives later in Phase 3.
+    /// A general 3-D diffracting solid given by its wireframe: absolute-coordinate
+    /// `vertices` and the `edges` (index pairs) that diffract — corner posts,
+    /// eaves, and ridge/hip/valley lines. This is how pitched-roof buildings and
+    /// arbitrary polyhedra are represented; the over-top crest and the two lateral
+    /// wraps both fall out of intersecting these edges with the vertical and
+    /// lateral planes (see `iso9613::barrier::path::Solid3D`).
+    ///
+    /// The diffraction treats the solid as **convex** (the hull of the edge
+    /// intersections); a genuinely concave 3-D shape is approximated by its convex
+    /// silhouette per plane. Opaque, no transmission. Use [`Obstacle::gable`] /
+    /// [`Obstacle::hip`] to build the common roof shapes.
+    Solid {
+        vertices: Vec<[f64; 3]>,
+        edges: Vec<[usize; 2]>,
+    },
+}
+
+impl Obstacle {
+    /// A gable-roofed building over a rectangular `footprint` (4 corners in
+    /// order), walls rising to `eaves_z`, and a ridge at `ridge_z` running
+    /// parallel to edge `c0→c1` (i.e. between the midpoints of edges `c3→c0` and
+    /// `c1→c2`). Produces the [`Obstacle::Solid`] wireframe: eaves, ridge, the
+    /// four rafters, and the corner posts down to `base_z`.
+    pub fn gable(footprint: [[f64; 2]; 4], base_z: f64, eaves_z: f64, ridge_z: f64) -> Obstacle {
+        Self::ridged(footprint, base_z, eaves_z, ridge_z, 0.0)
+    }
+
+    /// A hip-roofed building — like [`Obstacle::gable`] but the ridge is inset
+    /// from both ends by half the footprint width, so all four faces slope.
+    pub fn hip(footprint: [[f64; 2]; 4], base_z: f64, eaves_z: f64, ridge_z: f64) -> Obstacle {
+        let c = footprint;
+        let half_w = 0.5 * ((c[1][0] - c[0][0]).hypot(c[1][1] - c[0][1]));
+        Self::ridged(footprint, base_z, eaves_z, ridge_z, half_w)
+    }
+
+    /// Shared gable/hip builder: `inset` slides both ridge ends inward along the
+    /// ridge axis (0 = gable, half-width = hip).
+    fn ridged(c: [[f64; 2]; 4], base_z: f64, eaves_z: f64, ridge_z: f64, inset: f64) -> Obstacle {
+        let mid = |a: [f64; 2], b: [f64; 2]| [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+        let (m0, m1) = (mid(c[3], c[0]), mid(c[1], c[2]));
+        let axis_len = (m1[0] - m0[0]).hypot(m1[1] - m0[1]).max(1e-9);
+        let ax = [(m1[0] - m0[0]) / axis_len, (m1[1] - m0[1]) / axis_len];
+        let inset = inset.min(0.49 * axis_len); // keep the ridge from inverting
+        let r0 = [m0[0] + ax[0] * inset, m0[1] + ax[1] * inset];
+        let r1 = [m1[0] - ax[0] * inset, m1[1] - ax[1] * inset];
+        let vertices = vec![
+            [c[0][0], c[0][1], eaves_z], // 0..3 eave corners
+            [c[1][0], c[1][1], eaves_z],
+            [c[2][0], c[2][1], eaves_z],
+            [c[3][0], c[3][1], eaves_z],
+            [r0[0], r0[1], ridge_z], // 4 ridge end (c3-c0 side)
+            [r1[0], r1[1], ridge_z], // 5 ridge end (c1-c2 side)
+            [c[0][0], c[0][1], base_z], // 6..9 base corners
+            [c[1][0], c[1][1], base_z],
+            [c[2][0], c[2][1], base_z],
+            [c[3][0], c[3][1], base_z],
+        ];
+        let edges = vec![
+            [0, 1], [1, 2], [2, 3], [3, 0], // eaves
+            [4, 5], // ridge
+            [4, 0], [4, 3], [5, 1], [5, 2], // rafters / hips
+            [6, 0], [7, 1], [8, 2], [9, 3], // corner posts
+        ];
+        Obstacle::Solid { vertices, edges }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -506,6 +569,17 @@ impl Scene {
                         return Err(SceneError::NonFinite { entity: format!("obstacle {i}") });
                     }
                 }
+                Obstacle::Solid { vertices, edges } => {
+                    if vertices.len() < 3 || edges.is_empty() {
+                        return Err(SceneError::DegenerateBuilding { index: i, reason: "solid needs ≥ 3 vertices and ≥ 1 edge" });
+                    }
+                    if edges.iter().any(|&[a, b]| a >= vertices.len() || b >= vertices.len()) {
+                        return Err(SceneError::DegenerateBuilding { index: i, reason: "solid edge index out of range" });
+                    }
+                    if !all_finite(vertices.iter().flat_map(|p| p.iter().copied())) {
+                        return Err(SceneError::NonFinite { entity: format!("obstacle {i}") });
+                    }
+                }
             }
         }
         // Default to octave when there are no sources (empty scene solves to silence).
@@ -515,10 +589,11 @@ impl Scene {
     /// Decompose obstacles into solver primitives: over-top wall segments,
     /// thin-wall lateral end edges, and building footprints (for multi-corner
     /// around-the-side wraps).
-    fn barriers(&self) -> (Vec<WallBarrier>, Vec<LateralEdge>, Vec<FootprintLateral>) {
+    fn barriers(&self) -> (Vec<WallBarrier>, Vec<LateralEdge>, Vec<FootprintLateral>, Vec<Solid3D>) {
         let mut walls = Vec::new();
         let mut lateral = Vec::new();
         let mut footprints = Vec::new();
+        let mut solids = Vec::new();
         for ob in &self.obstacles {
             match ob {
                 Obstacle::Wall { polyline, base_z, height_agl, top_z } => {
@@ -567,9 +642,21 @@ impl Scene {
                         top_z: base_z + height_agl,
                     });
                 }
+                Obstacle::Solid { vertices, edges } => {
+                    // Diffraction (over-top + lateral) reads the raw 3-D wireframe.
+                    let edges = edges
+                        .iter()
+                        .map(|&[i, j]| {
+                            let a = vertices[i];
+                            let b = vertices[j];
+                            (Vec3::new(a[0], a[1], a[2]), Vec3::new(b[0], b[1], b[2]))
+                        })
+                        .collect();
+                    solids.push(Solid3D { edges });
+                }
             }
         }
-        (walls, lateral, footprints)
+        (walls, lateral, footprints, solids)
     }
 }
 
@@ -758,8 +845,8 @@ fn region_ground_factors(
 /// One-shot point-receiver solve.
 pub fn solve(scene: &Scene) -> Result<Results, SceneError> {
     let system = scene.validate()?;
-    let (walls, lateral, footprints) = scene.barriers();
-    Ok(solve_cached(scene, system, walls, lateral, footprints))
+    let (walls, lateral, footprints, solids) = scene.barriers();
+    Ok(solve_cached(scene, system, walls, lateral, footprints, solids))
 }
 
 /// Core evaluation given a pre-decomposed obstacle set — shared by the one-shot
@@ -771,6 +858,7 @@ fn solve_cached(
     walls: Vec<WallBarrier>,
     lateral: Vec<LateralEdge>,
     footprints: Vec<FootprintLateral>,
+    solids: Vec<Solid3D>,
 ) -> Results {
     let atm: CoreAtmosphere = scene.atmosphere.into();
     let g = scene.ground.default_g;
@@ -827,6 +915,7 @@ fn solve_cached(
                         lateral: &lateral,
                         terrain_edges: &terrain_edges,
                         footprints: &footprints,
+                        solids: &solids,
                         dz_cap: scene.settings.dz_cap_db,
                         atm,
                         ground_method: scene.settings.ground_method,
@@ -854,7 +943,7 @@ fn solve_cached(
                             h_s: src.height_agl, h_r: rx.height_agl,
                             g_source, g_middle, g_receiver,
                             barriers: &walls, lateral: &lateral,
-                            terrain_edges: &terrain_edges, footprints: &footprints,
+                            terrain_edges: &terrain_edges, footprints: &footprints, solids: &solids,
                             dz_cap: scene.settings.dz_cap_db, atm,
                             ground_method: scene.settings.ground_method, hm_override,
                         })
@@ -905,6 +994,7 @@ fn solve_cached(
                             // direct path dominates in practice.
                             terrain_edges: &[],
                             footprints: &[],
+                            solids: &[],
                             dz_cap: scene.settings.dz_cap_db, atm,
                             ground_method: scene.settings.ground_method,
                             hm_override,
@@ -964,7 +1054,7 @@ fn solve_cached(
                             h_s: src.height_agl, h_r: rx.height_agl,
                             g_source, g_middle, g_receiver,
                             barriers: &walls, lateral: &lateral,
-                            terrain_edges: &[], footprints: &[],
+                            terrain_edges: &[], footprints: &[], solids: &[],
                             dz_cap: scene.settings.dz_cap_db, atm,
                             ground_method: scene.settings.ground_method, hm_override,
                         });
@@ -1006,7 +1096,7 @@ fn solve_cached(
                             h_s: src.height_agl, h_r: rx.height_agl,
                             g_source, g_middle, g_receiver,
                             barriers: &walls, lateral: &lateral,
-                            terrain_edges: &[], footprints: &[],
+                            terrain_edges: &[], footprints: &[], solids: &[],
                             dz_cap: scene.settings.dz_cap_db, atm,
                             ground_method: scene.settings.ground_method, hm_override,
                         });
@@ -1061,6 +1151,7 @@ fn solve_cached(
                         barriers: &walls, lateral: &lateral,
                         terrain_edges: &terrain_edges,
                         footprints: &footprints,
+                        solids: &solids,
                         dz_cap: scene.settings.dz_cap_db, atm,
                         ground_method: scene.settings.ground_method,
                         hm_override: if matches!(scene.settings.ground_method, GroundMethod::Simplified) {
@@ -1159,6 +1250,7 @@ pub struct Session {
     walls: Vec<WallBarrier>,
     lateral: Vec<LateralEdge>,
     footprints: Vec<FootprintLateral>,
+    solids: Vec<Solid3D>,
 }
 
 impl Session {
@@ -1166,8 +1258,8 @@ impl Session {
     /// [`Scene::validate`] would.
     pub fn new(scene: Scene) -> Result<Self, SceneError> {
         let system = scene.validate()?;
-        let (walls, lateral, footprints) = scene.barriers();
-        Ok(Self { scene, system, walls, lateral, footprints })
+        let (walls, lateral, footprints, solids) = scene.barriers();
+        Ok(Self { scene, system, walls, lateral, footprints, solids })
     }
 
     /// The current scene (read-only).
@@ -1183,6 +1275,7 @@ impl Session {
             self.walls.clone(),
             self.lateral.clone(),
             self.footprints.clone(),
+            self.solids.clone(),
         )
     }
 
@@ -1194,8 +1287,11 @@ impl Session {
             .iter()
             .filter_map(|&i| self.scene.receivers.get(i).cloned())
             .collect();
-        solve_cached(&sub, self.system, self.walls.clone(), self.lateral.clone(), self.footprints.clone())
-            .per_receiver
+        solve_cached(
+            &sub, self.system, self.walls.clone(), self.lateral.clone(),
+            self.footprints.clone(), self.solids.clone(),
+        )
+        .per_receiver
     }
 
     /// Replace the receivers (no obstacle re-decomposition).
@@ -1236,10 +1332,11 @@ impl Session {
 
     fn revalidate_and_decompose(&mut self) -> Result<(), SceneError> {
         self.system = self.scene.validate()?;
-        let (walls, lateral, footprints) = self.scene.barriers();
+        let (walls, lateral, footprints, solids) = self.scene.barriers();
         self.walls = walls;
         self.lateral = lateral;
         self.footprints = footprints;
+        self.solids = solids;
         Ok(())
     }
 }

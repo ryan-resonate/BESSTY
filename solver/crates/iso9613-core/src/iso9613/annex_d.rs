@@ -119,7 +119,7 @@ pub fn evaluate_wtg(
         z: effective_source_z_for_barrier(hub_pos.z, rotor_diameter_m, rules.use_elevated_source_for_barrier),
     };
     let geometry =
-        barrier::path::build_geometry(barrier_source, receiver_pos, barriers, lateral, &[], &[]);
+        barrier::path::build_geometry(barrier_source, receiver_pos, barriers, lateral, &[], &[], &[]);
     let abar = barrier::abar_spectrum(
         geometry.as_ref(),
         &agr,
