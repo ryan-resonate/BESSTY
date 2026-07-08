@@ -20,7 +20,7 @@ one-third-octave band, energy-summed over sources and (in-band) reflections:
 | `Aatm` atmospheric absorption | 7.2 | ✅ ISO 9613-1, evaluated at the **exact** ISO 266 centres |
 | `Agr` ground — general (7.3.1) + simplified (7.3.2) | 7.3 | ✅ per-region G; terrain-aware mean height `hm = F/d` |
 | `Abar` barriers — over-top (single/multi-edge) + around-the-side lateral | 7.4 | ✅ thin walls, terrain-following & sloped crests, terrain ridges |
-| Buildings — footprints, clusters, concave courtyards (visibility-graph laterals) | 7.4 | ✅ |
+| Buildings — footprints, clusters, concave courtyards, 3-D solids & pitched roofs | 7.4 | ✅ lateral-plane construction (§7.4.3) |
 | `Amisc` foliage / industrial / housing | Annex A | ✅ (off by default) |
 | Reflections — first + **higher-order** image sources, per-band α | 7.5 | ✅ |
 | Cylindrical reflections + `Acurv` | 7.5.4 | ✅ (2024) |
@@ -34,12 +34,12 @@ local ground (split z-datum). All geodetic/parsing work belongs in the caller.
 ## Conformance (the pre-deploy gate)
 
 `cargo test -p iso9613-core --test conformance_tr17534` runs all 19 ISO/TR
-17534-3 §6 cases at the TR's ±0.05 dB rule. **17 of 19 pass the ±0.05 gate on the
-A-weighted total** — including the three-building cluster (T16/T17) and the
-concave "backyard" building (T18), the multi-object cases the TR itself flags as
-unsolved in general. The two receiver-above-roof cases (T12/T15) match within
-ISO's ±3 dB method uncertainty. Per-test notes in that file document every
-tolerance.
+17534-3 §6 cases at the TR's ±0.05 dB rule. **All 19 pass the ±0.05 gate on the
+A-weighted total** — including receiver-above-roof (T12/T15), the three-building
+cluster (T16/T17) and the concave "backyard" building (T18), the multi-object
+cases the TR itself flags as unsolved in general. A few cases relax the *per-band*
+tolerance to document a printed-reference rounding residual; the total is always
+held to ±0.05. Per-test notes in that file document every tolerance.
 
 ## Workspace layout
 
