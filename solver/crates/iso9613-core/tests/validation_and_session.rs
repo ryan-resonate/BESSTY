@@ -82,6 +82,41 @@ fn nonfinite_terrain_is_rejected() {
     assert!(matches!(solve(&s3), Err(SceneError::DegenerateTerrain { .. })));
 }
 
+// ---- C1: validation sweep ----
+
+#[test]
+fn out_of_range_entities_are_rejected() {
+    use iso9613_core::scene::{ExtendedSource, ExtentGeometry, Reflector};
+
+    // Reflector alpha < 0 would AMPLIFY the reflection.
+    let mut s = base_scene();
+    s.reflectors = vec![Reflector {
+        segment: [[10.0, -5.0], [10.0, 5.0]], base_z: 0.0, top_z: 5.0, alpha: -0.1, alpha_bands: None,
+    }];
+    assert!(matches!(solve(&s), Err(SceneError::OutOfRange { .. })), "alpha<0 must be rejected");
+
+    // Impossible atmosphere.
+    let mut s = base_scene();
+    s.atmosphere.pressure_kpa = 0.0;
+    assert!(matches!(solve(&s), Err(SceneError::OutOfRange { .. })), "pressure 0 must be rejected");
+
+    // Ground factor out of [0,1].
+    let mut s = base_scene();
+    s.ground.default_g = 1.5;
+    assert!(matches!(solve(&s), Err(SceneError::OutOfRange { .. })), "G=1.5 must be rejected");
+
+    // A non-General extended source is not honoured — reject rather than silently
+    // evaluate it as General.
+    let mut s = base_scene();
+    s.extended_sources = vec![ExtendedSource {
+        id: "line".into(),
+        kind: SourceKind::ChimneyStack { opening_radius_m: 0.3 },
+        geometry: ExtentGeometry::Line { vertices: vec![[5.0, 0.0], [5.0, 10.0]] },
+        z: 4.0, height_agl: 4.0, lw: lw10(),
+    }];
+    assert!(matches!(solve(&s), Err(SceneError::OutOfRange { .. })), "non-General extended kind must be rejected");
+}
+
 // ---- A3: Session transactionality ----
 
 // ---- B4: coincident source/receiver; B8: reflection-order cap ----

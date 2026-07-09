@@ -635,6 +635,108 @@ impl Scene {
                 return Err(SceneError::DegenerateTerrain { reason: "origin/heights must be finite" });
             }
         }
+        // Physical ranges + finiteness for the remaining entity classes — a NaN or
+        // out-of-range value in any of them otherwise silently yields non-finite or
+        // physically-wrong results (e.g. alpha < 0 AMPLIFIES a reflection).
+        let bands_len = system.map_or(10, |s| s.n_bands());
+        let atm = &self.atmosphere;
+        if !all_finite([atm.temperature_c, atm.relative_humidity_pct, atm.pressure_kpa]) {
+            return Err(SceneError::NonFinite { entity: "atmosphere".into() });
+        }
+        if atm.temperature_c <= -273.15
+            || atm.pressure_kpa <= 0.0
+            || !(0.0..=100.0).contains(&atm.relative_humidity_pct)
+        {
+            return Err(SceneError::OutOfRange {
+                entity: "atmosphere".into(),
+                reason: "need temperature > −273.15 °C, pressure > 0 kPa, humidity in [0,100]%",
+            });
+        }
+        if !self.ground.default_g.is_finite() || !(0.0..=1.0).contains(&self.ground.default_g) {
+            return Err(SceneError::OutOfRange { entity: "ground.default_g".into(), reason: "must be in [0,1]" });
+        }
+        for (i, reg) in self.ground.regions.iter().enumerate() {
+            if reg.polygon.len() < 3 || !all_finite(reg.polygon.iter().flat_map(|p| p.iter().copied())) {
+                return Err(SceneError::OutOfRange { entity: format!("ground region {i}"), reason: "polygon needs ≥ 3 finite vertices" });
+            }
+            if !(0.0..=1.0).contains(&reg.g) {
+                return Err(SceneError::OutOfRange { entity: format!("ground region {i}"), reason: "g must be in [0,1]" });
+            }
+        }
+        let check_alpha = |alpha: f64, ab: &Option<Vec<f64>>, what: String| -> Result<(), SceneError> {
+            if !(0.0..=1.0).contains(&alpha) {
+                return Err(SceneError::OutOfRange { entity: what, reason: "alpha must be in [0,1]" });
+            }
+            if let Some(ab) = ab {
+                if ab.len() != bands_len || ab.iter().any(|&a| !(0.0..=1.0).contains(&a)) {
+                    return Err(SceneError::OutOfRange { entity: what, reason: "alpha_bands must match the band count and lie in [0,1]" });
+                }
+            }
+            Ok(())
+        };
+        for (i, r) in self.reflectors.iter().enumerate() {
+            let finite = all_finite(r.segment.iter().flat_map(|p| p.iter().copied()).chain([r.base_z, r.top_z]));
+            if !finite || r.top_z <= r.base_z {
+                return Err(SceneError::OutOfRange { entity: format!("reflector {i}"), reason: "finite segment/base/top with top_z > base_z" });
+            }
+            check_alpha(r.alpha, &r.alpha_bands, format!("reflector {i}"))?;
+        }
+        for (i, c) in self.cylinders.iter().enumerate() {
+            let finite = all_finite(c.centre.iter().copied().chain([c.radius, c.base_z, c.top_z]));
+            if !finite || c.radius <= 0.0 || c.top_z <= c.base_z {
+                return Err(SceneError::OutOfRange { entity: format!("cylinder {i}"), reason: "finite centre, radius > 0, top_z > base_z" });
+            }
+            check_alpha(c.alpha, &c.alpha_bands, format!("cylinder {i}"))?;
+        }
+        let poly_finite = |poly: &[[f64; 2]]| all_finite(poly.iter().flat_map(|p| p.iter().copied()));
+        for reg in &self.amisc.foliage {
+            if !poly_finite(&reg.polygon) {
+                return Err(SceneError::NonFinite { entity: "amisc foliage region".into() });
+            }
+        }
+        for reg in &self.amisc.site {
+            if !poly_finite(&reg.polygon) {
+                return Err(SceneError::NonFinite { entity: "amisc site region".into() });
+            }
+        }
+        for reg in &self.amisc.housing {
+            if !poly_finite(&reg.polygon) || !reg.b_density.is_finite() || !reg.facade_pct.is_finite() {
+                return Err(SceneError::NonFinite { entity: "amisc housing region".into() });
+            }
+            if !(0.0..=1.0).contains(&reg.b_density) || !(0.0..100.0).contains(&reg.facade_pct) {
+                return Err(SceneError::OutOfRange { entity: "amisc housing region".into(), reason: "b_density in [0,1], facade_pct in [0,100)" });
+            }
+        }
+        // Point-source kind payloads (finiteness of positions is checked earlier).
+        for src in &self.sources {
+            let (bad, reason) = match src.kind {
+                SourceKind::WindTurbine { rotor_diameter_m, .. } => {
+                    (!rotor_diameter_m.is_finite() || rotor_diameter_m <= 0.0, "rotor_diameter_m must be finite and > 0")
+                }
+                SourceKind::ChimneyStack { opening_radius_m } => {
+                    (!opening_radius_m.is_finite() || opening_radius_m <= 0.0, "opening_radius_m must be finite and > 0")
+                }
+                SourceKind::General => (false, ""),
+            };
+            if bad {
+                return Err(SceneError::OutOfRange { entity: format!("source '{}'", src.id), reason });
+            }
+        }
+        // Extended-source kind is not yet honoured (it would be silently evaluated
+        // as General); reject non-General rather than mislead.
+        for ext in &self.extended_sources {
+            if !matches!(ext.kind, SourceKind::General) {
+                return Err(SceneError::OutOfRange {
+                    entity: format!("extended source '{}'", ext.id),
+                    reason: "only the General kind is supported for extended sources",
+                });
+            }
+        }
+        if let Some(cap) = self.settings.dz_cap_db {
+            if !cap.is_finite() || cap < 0.0 {
+                return Err(SceneError::OutOfRange { entity: "settings.dz_cap_db".into(), reason: "must be finite and ≥ 0" });
+            }
+        }
         // Reflection order: bound the exponential higher-order sequence enumeration
         // (m·(m−1)^(k−1) per length k) so an unvalidated value from JSON can't hang
         // or OOM the solve.

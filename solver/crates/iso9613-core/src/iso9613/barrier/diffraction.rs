@@ -113,16 +113,13 @@ fn dz_with_met(lengths: &PathLengths, lambda: f64, variant: BarrierVariant, appl
 ///   - multi-edge: 25 dB
 ///
 /// Caller may override with a tighter project-level cap (e.g. 3 dB for the
-/// Annex D terrain-screening case).
+/// Annex D terrain-screening case). The ISO 20/25 dB limit is a HARD ceiling, so
+/// the override is clamped to `[0, standard]`: it may only tighten the cap, never
+/// amplify (negative) or disable it (above the standard).
 pub fn cap(dz: f64, e_total: f64, override_cap_db: Option<f64>) -> f64 {
-    let max_db = override_cap_db.unwrap_or({
-        if e_total < 1e-9 { 20.0 } else { 25.0 }
-    });
-    if dz > max_db {
-        max_db
-    } else {
-        dz
-    }
+    let std_cap = if e_total < 1e-9 { 20.0 } else { 25.0 };
+    let max_db = override_cap_db.map_or(std_cap, |v| v.clamp(0.0, std_cap));
+    dz.min(max_db)
 }
 
 #[cfg(test)]
@@ -179,13 +176,16 @@ mod tests {
 
     #[test]
     fn cap_clamps_above_threshold() {
-        // 25 dB single-edge override → 25 dB
-        assert_relative_eq!(cap(30.0, 0.0, Some(25.0)), 25.0, epsilon = 1e-12);
-        // No override, single edge → 20 dB
+        // No override, single edge → 20 dB; multi-edge → 25 dB.
         assert_relative_eq!(cap(30.0, 0.0, None), 20.0, epsilon = 1e-12);
-        // No override, multi-edge → 25 dB
         assert_relative_eq!(cap(30.0, 40.0, None), 25.0, epsilon = 1e-12);
-        // Below cap — pass through
+        // Below cap — pass through.
         assert_relative_eq!(cap(15.0, 0.0, None), 15.0, epsilon = 1e-12);
+        // A tighter override is honoured (Annex D's 3 dB).
+        assert_relative_eq!(cap(30.0, 0.0, Some(3.0)), 3.0, epsilon = 1e-12);
+        // An override may only TIGHTEN: above the standard it clamps to the
+        // standard (25 on a single-edge path → 20), and a negative override → 0.
+        assert_relative_eq!(cap(30.0, 0.0, Some(25.0)), 20.0, epsilon = 1e-12);
+        assert_relative_eq!(cap(30.0, 0.0, Some(-5.0)), 0.0, epsilon = 1e-12);
     }
 }
