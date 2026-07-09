@@ -149,7 +149,7 @@ pub fn footprint_lateral_paths(
     receiver: Vec3,
     fp: &FootprintLateral,
 ) -> Vec<PathLengths> {
-    cluster_lateral_paths(source, receiver, std::slice::from_ref(fp))
+    cluster_lateral_paths(source, receiver, std::slice::from_ref(fp), &[])
 }
 
 /// One diffracting corner on a cluster taut string: its plan position and the
@@ -164,37 +164,59 @@ struct CornerNode {
 }
 
 /// The two around-the-side lateral paths (one per side) for a **cluster** of
-/// building footprints treated as a single screening system.
+/// buildings and solids treated as one screening system, per ISO 9613-2:2024
+/// §7.4.3: "the shortest possible convex polygon lines not blocked by objects …
+/// at both sides of the line from source to receiver" — i.e. the taut string
+/// wraps around *every* object, so the convex footprints and solids are pooled
+/// into ONE [`lateral_plane_hull`] per side (TR Figure 11/12). A **concave**
+/// footprint (a courtyard with the source in its backyard) is wrapped
+/// individually by [`concave_lateral_paths`], since a convex hull would cut across
+/// the concavity. A lone convex building is a one-element cluster (T11/T13/T14);
+/// T16/T17 pool their three buildings as before.
 ///
-/// Convex footprints are wrapped together by [`convex_cluster_paths`] (one taut
-/// string per side over the pooled corners); any **concave** footprint (e.g. a
-/// courtyard building with the source in its backyard) is wrapped individually by
-/// [`concave_lateral_paths`], which needs a true visibility-graph taut string
-/// because the convex hull would cut across the concavity. A lone convex building
-/// is just a one-element convex cluster, so T11/T13/T14 are unchanged.
+/// Scope: [`lateral_plane_hull`]'s `s ∈ [0, L]` gate drops any obstacle behind `S`
+/// or beyond `R`. A building far to the SIDE but within that span still joins the
+/// hull; the standard bounds only the extreme case (a supporting point > 8× the
+/// over-top's vertical reach — the factor-8 neglect), and a full "thread the gap
+/// past an off-corridor building" solution needs the multi-object visibility-graph
+/// taut string used for concave shapes. That refinement is not yet applied here.
 pub fn cluster_lateral_paths(
     source: Vec3,
     receiver: Vec3,
     footprints: &[FootprintLateral],
+    solids: &[Solid3D],
 ) -> Vec<PathLengths> {
     let (dx, dy) = (receiver.e - source.e, receiver.n - source.n);
-    if (dx * dx + dy * dy).sqrt() < 1e-9 || footprints.is_empty() {
+    if (dx * dx + dy * dy).sqrt() < 1e-9 {
         return Vec::new();
     }
     let mut out = Vec::new();
-    let mut convex: Vec<&FootprintLateral> = Vec::new();
+    // Pool the edges of every convex footprint AND every solid into one shared
+    // lateral-plane hull — the whole-cluster threaded ray. Solids are now first-
+    // class cluster members (previously each solid was wrapped in isolation and a
+    // taut string could pass straight through an adjacent solid or building).
+    let mut cluster_edges: Vec<(Vec3, Vec3)> = Vec::new();
     for fp in footprints {
         if fp.verts.len() < 3 {
             continue;
         }
         if is_convex(&fp.verts) {
-            convex.push(fp);
+            let nv = fp.verts.len();
+            for i in 0..nv {
+                let a = fp.verts[i];
+                let b = fp.verts[(i + 1) % nv];
+                cluster_edges.push((Vec3::new(a.0, a.1, fp.top_z), Vec3::new(b.0, b.1, fp.top_z)));
+                cluster_edges.push((Vec3::new(a.0, a.1, fp.base_z), Vec3::new(a.0, a.1, fp.top_z)));
+            }
         } else {
             out.extend(concave_lateral_paths(source, receiver, fp));
         }
     }
-    if !convex.is_empty() {
-        out.extend(convex_cluster_paths(source, receiver, &convex));
+    for solid in solids {
+        cluster_edges.extend_from_slice(&solid.edges);
+    }
+    if !cluster_edges.is_empty() {
+        out.extend(lateral_plane_hull(source, receiver, &cluster_edges));
     }
     out
 }
@@ -223,49 +245,11 @@ fn is_convex(verts: &[(f64, f64)]) -> bool {
     true
 }
 
-/// The two around-the-side lateral paths for a cluster of **convex** footprints,
-/// per ISO 9613-2:2024 §7.4.3 — the "rubber band type polygon line in a **lateral
-/// plane** containing the source and receiver, perpendicular to the vertical
-/// plane". The supporting points are the intersections of that plane with the
-/// buildings' **edges** (each vertical corner post *and* each roof edge).
-///
-/// Working in the lateral plane fixes the receiver-above-roof cases (T12/T15):
-/// when the receiver is high the tilted plane clears a corner post above the roof
-/// and instead cuts the roof edge, so the taut string rides over the top with a
-/// short `e` — exactly the TR's construction, rather than the old plan-view wrap
-/// that forced the far corner down to roof height. For a low receiver the plane
-/// cuts the posts below the roof and the result is the same side wrap as before.
-///
-/// The plane is spanned by `u1` (the 3-D `S→R` unit) and `u2` (the horizontal
-/// perpendicular). A point's in-plane coordinates are `(s, t)` = its projections
-/// onto `u1`/`u2`; `S`=(0,0), `R`=(L,0) with `L=|SR|`. The taut string on each
-/// side is the monotone hull of the supporting points there; `Δz` = hull length −
-/// `L`. Pooling every building's edges gives the whole-cluster threaded ray.
-fn convex_cluster_paths(
-    source: Vec3,
-    receiver: Vec3,
-    footprints: &[&FootprintLateral],
-) -> Vec<PathLengths> {
-    // Each flat footprint contributes its roof edges (at `top_z`) and corner posts
-    // (base_z → top_z) to the shared lateral-plane construction.
-    let mut edges: Vec<(Vec3, Vec3)> = Vec::new();
-    for fp in footprints {
-        let nv = fp.verts.len();
-        for i in 0..nv {
-            let a = fp.verts[i];
-            let b = fp.verts[(i + 1) % nv];
-            edges.push((Vec3::new(a.0, a.1, fp.top_z), Vec3::new(b.0, b.1, fp.top_z)));
-            edges.push((Vec3::new(a.0, a.1, fp.base_z), Vec3::new(a.0, a.1, fp.top_z)));
-        }
-    }
-    lateral_plane_hull(source, receiver, &edges)
-}
-
-/// The two around-the-side lateral paths for a **convex** diffracting solid given
-/// directly by its 3-D `edges` (corner posts, roof edges, and — for pitched roofs
-/// or general polyhedra — ridge/hip/valley edges). This is the shared core of the
-/// lateral-plane construction; [`convex_cluster_paths`] feeds it flat-footprint
-/// edges, and a 3-D `Solid` obstacle feeds it its full wireframe.
+/// The two around-the-side lateral paths for a **convex** screening system given
+/// directly by its pooled 3-D `edges` (corner posts, roof edges, and — for pitched
+/// roofs or general polyhedra — ridge/hip/valley edges). This is the shared core of
+/// the lateral-plane construction; [`cluster_lateral_paths`] pools the edges of all
+/// screening flat footprints and solids and calls it once per side.
 pub fn lateral_plane_hull(source: Vec3, receiver: Vec3, edges: &[(Vec3, Vec3)]) -> Vec<PathLengths> {
     let s0 = (source.e, source.n, source.z);
     let d = (receiver.e - s0.0, receiver.n - s0.1, receiver.z - s0.2);
@@ -934,14 +918,12 @@ pub fn build_geometry(
     }
 
     let over_top = path_lengths(s_in_plane, r_in_plane, &active);
-    // Around-the-side paths: thin-wall ends (single-edge, best per side), the
-    // two multi-corner wraps around the building CLUSTER (one taut string per side
-    // over all footprints), and each 3-D solid's lateral-plane wraps.
+    // Around-the-side paths: thin-wall ends (single-edge, best per side) plus the
+    // cluster taut string — one lateral-plane hull per side over the pooled edges
+    // of every screening footprint AND solid (concave footprints wrapped
+    // individually inside cluster_lateral_paths).
     let mut lateral = select_lateral(source, receiver, lateral_edges);
-    lateral.extend(cluster_lateral_paths(source, receiver, footprints));
-    for solid in solids {
-        lateral.extend(lateral_plane_hull(source, receiver, &solid.edges));
-    }
+    lateral.extend(cluster_lateral_paths(source, receiver, footprints, solids));
     Some(BarrierGeometry { over_top, lateral })
 }
 
@@ -1071,7 +1053,7 @@ mod tests {
             base_z: 0.0,
             top_z: 10.0,
         };
-        let paths = cluster_lateral_paths(Vec3::new(15.0, 35.0, 2.0), Vec3::new(44.64, 63.66, 4.0), &[fp]);
+        let paths = cluster_lateral_paths(Vec3::new(15.0, 35.0, 2.0), Vec3::new(44.64, 63.66, 4.0), &[fp], &[]);
         assert_eq!(paths.len(), 2, "two homotopy classes around the building");
         let mut e: Vec<f64> = paths.iter().map(|p| p.e_total).collect();
         e.sort_by(|a, b| a.partial_cmp(b).unwrap());

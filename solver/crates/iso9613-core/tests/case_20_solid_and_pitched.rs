@@ -128,6 +128,40 @@ fn hip_ridge_inset_uses_footprint_width() {
     assert!((ridge_len - 10.0).abs() < 1e-9, "hip ridge should be 10 m (width-inset), got {ridge_len}");
 }
 
+/// Rectangular footprint from two plan corners, in the same vertex order as
+/// `box_solid`'s roof (so a Building and a box `Solid` share identical edges).
+fn rect_from(lo: [f64; 2], hi: [f64; 2]) -> Vec<[f64; 2]> {
+    vec![[lo[0], lo[1]], [hi[0], lo[1]], [hi[0], hi[1]], [lo[0], hi[1]]]
+}
+
+/// Two adjacent boxes between S and R must give the SAME result whether built as
+/// `Solid`s or as `Building`s — and a mixed Solid+Building cluster must equal two
+/// Buildings. This is the B1 fix: solids are now pooled into the shared cluster
+/// lateral hull instead of each being wrapped in isolation (previously a taut
+/// string could pass straight through an adjacent solid).
+#[test]
+fn solids_pool_into_the_cluster_like_buildings() {
+    let s = [40.0, 10.0, 1.0];
+    let r = [90.0, 10.0, 3.0];
+    let (alo, ahi) = ([55.0, 4.0], [62.0, 16.0]);
+    let (blo, bhi) = ([68.0, 4.0], [75.0, 16.0]);
+    let bld = |lo, hi| Obstacle::Building { footprint: rect_from(lo, hi), base_z: 0.0, height_agl: 9.0 };
+
+    let mut buildings = scene_with(bld(alo, ahi), s, r, 0.5);
+    buildings.obstacles.push(bld(blo, bhi));
+    let mut solids = scene_with(box_solid(alo, ahi, 0.0, 9.0), s, r, 0.5);
+    solids.obstacles.push(box_solid(blo, bhi, 0.0, 9.0));
+    let mut mixed = scene_with(box_solid(alo, ahi, 0.0, 9.0), s, r, 0.5);
+    mixed.obstacles.push(bld(blo, bhi));
+
+    let bands = |sc| solve(sc).unwrap().per_receiver[0].per_source[0].bands.clone();
+    let (bb, sb, mb) = (bands(&buildings), bands(&solids), bands(&mixed));
+    for i in 0..bb.len() {
+        assert!((bb[i] - sb[i]).abs() < 1e-9, "two solids must equal two buildings @ band {i}: {} vs {}", bb[i], sb[i]);
+        assert!((bb[i] - mb[i]).abs() < 1e-9, "solid+building must equal two buildings @ band {i}: {} vs {}", bb[i], mb[i]);
+    }
+}
+
 /// An axis-aligned box `Solid` from two plan corners.
 fn box_solid(lo: [f64; 2], hi: [f64; 2], base: f64, top: f64) -> Obstacle {
     Obstacle::Solid {
