@@ -23,19 +23,27 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 /// Solve a JSON-encoded scene, returning JSON-encoded results.
+///
+/// The GIL is released around the (potentially long, multi-threaded) solve so
+/// other Python threads keep running: the borrowed `scene_json` is copied to an
+/// owned `String` first, then `allow_threads` runs the pure-Rust compute.
 #[pyfunction]
-fn solve(scene_json: &str) -> PyResult<String> {
-    scene::solve_json(scene_json).map_err(PyValueError::new_err)
+fn solve(py: Python<'_>, scene_json: &str) -> PyResult<String> {
+    let owned = scene_json.to_owned();
+    py.allow_threads(move || scene::solve_json(&owned)).map_err(PyValueError::new_err)
 }
 
 /// Solve using a private rayon pool with `max_threads` workers (0 = all cores).
 #[pyfunction]
 #[pyo3(signature = (scene_json, max_threads = 0))]
-fn solve_parallel(scene_json: &str, max_threads: usize) -> PyResult<String> {
+fn solve_parallel(py: Python<'_>, scene_json: &str, max_threads: usize) -> PyResult<String> {
     let scene: Scene =
         serde_json::from_str(scene_json).map_err(|e| PyValueError::new_err(format!("scene JSON: {e}")))?;
-    let results =
-        scene::solve_par(&scene, max_threads).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    // Release the GIL for the rayon fan-out — otherwise the whole interpreter is
+    // frozen for the duration of the parallel solve.
+    let results = py
+        .allow_threads(|| scene::solve_par(&scene, max_threads))
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
     serde_json::to_string(&results).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
@@ -56,9 +64,10 @@ impl Session {
         Ok(Self { inner })
     }
 
-    /// Full solve → JSON results.
-    fn solve(&self) -> PyResult<String> {
-        serde_json::to_string(&self.inner.solve()).map_err(|e| PyValueError::new_err(e.to_string()))
+    /// Full solve → JSON results. Releases the GIL for the compute.
+    fn solve(&self, py: Python<'_>) -> PyResult<String> {
+        let res = py.allow_threads(|| self.inner.solve());
+        serde_json::to_string(&res).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Replace the receivers (JSON array). Cheap — no obstacle re-decomposition.
