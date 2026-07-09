@@ -82,6 +82,34 @@ fn nonfinite_terrain_is_rejected() {
     assert!(matches!(solve(&s3), Err(SceneError::DegenerateTerrain { .. })));
 }
 
+// ---- E4: WindTurbine now honours terrain/building screening ----
+
+#[test]
+fn wind_turbine_is_screened_by_terrain() {
+    let mut s = base_scene();
+    s.sources[0].kind = SourceKind::WindTurbine { rotor_diameter_m: 20.0, apply_concave: false };
+    s.sources[0].position = [0.0, 0.0, 30.0];
+    s.sources[0].height_agl = 30.0;
+    s.receivers[0].position = [300.0, 0.0, 4.0];
+    s.receivers[0].height_agl = 4.0;
+    let open = solve(&s).unwrap().per_receiver[0].total_dba.unwrap();
+
+    // A ~40 m terrain ridge midway now diffracts the WTG ray (previously terrain
+    // edges were dropped entirely for WTG sources — the flagship "turbine behind a
+    // ridge" case got no terrain attenuation).
+    let mut heights = vec![0.0; 21]; // 7 cols × 3 rows
+    for row in 0..3 {
+        heights[row * 7 + 3] = 40.0; // ridge column at x = 150
+    }
+    s.terrain = Some(hf(7, 3, heights));
+    if let Some(Terrain::Heightfield(h)) = &mut s.terrain {
+        h.origin = [0.0, -50.0];
+        h.spacing = 50.0;
+    }
+    let screened = solve(&s).unwrap().per_receiver[0].total_dba.unwrap();
+    assert!(screened < open - 0.5, "WTG must be screened by terrain: {screened} vs open {open}");
+}
+
 // ---- C1: validation sweep ----
 
 #[test]

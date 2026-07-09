@@ -934,6 +934,15 @@ fn segment_fraction_in_polygon(s: [f64; 2], r: [f64; 2], poly: &[[f64; 2]]) -> f
 /// The `Afol`/`Asite` kernels are the Annex A OCTAVE tables (10 bands). For a
 /// one-third-octave scene, per-octave-band Amisc mapping is a later refinement,
 /// so only the frequency-independent housing term is applied there for now.
+///
+/// KNOWN LIMITATION (review finding E2 / Annex A.4): the housing term `Ahous` is
+/// returned here and SUBTRACTED on top of the full ground attenuation `Agr` at the
+/// call site, i.e. `Agr + Ahous`. Annex A.4 instead mandates `max(Agr,0, Ahous)`
+/// (inside a built-up region `Agr,b = 0`; if `Agr,0 > Ahous` then `Ahous` is
+/// ignored). The correct fix needs the per-band `Agr,0` at the call site (it is
+/// currently folded into `lp` inside `evaluate_general`), so it is deferred. Low
+/// exposure: housing regions are off by default. `Afol`/`Asite` are correctly
+/// additive (no such interaction clause).
 fn amisc_spectrum(
     amisc: &Amisc,
     s: [f64; 2],
@@ -1002,7 +1011,13 @@ fn region_ground_factors(
     let avg = |lo: f64, hi: f64| -> f64 {
         let span = hi - lo;
         if span < 1e-9 {
-            return default_g;
+            // A zero-length region (h_s or h_r == 0) still needs the ground factor
+            // where the source/receiver actually sits — sample the collapsed point,
+            // don't fall back to default_g (which silently wrong-classifies a
+            // grade-mounted source/receiver over a ground region: up to ~10 dB Agr).
+            let frac = lo / dp;
+            let p = [s[0] + frac * (r[0] - s[0]), s[1] + frac * (r[1] - s[1])];
+            return g_at(p, regions, default_g);
         }
         let k = ((span / dp * 1000.0).ceil() as usize).max(1);
         let mut acc = 0.0;
@@ -1112,8 +1127,10 @@ fn solve_cached(
                         ground_method: scene.settings.ground_method,
                         hm_override,
                     }),
-                    SourceKind::WindTurbine { rotor_diameter_m, apply_concave } => annex_d::evaluate_wtg(
-                        &lw, s, r, src.height_agl, rx.height_agl, g, &walls, &lateral,
+                    SourceKind::WindTurbine { rotor_diameter_m, apply_concave } => annex_d::evaluate_wtg_full(
+                        &lw, s, r, src.height_agl, rx.height_agl,
+                        g_source, g_middle, g_receiver, &walls, &lateral,
+                        &terrain_edges, &footprints, &solids,
                         WtgRules::default(), *apply_concave, *rotor_diameter_m, atm,
                     ),
                     SourceKind::ChimneyStack { opening_radius_m } => {

@@ -24,6 +24,18 @@ fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
 }
 
+/// Distance from point `p` to segment `a→b`.
+fn point_seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (abx, aby) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = abx * abx + aby * aby;
+    let t = if len2 < 1e-12 {
+        0.0
+    } else {
+        (((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / len2).clamp(0.0, 1.0)
+    };
+    dist([a[0] + t * abx, a[1] + t * aby], p)
+}
+
 fn midpoint(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]
 }
@@ -85,16 +97,27 @@ pub fn subdivide_area(polygon: &[[f64; 2]], rx: [f64; 2]) -> Vec<SubSource> {
         return Vec::new();
     }
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-    let mut nearest = f64::MAX;
     for v in polygon {
         min_x = min_x.min(v[0]); min_y = min_y.min(v[1]);
         max_x = max_x.max(v[0]); max_y = max_y.max(v[1]);
-        nearest = nearest.min(dist(*v, rx));
     }
     let (w, d) = (max_x - min_x, max_y - min_y);
     if w <= 0.0 || d <= 0.0 {
         return Vec::new();
     }
+    // Nearest approach = distance from the receiver to the POLYGON (0 if its plan
+    // point is inside, else the closest EDGE) — NOT to the nearest vertex. A
+    // receiver over the interior or near the middle of a long edge is far closer
+    // to the source than any corner; sizing from a vertex would coarsen the raster
+    // well below the k = 0.5 criterion and mis-place the dominant near sub-source.
+    let nearest = if inside(rx, polygon) {
+        0.0
+    } else {
+        let n = polygon.len();
+        (0..n)
+            .map(|i| point_seg_dist(rx, polygon[i], polygon[(i + 1) % n]))
+            .fold(f64::MAX, f64::min)
+    };
     // Grid spacing from the raster criterion, capped to ≤ ~40 cells per side.
     let mut h = (K * nearest.max(1.0)).max(0.5);
     h = h.max(w / 40.0).max(d / 40.0);

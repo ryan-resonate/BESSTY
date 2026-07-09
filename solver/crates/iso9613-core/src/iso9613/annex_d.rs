@@ -71,7 +71,12 @@ pub fn effective_source_z_for_barrier(hub_z: f64, rotor_diameter_m: f64, use_ele
 ///
 /// `apply_concave` is the caller's pre-computed result of the D.5 condition
 /// (`hm ≥ 1.5·(hS+hR)/2`, computed from DEM along the propagation path).
-#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+///
+/// Backwards-compatible entry point for the flat compat callers (the WASM shim
+/// and the early hand-calc cases) that have a single uniform `g` and no terrain /
+/// building geometry. Forwards to [`evaluate_wtg_full`] with `g` for all three
+/// ground regions and empty geometry — bit-identical to the pre-review behaviour.
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate_wtg(
     lw: &BandSpectrum,
     hub_pos: Vec3,
@@ -86,12 +91,43 @@ pub fn evaluate_wtg(
     rotor_diameter_m: f64,
     atm: Atmosphere,
 ) -> BandSpectrum {
+    evaluate_wtg_full(
+        lw, hub_pos, receiver_pos, h_s, h_r, g, g, g, barriers, lateral, &[], &[], &[],
+        rules, apply_concave, rotor_diameter_m, atm,
+    )
+}
+
+/// Full Annex D wind-turbine evaluation with per-region ground factors and the
+/// terrain / footprint / solid geometry (so a WTG behind a ridge or building is
+/// screened exactly like a General source).
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+pub fn evaluate_wtg_full(
+    lw: &BandSpectrum,
+    hub_pos: Vec3,
+    receiver_pos: Vec3,
+    h_s: f64,
+    h_r: f64,
+    g_source: f64,
+    g_middle: f64,
+    g_receiver: f64,
+    barriers: &[barrier::WallBarrier],
+    lateral: &[barrier::LateralEdge],
+    terrain_edges: &[barrier::path::DiffractionEdge],
+    footprints: &[barrier::path::FootprintLateral],
+    solids: &[barrier::path::Solid3D],
+    rules: WtgRules,
+    apply_concave: bool,
+    rotor_diameter_m: f64,
+    atm: Atmosphere,
+) -> BandSpectrum {
     let system = lw.system;
 
     // `hub_pos`/`receiver_pos` are absolute (geometry); `h_s`/`h_r` are heights
     // above local ground (ground attenuation). See `evaluate_with_barriers`.
-    // Annex D.4: clamp G ≤ 0.5 and the receiver HAG ≥ 4 m for the ground calc.
-    let g_capped = cap_g_for_wtg(g);
+    // Annex D.4: clamp each region's G ≤ 0.5 and the receiver HAG ≥ 4 m. The
+    // per-region factors are honoured (a WTG over mixed ground is no longer forced
+    // to a single uniform G).
+    let (gs, gm, gr) = (cap_g_for_wtg(g_source), cap_g_for_wtg(g_middle), cap_g_for_wtg(g_receiver));
     let h_r_ground = enforce_receiver_height(h_r, rules.receiver_height_min_m);
 
     // Adiv and Aatm use the absolute source/receiver geometry.
@@ -101,7 +137,7 @@ pub fn evaluate_wtg(
     // Agr uses the hub HAG and the clamped receiver HAG per D.4. Annex D is
     // 2024-only, so the 2024 ground combination is used.
     let mut agr = ground::agr_spectrum(
-        hub_pos, receiver_pos, h_s, h_r_ground, g_capped, g_capped, g_capped, system,
+        hub_pos, receiver_pos, h_s, h_r_ground, gs, gm, gr, system,
         crate::standards::ISO_2024.ground,
     );
 
@@ -118,8 +154,15 @@ pub fn evaluate_wtg(
         n: hub_pos.n,
         z: effective_source_z_for_barrier(hub_pos.z, rotor_diameter_m, rules.use_elevated_source_for_barrier),
     };
-    let geometry =
-        barrier::path::build_geometry(barrier_source, receiver_pos, barriers, lateral, &[], &[], &[]);
+    // Terrain ridges, building footprints and 3-D solids screen a WTG exactly as
+    // they screen a General source (Annex D specialises only directivity/height,
+    // the G≤0.5 cap and the concave correction — the §7 propagation still applies).
+    // NOTE: D.3's barrier_dz_cap currently also bounds terrain/building diffraction
+    // here; a large terrain screen arguably shouldn't be capped at 3 dB — scoping
+    // the cap to man-made barriers only is a follow-up.
+    let geometry = barrier::path::build_geometry(
+        barrier_source, receiver_pos, barriers, lateral, terrain_edges, footprints, solids,
+    );
     let abar = barrier::abar_spectrum(
         geometry.as_ref(),
         &agr,
