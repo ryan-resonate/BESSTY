@@ -865,6 +865,15 @@ fn plan_side(source: Vec3, receiver: Vec3, e: f64, n: f64) -> f64 {
 /// `Dz = 20 dB`, which still shifts the combined `Dz` by ~0.09 dB and is part
 /// of the reference result). Keeping both best-per-side edges is therefore
 /// strictly at-least-as-accurate; the `Dz` energy weighting handles the rest.
+///
+/// LIMITATION (review finding [13]): the best-per-side edge is chosen globally
+/// across ALL thin-wall ends, so if a scene mixes a screening wall with a
+/// separate NON-screening wall whose end happens to sit near the S–R line, the
+/// non-screening end (small `Δz`) can supplant the screening wall's genuine end.
+/// A correct fix needs each `LateralEdge` to carry the provenance of its parent
+/// wall so only ends of walls that actually cross the S–R segment compete — a
+/// field threaded through every `WallBarrier`/`LateralEdge` construction. No
+/// conformance case exercises it (T08–T10 are single walls); deferred.
 fn select_lateral(source: Vec3, receiver: Vec3, edges: &[LateralEdge]) -> Vec<PathLengths> {
     let mut best_left: Option<PathLengths> = None;
     let mut best_right: Option<PathLengths> = None;

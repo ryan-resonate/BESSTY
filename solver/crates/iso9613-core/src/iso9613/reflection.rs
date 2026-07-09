@@ -133,9 +133,14 @@ pub fn reflect_chain(
         d_so += legs[i];
         let d_or = total - d_so;
         let p = points[i];
+        // The incidence angle at bounce `i` is set by the ray arriving from the
+        // PREVIOUS node (`nodes[i]` = source for i=0, else the prior reflection
+        // point), not from the original source. Using `source` for every facade
+        // mis-angled every bounce after the first.
+        let incoming = nodes[i];
         for (b, &lambda) in lambdas.iter().enumerate() {
             let refl = Reflection { image_source: images[i + 1], refl_point: p, dso: d_so, dor: d_or, loss_db: 0.0 };
-            if !fresnel_valid(&refl, facade, source, lambda) {
+            if !fresnel_valid(&refl, facade, incoming, lambda) {
                 valid[b] = false;
             }
         }
