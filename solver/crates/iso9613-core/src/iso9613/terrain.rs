@@ -60,8 +60,7 @@ impl Heightfield {
     /// terrain. `sz`/`rz` are the ABSOLUTE source/receiver elevations.
     pub fn mean_height(&self, s: [f64; 2], r: [f64; 2], sz: f64, rz: f64) -> f64 {
         let dp = ((r[0] - s[0]).powi(2) + (r[1] - s[1]).powi(2)).sqrt();
-        let d = (dp * dp + (rz - sz).powi(2)).sqrt();
-        if d < 1e-9 {
+        if dp < 1e-9 {
             return 0.0;
         }
         // Trapezoidal integral of (SR-line − ground) along the plan path.
@@ -75,7 +74,10 @@ impl Heightfield {
         for i in 0..n {
             f += 0.5 * (gap(i) + gap(i + 1)) * (dp / n as f64);
         }
-        f / d
+        // hm = F / dg (ISO 9613-2:2024 Eq 14 / Fig 5): the mean height is the
+        // profile area over the GROUND-PROJECTED distance, not the 3-D slant
+        // distance. This makes flat ground reproduce hm = (hs + hr)/2 exactly.
+        f / dp
     }
 
     /// Sample the terrain profile between source and receiver plan positions
@@ -121,7 +123,7 @@ mod tests {
         // S(0, abs 1) to R(100, abs 14). Hand integral of (line − ground):
         //   [0,80]:  ∫(1 + 13x/100)dx      = (1 + 11.4)/2·80 = 496
         //   [80,100]: line 11.4→14, gnd 0→10, gap 11.4→4 → (11.4+4)/2·20 = 154
-        //   F = 650, d = hypot(100,13) = 100.841 → hm = 6.446 m.
+        //   F = 650, dg = dp = 100 (ground-projected, Eq 14) → hm = 6.50 m.
         let nx = 21; // x = 0,5,…,100
         let heights: Vec<f64> = (0..nx)
             .map(|i| {
@@ -131,7 +133,7 @@ mod tests {
             .collect();
         let hf = Heightfield { origin: [0.0, 0.0], spacing: 5.0, nx, ny: 1, heights };
         let hm = hf.mean_height([0.0, 0.0], [100.0, 0.0], 1.0, 14.0);
-        assert_relative_eq!(hm, 6.446, epsilon = 0.01);
+        assert_relative_eq!(hm, 6.50, epsilon = 0.01);
     }
 
     #[test]

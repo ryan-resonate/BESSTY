@@ -445,6 +445,8 @@ pub enum SceneError {
     DegenerateWall { index: usize, reason: &'static str },
     DegenerateBuilding { index: usize, reason: &'static str },
     DegenerateTerrain { reason: &'static str },
+    CoincidentSourceReceiver { source_id: String, receiver_id: String },
+    OutOfRange { entity: String, reason: &'static str },
 }
 
 impl std::fmt::Display for SceneError {
@@ -460,6 +462,10 @@ impl std::fmt::Display for SceneError {
             Self::DegenerateWall { index, reason } => write!(f, "wall obstacle {index}: {reason}"),
             Self::DegenerateBuilding { index, reason } => write!(f, "building obstacle {index}: {reason}"),
             Self::DegenerateTerrain { reason } => write!(f, "terrain: {reason}"),
+            Self::CoincidentSourceReceiver { source_id, receiver_id } => write!(
+                f, "receiver '{receiver_id}' is coincident with source '{source_id}' (Adiv would be infinite)"
+            ),
+            Self::OutOfRange { entity, reason } => write!(f, "{entity}: {reason}"),
         }
     }
 }
@@ -539,6 +545,23 @@ impl Scene {
             if !all_finite(rx.position.iter().copied().chain([rx.height_agl])) {
                 return Err(SceneError::NonFinite { entity: format!("receiver '{}'", rx.id) });
             }
+            // A point source coincident with the receiver gives Adiv = 20·log10(0)
+            // = −∞ (an infinitely loud source). Reject it explicitly. (Extended
+            // sub-sources may legitimately sit on a receiver — adiv floors those.)
+            for src in &self.sources {
+                let d2 = src
+                    .position
+                    .iter()
+                    .zip(rx.position.iter())
+                    .map(|(a, b)| (a - b).powi(2))
+                    .sum::<f64>();
+                if d2 < 1e-12 {
+                    return Err(SceneError::CoincidentSourceReceiver {
+                        source_id: src.id.clone(),
+                        receiver_id: rx.id.clone(),
+                    });
+                }
+            }
         }
         for (i, ob) in self.obstacles.iter().enumerate() {
             match ob {
@@ -610,6 +633,31 @@ impl Scene {
             }
             if !all_finite(hf.origin.iter().copied().chain(hf.heights.iter().copied())) {
                 return Err(SceneError::DegenerateTerrain { reason: "origin/heights must be finite" });
+            }
+        }
+        // Reflection order: bound the exponential higher-order sequence enumeration
+        // (m·(m−1)^(k−1) per length k) so an unvalidated value from JSON can't hang
+        // or OOM the solve.
+        let order = self.settings.max_reflection_order;
+        if order > 4 {
+            return Err(SceneError::OutOfRange {
+                entity: "settings.max_reflection_order".into(),
+                reason: "must be ≤ 4",
+            });
+        }
+        if order >= 2 {
+            let m = self.reflectors.len() as u128;
+            if m >= 2 {
+                let mut count: u128 = 0;
+                for k in 2..=order {
+                    count = count.saturating_add(m.saturating_mul((m - 1).saturating_pow(k - 1)));
+                }
+                if count > 100_000 {
+                    return Err(SceneError::OutOfRange {
+                        entity: "settings".into(),
+                        reason: "reflectors × max_reflection_order enumerate too many paths",
+                    });
+                }
             }
         }
         // Default to octave when there are no sources (empty scene solves to silence).
@@ -903,6 +951,17 @@ fn solve_cached(
         Standard::Iso9613_2_2024 => &Iso2024,
     };
 
+    // Higher-order reflection sequences depend only on (reflector count, order),
+    // not on the source/receiver, so enumerate them ONCE here instead of rebuilding
+    // the list for every source × receiver pair. `validate()` caps the order and
+    // the total count, so this is bounded.
+    let max_order = scene.settings.max_reflection_order.max(1) as usize;
+    let reflection_seqs: Vec<Vec<usize>> = if max_order >= 2 && scene.reflectors.len() >= 2 {
+        reflection_sequences(scene.reflectors.len(), max_order)
+    } else {
+        Vec::new()
+    };
+
     // Each receiver is an independent, read-only-over-`scene` computation — the
     // natural parallelism unit. Bound once so the serial and rayon paths share
     // one body.
@@ -1041,8 +1100,8 @@ fn solve_cached(
 
                 // §7.5.3 higher-order reflections (2024): multi-bounce image
                 // sources between (nearly) parallel or surrounding reflectors.
-                let max_order = scene.settings.max_reflection_order.max(1) as usize;
-                if matches!(src.kind, SourceKind::General) && max_order >= 2 && scene.reflectors.len() >= 2 {
+                // Sequences were enumerated once (hoisted above the receiver loop).
+                if matches!(src.kind, SourceKind::General) && !reflection_seqs.is_empty() {
                     let lambdas: Vec<f64> =
                         system.centres_exact().iter().map(|c| 340.0 / c).collect();
                     let facades: Vec<reflection::Facade> = scene
@@ -1053,7 +1112,7 @@ fn solve_cached(
                             base_z: refl.base_z, top_z: refl.top_z, alpha: refl.alpha,
                         })
                         .collect();
-                    for seq in reflection_sequences(scene.reflectors.len(), max_order) {
+                    for seq in &reflection_seqs {
                         let seq_facades: Vec<reflection::Facade> =
                             seq.iter().map(|&i| facades[i]).collect();
                         let Some((chain, valid)) =

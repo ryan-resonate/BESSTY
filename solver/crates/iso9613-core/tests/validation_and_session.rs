@@ -84,6 +84,28 @@ fn nonfinite_terrain_is_rejected() {
 
 // ---- A3: Session transactionality ----
 
+// ---- B4: coincident source/receiver; B8: reflection-order cap ----
+
+#[test]
+fn coincident_point_source_receiver_is_rejected() {
+    let mut s = base_scene();
+    s.receivers[0].position = s.sources[0].position; // exactly on the source
+    match solve(&s) {
+        Err(SceneError::CoincidentSourceReceiver { .. }) => {}
+        other => panic!("expected CoincidentSourceReceiver, got {other:?}"),
+    }
+}
+
+#[test]
+fn excessive_reflection_order_is_rejected() {
+    let mut s = base_scene();
+    s.settings.max_reflection_order = 5;
+    assert!(matches!(solve(&s), Err(SceneError::OutOfRange { .. })));
+    // Order 2–4 with a couple of reflectors is fine (bounded enumeration).
+    s.settings.max_reflection_order = 3;
+    assert!(solve(&s).is_ok());
+}
+
 #[test]
 fn session_set_source_lw_roundtrips_and_rolls_back() {
     let mut sess = Session::new(base_scene()).unwrap();
