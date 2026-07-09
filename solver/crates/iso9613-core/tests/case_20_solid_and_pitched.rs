@@ -110,3 +110,61 @@ fn degenerate_gable_equals_flat() {
     let gable = total(&scene_with(Obstacle::gable(rect, 0.0, 9.0, 9.0), s, r, 0.4));
     assert!((flat - gable).abs() < 1e-6, "flat-ridge gable must equal a flat roof: {flat} vs {gable}");
 }
+
+/// A hip roof insets each ridge end by half the footprint WIDTH (the edge ⟂ to
+/// the ridge), not the ridge-parallel length. For a 20 (long) × 10 (wide)
+/// footprint the ridge must run (5,5)→(15,5) — length 10 — not collapse to a
+/// near-pyramid as it did when the inset used |c0→c1|.
+#[test]
+fn hip_ridge_inset_uses_footprint_width() {
+    let rect = [[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]];
+    let Obstacle::Solid { vertices, .. } = Obstacle::hip(rect, 0.0, 6.0, 9.0) else {
+        panic!("hip must produce a Solid");
+    };
+    let (r0, r1) = (vertices[4], vertices[5]);
+    assert!((r0[0] - 5.0).abs() < 1e-9 && (r0[1] - 5.0).abs() < 1e-9 && (r0[2] - 9.0).abs() < 1e-9, "ridge end 0: {r0:?}");
+    assert!((r1[0] - 15.0).abs() < 1e-9 && (r1[1] - 5.0).abs() < 1e-9, "ridge end 1: {r1:?}");
+    let ridge_len = ((r1[0] - r0[0]).powi(2) + (r1[1] - r0[1]).powi(2)).sqrt();
+    assert!((ridge_len - 10.0).abs() < 1e-9, "hip ridge should be 10 m (width-inset), got {ridge_len}");
+}
+
+/// An axis-aligned box `Solid` from two plan corners.
+fn box_solid(lo: [f64; 2], hi: [f64; 2], base: f64, top: f64) -> Obstacle {
+    Obstacle::Solid {
+        vertices: vec![
+            [lo[0], lo[1], top], [hi[0], lo[1], top], [hi[0], hi[1], top], [lo[0], hi[1], top],
+            [lo[0], lo[1], base], [hi[0], lo[1], base], [hi[0], hi[1], base], [lo[0], hi[1], base],
+        ],
+        edges: vec![
+            [0, 1], [1, 2], [2, 3], [3, 0], // roof
+            [4, 0], [5, 1], [6, 2], [7, 3], // posts
+        ],
+    }
+}
+
+/// A `Solid` that straddles the S→R plan line but lies wholly BEYOND the receiver
+/// (or BEHIND the source) does not screen the direct ray — its over-top and
+/// lateral plane-crossings project outside the [0, L] span and must be dropped.
+/// Regression for the phantom-screening bug (project_solid_edges / lateral_plane_hull
+/// were missing the span gate that project_walls has).
+#[test]
+fn off_span_solid_does_not_screen() {
+    let s = [0.0, 0.0, 2.0];
+    let r = [100.0, 0.0, 2.0];
+    for (name, lo, hi) in [
+        ("beyond receiver", [110.0, -6.0], [122.0, 6.0]),
+        ("behind source", [-25.0, -6.0], [-12.0, 6.0]),
+    ] {
+        let with = scene_with(box_solid(lo, hi, 0.0, 12.0), s, r, 0.5);
+        let mut without = with.clone();
+        without.obstacles.clear();
+        let wb = solve(&with).unwrap().per_receiver[0].per_source[0].bands.clone();
+        let ob = solve(&without).unwrap().per_receiver[0].per_source[0].bands.clone();
+        for (a, b) in wb.iter().zip(ob.iter()) {
+            assert!(
+                (a - b).abs() < 1e-9,
+                "off-span solid ({name}) must not screen: {a} vs open {b}"
+            );
+        }
+    }
+}

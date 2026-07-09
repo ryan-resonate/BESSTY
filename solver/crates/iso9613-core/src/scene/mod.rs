@@ -215,7 +215,11 @@ impl Obstacle {
     /// from both ends by half the footprint width, so all four faces slope.
     pub fn hip(footprint: [[f64; 2]; 4], base_z: f64, eaves_z: f64, ridge_z: f64) -> Obstacle {
         let c = footprint;
-        let half_w = 0.5 * ((c[1][0] - c[0][0]).hypot(c[1][1] - c[0][1]));
+        // Inset each ridge end by half the END width — the edge c3→c0 that is
+        // PERPENDICULAR to the ridge axis (m0→m1 ∥ c0→c1), NOT the ridge-parallel
+        // side c0→c1. Using the parallel side degenerates non-square footprints to
+        // a near-pyramid (ridge collapses to ~2% of its length).
+        let half_w = 0.5 * ((c[0][0] - c[3][0]).hypot(c[0][1] - c[3][1]));
         Self::ridged(footprint, base_z, eaves_z, ridge_z, half_w)
     }
 
@@ -440,6 +444,7 @@ pub enum SceneError {
     MixedBandSystems,
     DegenerateWall { index: usize, reason: &'static str },
     DegenerateBuilding { index: usize, reason: &'static str },
+    DegenerateTerrain { reason: &'static str },
 }
 
 impl std::fmt::Display for SceneError {
@@ -454,6 +459,7 @@ impl std::fmt::Display for SceneError {
             Self::MixedBandSystems => write!(f, "all sources must use the same band system"),
             Self::DegenerateWall { index, reason } => write!(f, "wall obstacle {index}: {reason}"),
             Self::DegenerateBuilding { index, reason } => write!(f, "building obstacle {index}: {reason}"),
+            Self::DegenerateTerrain { reason } => write!(f, "terrain: {reason}"),
         }
     }
 }
@@ -580,6 +586,30 @@ impl Scene {
                         return Err(SceneError::NonFinite { entity: format!("obstacle {i}") });
                     }
                 }
+            }
+        }
+        // Terrain raster: the heights vector must match nx·ny (else Heightfield::node
+        // indexes out of bounds and panics inside solve), spacing must be usable, and
+        // no cell may be non-finite (it would poison a diffraction-edge height).
+        if let Some(Terrain::Heightfield(hf)) = &self.terrain {
+            if hf.nx == 0 || hf.ny == 0 {
+                return Err(SceneError::DegenerateTerrain { reason: "nx and ny must be ≥ 1" });
+            }
+            // checked_mul: a pathological nx·ny would wrap to a small value in a
+            // release build (overflow-checks off) and let a short heights array
+            // slip past, re-opening the out-of-bounds panic in Heightfield::node.
+            match hf.nx.checked_mul(hf.ny) {
+                None => return Err(SceneError::DegenerateTerrain { reason: "nx·ny overflows" }),
+                Some(cells) if hf.heights.len() != cells => {
+                    return Err(SceneError::DegenerateTerrain { reason: "heights length must equal nx·ny" });
+                }
+                _ => {}
+            }
+            if !hf.spacing.is_finite() || hf.spacing <= 0.0 {
+                return Err(SceneError::DegenerateTerrain { reason: "spacing must be finite and > 0" });
+            }
+            if !all_finite(hf.origin.iter().copied().chain(hf.heights.iter().copied())) {
+                return Err(SceneError::DegenerateTerrain { reason: "origin/heights must be finite" });
             }
         }
         // Default to octave when there are no sources (empty scene solves to silence).
@@ -1294,45 +1324,78 @@ impl Session {
         .per_receiver
     }
 
-    /// Replace the receivers (no obstacle re-decomposition).
+    /// Replace the receivers (no obstacle re-decomposition). **Transactional**:
+    /// on validation failure the previous receivers are restored and the session
+    /// is left exactly as it was, so `solve` stays safe to call.
     pub fn set_receivers(&mut self, receivers: Vec<Receiver>) -> Result<(), SceneError> {
-        self.scene.receivers = receivers;
-        self.system = self.scene.validate()?;
-        Ok(())
+        let old = std::mem::replace(&mut self.scene.receivers, receivers);
+        match self.scene.validate() {
+            Ok(system) => {
+                self.system = system;
+                Ok(())
+            }
+            Err(e) => {
+                self.scene.receivers = old; // roll back
+                Err(e)
+            }
+        }
     }
 
     /// Retune a source's per-band sound power (no re-decomposition). `Ok(false)`
-    /// if no source has that id.
+    /// if no source has that id. **Transactional** (rolls back on failure).
     pub fn set_source_lw(&mut self, id: &str, lw: Vec<f64>) -> Result<bool, SceneError> {
-        let Some(src) = self.scene.sources.iter_mut().find(|s| s.id == id) else {
+        let Some(idx) = self.scene.sources.iter().position(|s| s.id == id) else {
             return Ok(false);
         };
-        src.lw = lw;
-        self.system = self.scene.validate()?;
-        Ok(true)
+        let old = std::mem::replace(&mut self.scene.sources[idx].lw, lw);
+        match self.scene.validate() {
+            Ok(system) => {
+                self.system = system;
+                Ok(true)
+            }
+            Err(e) => {
+                self.scene.sources[idx].lw = old; // roll back
+                Err(e)
+            }
+        }
     }
 
-    /// Change the atmospheric conditions (no re-decomposition).
-    pub fn set_atmosphere(&mut self, atmosphere: Atmosphere) {
-        self.scene.atmosphere = atmosphere;
+    /// Change the atmospheric conditions (no re-decomposition). **Transactional** —
+    /// returns `Err` and leaves the atmosphere unchanged if the new atmosphere
+    /// fails `validate()` (currently a finiteness check; physical-range checks are
+    /// added in the validation sweep), so an invalid atmosphere can never enter a
+    /// validated session.
+    pub fn set_atmosphere(&mut self, atmosphere: Atmosphere) -> Result<(), SceneError> {
+        let old = std::mem::replace(&mut self.scene.atmosphere, atmosphere);
+        match self.scene.validate() {
+            Ok(system) => {
+                self.system = system;
+                Ok(())
+            }
+            Err(e) => {
+                self.scene.atmosphere = old; // roll back
+                Err(e)
+            }
+        }
     }
 
-    /// Replace the obstacles and re-decompose.
+    /// Replace the obstacles and re-decompose. **Transactional** (all-or-nothing).
     pub fn set_obstacles(&mut self, obstacles: Vec<Obstacle>) -> Result<(), SceneError> {
-        self.scene.obstacles = obstacles;
-        self.revalidate_and_decompose()
+        self.update(move |s| s.obstacles = obstacles)
     }
 
     /// Arbitrary edit through a closure, then re-validate + re-decompose. Use for
     /// changes the typed setters don't cover (sources, ground, reflectors, …).
+    /// **Transactional**: the edit is applied to a candidate copy that is validated
+    /// and decomposed BEFORE being committed, so a rejected edit leaves the session
+    /// (scene, band system, and cached decomposition) completely untouched.
     pub fn update(&mut self, edit: impl FnOnce(&mut Scene)) -> Result<(), SceneError> {
-        edit(&mut self.scene);
-        self.revalidate_and_decompose()
-    }
-
-    fn revalidate_and_decompose(&mut self) -> Result<(), SceneError> {
-        self.system = self.scene.validate()?;
-        let (walls, lateral, footprints, solids) = self.scene.barriers();
+        let mut candidate = self.scene.clone();
+        edit(&mut candidate);
+        let system = candidate.validate()?;
+        let (walls, lateral, footprints, solids) = candidate.barriers();
+        self.scene = candidate;
+        self.system = system;
         self.walls = walls;
         self.lateral = lateral;
         self.footprints = footprints;

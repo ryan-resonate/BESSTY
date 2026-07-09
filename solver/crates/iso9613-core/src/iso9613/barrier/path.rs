@@ -299,10 +299,15 @@ pub fn lateral_plane_hull(source: Vec3, receiver: Vec3, edges: &[(Vec3, Vec3)]) 
                 p.z + lam * (q.z - p.z),
             );
             let (vx, vy, vz) = (x.0 - s0.0, x.1 - s0.1, x.2 - s0.2);
-            sup.push((
-                vx * u1.0 + vy * u1.1 + vz * u1.2,
-                vx * u2.0 + vy * u2.1 + vz * u2.2,
-            ));
+            let s_proj = vx * u1.0 + vy * u1.1 + vz * u1.2;
+            // Drop crossings behind the source (s<0) or beyond the receiver (s>L):
+            // the taut string runs from S (s=0) to R (s=L), so a support outside
+            // that span is not on any diffracted path and would wrongly bend the
+            // hull backwards (inflating Δz / d_ss for an obstacle not between S,R).
+            if !(-1e-9..=l + 1e-9).contains(&s_proj) {
+                continue;
+            }
+            sup.push((s_proj, vx * u2.0 + vy * u2.1 + vz * u2.2));
         }
     }
     if sup.is_empty() {
@@ -731,6 +736,15 @@ pub fn project_solid_edges(
             p.z + lam * (q.z - p.z),
         );
         let along = (x.0 - source.e) * ux + (x.1 - source.n) * uy;
+        // Gate to the S→R span, exactly as `project_walls` gates its `t ∈ [0,1]`.
+        // A solid behind the source (`along < 0`) or beyond the receiver
+        // (`along > dp`) does not screen the direct ray; without this the
+        // out-of-span point breaks `upper_hull_select`'s monotone-x precondition
+        // and fabricates a phantom barrier (≈20–25 dB) from a solid that isn't
+        // between S and R.
+        if !(-1e-9..=dp + 1e-9).contains(&along) {
+            continue;
+        }
         out.push(DiffractionEdge { x: along, z: x.2 });
     }
     out
