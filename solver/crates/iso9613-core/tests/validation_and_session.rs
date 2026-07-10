@@ -2,9 +2,14 @@
 
 use iso9613_core::iso9613::terrain::Heightfield;
 use iso9613_core::scene::{
-    solve, solve_json, Atmosphere, Ground, Receiver, Scene, SceneError, Session, Settings, Source,
-    SourceKind, Standard, Terrain, SCHEMA_VERSION,
+    solve, solve_json, Atmosphere, Ground, GroundRegion, Receiver, Scene, SceneError, Session,
+    Settings, Source, SourceKind, Standard, Terrain, SCHEMA_VERSION,
 };
+
+/// A polygon covering the whole S→R corridor of `base_scene`.
+fn full_region(g: f64) -> GroundRegion {
+    GroundRegion { polygon: vec![[-50.0, -50.0], [150.0, -50.0], [150.0, 50.0], [-50.0, 50.0]], g }
+}
 
 fn lw10() -> Vec<f64> {
     let mut lw = vec![-100.0; 10];
@@ -83,6 +88,55 @@ fn nonfinite_terrain_is_rejected() {
 }
 
 // ---- E4: WindTurbine now honours terrain/building screening ----
+
+#[test]
+fn ground_level_source_honours_region_g_at_zero_height() {
+    // Source at height_agl == 0 over a g=0 region covering the whole path. Its
+    // source region collapses to zero length, but its G must still be SAMPLED from
+    // the region (0), not fall back to default_g. So the result equals a uniform
+    // hard-ground (default_g=0) scene of identical geometry. (Before E1 the
+    // collapsed region returned default_g=1 → the two differed by several dB.)
+    let bands = |sc: &Scene| solve(sc).unwrap().per_receiver[0].per_source[0].bands.clone();
+    let mut region = base_scene();
+    region.sources[0].height_agl = 0.0;
+    region.ground = Ground { default_g: 1.0, regions: vec![full_region(0.0)] };
+    let mut uniform = base_scene();
+    uniform.sources[0].height_agl = 0.0;
+    uniform.ground = Ground { default_g: 0.0, regions: vec![] };
+    let (rb, ub) = (bands(&region), bands(&uniform));
+    for i in 0..rb.len() {
+        assert!((rb[i] - ub[i]).abs() < 1e-9, "region G must be sampled at h=0 @ band {i}: {} vs {}", rb[i], ub[i]);
+    }
+}
+
+#[test]
+fn wind_turbine_honours_per_region_ground() {
+    // A WTG over a g=0 region (default_g=1) must sample the region — capped at 0.5,
+    // g=0 stays 0 — matching a uniform g=0 WTG scene, NOT the default_g=1 (→0.5)
+    // it used before E4 ignored per-region factors.
+    let mk = |default_g: f64, regions: Vec<GroundRegion>| {
+        let mut s = base_scene();
+        s.sources[0].kind = SourceKind::WindTurbine { rotor_diameter_m: 20.0, apply_concave: false };
+        s.sources[0].position = [0.0, 0.0, 30.0];
+        s.sources[0].height_agl = 30.0;
+        s.receivers[0].position = [150.0, 0.0, 4.0];
+        s.receivers[0].height_agl = 4.0;
+        s.ground = Ground { default_g, regions };
+        s
+    };
+    let bands = |sc: &Scene| solve(sc).unwrap().per_receiver[0].per_source[0].bands.clone();
+    let region = bands(&mk(1.0, vec![full_region(0.0)]));
+    let uniform_hard = bands(&mk(0.0, vec![]));
+    let uniform_soft = bands(&mk(1.0, vec![]));
+    let mut differs = false;
+    for i in 0..region.len() {
+        assert!((region[i] - uniform_hard[i]).abs() < 1e-9, "WTG per-region G must match uniform-hard @ band {i}");
+        if (region[i] - uniform_soft[i]).abs() > 1e-6 {
+            differs = true;
+        }
+    }
+    assert!(differs, "the region case must differ from ignoring it (default_g=1)");
+}
 
 #[test]
 fn wind_turbine_is_screened_by_terrain() {

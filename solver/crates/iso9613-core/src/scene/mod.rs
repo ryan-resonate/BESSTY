@@ -545,9 +545,12 @@ impl Scene {
             if !all_finite(rx.position.iter().copied().chain([rx.height_agl])) {
                 return Err(SceneError::NonFinite { entity: format!("receiver '{}'", rx.id) });
             }
-            // A point source coincident with the receiver gives Adiv = 20·log10(0)
-            // = −∞ (an infinitely loud source). Reject it explicitly. (Extended
-            // sub-sources may legitimately sit on a receiver — adiv floors those.)
+            // Reject a point source within 1 mm of the receiver — the same
+            // distance at which `divergence::adiv` floors, so every point source
+            // that survives validation gets a real (un-floored) Adiv and the floor
+            // only ever guards extended sub-sources (which may legitimately sit on
+            // a receiver). Below 1 mm the ISO 9613-2 far-field model is invalid
+            // anyway; coincidence gives Adiv = 20·log10(0) = −∞ (infinitely loud).
             for src in &self.sources {
                 let d2 = src
                     .position
@@ -555,7 +558,7 @@ impl Scene {
                     .zip(rx.position.iter())
                     .map(|(a, b)| (a - b).powi(2))
                     .sum::<f64>();
-                if d2 < 1e-12 {
+                if d2 < 1e-6 {
                     return Err(SceneError::CoincidentSourceReceiver {
                         source_id: src.id.clone(),
                         receiver_id: rx.id.clone(),
@@ -703,8 +706,8 @@ impl Scene {
             if !poly_finite(&reg.polygon) || !reg.b_density.is_finite() || !reg.facade_pct.is_finite() {
                 return Err(SceneError::NonFinite { entity: "amisc housing region".into() });
             }
-            if !(0.0..=1.0).contains(&reg.b_density) || !(0.0..100.0).contains(&reg.facade_pct) {
-                return Err(SceneError::OutOfRange { entity: "amisc housing region".into(), reason: "b_density in [0,1], facade_pct in [0,100)" });
+            if !(0.0..=1.0).contains(&reg.b_density) || !(0.0..=90.0).contains(&reg.facade_pct) {
+                return Err(SceneError::OutOfRange { entity: "amisc housing region".into(), reason: "b_density in [0,1], facade_pct in [0,90]" });
             }
         }
         // Point-source kind payloads (finiteness of positions is checked earlier).
