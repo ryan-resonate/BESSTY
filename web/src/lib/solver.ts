@@ -24,10 +24,11 @@ import init, {
 } from '../wasm/iso9613_wasm.js';
 
 import type {
+  CatalogEntry,
   Source,
   Project,
 } from './types';
-import { lookupEntry, sourceHeightFor, spectrumFor } from './catalog';
+import { footprintFor, lookupEntry, sourceHeightFor, spectrumFor } from './catalog';
 import { type DemRaster, type DemRegion, captureDemRegion } from './dem';
 import {
   propagationSettings,
@@ -191,9 +192,39 @@ export function resolveSources(project: Project): ResolvedSource[] {
       wtg: source.kind === 'wtg'
         ? { rotorDiameterM: source.rotorDiameterM ?? entry.rotorDiameterM ?? 120, applyConcave: false }
         : undefined,
+      container: resolveContainer(source, entry),
     });
   }
   return out;
+}
+
+/// The screening box for one BESS / auxiliary unit, or `undefined` when the
+/// product has no enclosure height (so it stays a bare point source) or the unit
+/// opted out.
+///
+/// Dimensions come from the catalog product — `footprintM` for the plan and
+/// `containerHeightM` for the body — with per-source overrides on top.
+///
+/// **Orientation.** BEESTY's footprint convention is `widthM` = the LONG axis,
+/// which at `yawDeg = 0` runs EAST along an unrotated row (see `bessGroups.ts`),
+/// and `yawDeg` is clockwise from north. `containerFootprint` instead takes the
+/// long axis along a compass `bearingDeg` with 0 = north. Hence the +90: a unit
+/// with no yaw lies east-west, as the map draws it.
+function resolveContainer(
+  source: Source,
+  entry: CatalogEntry,
+): ResolvedSource['container'] {
+  if (source.kind === 'wtg') return undefined;              // turbines have no box
+  const override = source.container;
+  if (override?.enabled === false) return undefined;
+  const heightM = override?.heightM ?? entry.containerHeightM;
+  if (heightM == null || !Number.isFinite(heightM) || heightM <= 0) return undefined;
+  const fp = footprintFor(entry);
+  const lengthM = override?.lengthM ?? fp.widthM;           // widthM is the long axis
+  const widthM = override?.widthM ?? fp.lengthM;
+  if (!(lengthM > 0) || !(widthM > 0)) return undefined;
+  const yaw = source.yawDeg ?? override?.bearingDeg ?? 0;
+  return { lengthM, widthM, heightM, bearingDeg: yaw + 90 };
 }
 
 /// Ground elevation under a point, with the app's long-standing non-finite → 0
@@ -329,6 +360,7 @@ function resolveTileSources(
     let lw: Float64Array | null;
     let heightAglM: number;
     let wtg: ResolvedSource['wtg'];
+    let container: ResolvedSource['container'];
     if (es.kind === 'real') {
       const entry = lookupEntry(project, es.source!);
       if (!entry) continue;
@@ -341,6 +373,7 @@ function resolveTileSources(
           applyConcave: false,   // stamped per receiver group (Annex D.5)
         };
       }
+      container = resolveContainer(es.source!, entry);
     } else {
       lw = es.lwOverride!;
       heightAglM = es.zAboveGround ?? 1.5;
@@ -352,6 +385,7 @@ function resolveTileSources(
       heightAglM,
       lw: Array.from(lw),
       wtg,
+      container,   // clusters stay bare: a cluster stands in for a group, not a box
     });
   }
   return out;
@@ -452,10 +486,9 @@ function buildGridJob(
 
 // ============== Compatibility: exact grid evaluation ==============
 
-/// Compute the grid exactly without snapshotting. Batched primal path (S2):
-/// one `GridEvaluator.eval_cell_dba` call per cell — all sources energy-summed
-/// inside Rust — instead of one JS↔WASM call per (cell, source). This is the
-/// default contour path (primal-only, no gradient tensor).
+/// Compute the contour grid. One Scene per tile, solved as a batch of receivers
+/// through a `WasmSession`, so the obstacle + terrain decomposition happens once
+/// per tile rather than once per cell.
 export async function evaluateGrid(
   project: Project,
   dem: DemRaster | null,

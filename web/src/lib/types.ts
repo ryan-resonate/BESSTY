@@ -51,6 +51,19 @@ export interface Source {
   rotorDiameterM?: number;
   elevationOffset?: number;    // BESS / Auxiliary
   yawDeg?: number;
+  /// Per-source container overrides (BESS / auxiliary). Dimensions default to
+  /// the catalog product's `footprintM` + `containerHeightM`; set any field here
+  /// to override for this unit. `enabled: false` opts one unit out entirely.
+  ///
+  /// Orientation comes from `yawDeg` (the row heading) when the source belongs
+  /// to a group; `bearingDeg` is the fallback for standalone units.
+  container?: {
+    enabled?: boolean;
+    lengthM?: number;
+    widthM?: number;
+    heightM?: number;
+    bearingDeg?: number;
+  };
   modeOverride?: string | null;
   /// When this source belongs to a BessGroup, the group's id. Lets the
   /// editor select the whole group on click, route drag events through
@@ -441,19 +454,17 @@ export interface ProjectSettings {
     /// (one sample per ~cell, capped), so there's no count to tune. Retained
     /// optional so old saved projects round-trip; ignored by the solver.
     pathSamples?: number;
-    /// Minimum ridge prominence (m). After the source→receiver ground profile
-    /// is reduced to its upper-silhouette (convex-hull) edges, an edge is kept
-    /// as a diffracting barrier only if it rises at least this far above the
-    /// straight chord joining its neighbouring silhouette edges — i.e. only if
-    /// it adds a meaningful extra diffraction path. Lower = keep more (smaller)
-    /// ridges; higher = only major ridges screen. Default 2 m.
-    virtualBarrierMinHeightM: number;
-    /// Peak-preserving DEM despike (Hampel filter) applied to the sampled
-    /// profile before the silhouette/prominence pass. Removes isolated DEM
-    /// blunders (single-cell spikes) without lowering genuine crests, since a
-    /// rank filter only touches statistical outliers. 'off' disables it;
-    /// 'low' clears egregious spikes only; 'medium' is more aggressive (use on
-    /// noisy DEMs, not clean LiDAR). Default 'low'.
+    /// @deprecated Ridge selection is now the solver's own silhouette hull over
+    /// the elevation raster, not a web-side pre-filter, so there is no
+    /// prominence threshold to tune. Retained optional so old saved projects
+    /// round-trip; ignored by the solver.
+    virtualBarrierMinHeightM?: number;
+    /// Peak-preserving DEM despike (Hampel filter) applied when the elevation
+    /// raster is sampled. Removes isolated DEM blunders (single-cell spikes)
+    /// without lowering genuine crests, since a rank filter only touches
+    /// statistical outliers. 'off' disables it; 'low' clears egregious spikes
+    /// only; 'medium' is more aggressive (use on noisy DEMs, not clean LiDAR).
+    /// Default 'low'.
     despikeStrength?: 'off' | 'low' | 'medium';
   };
 }
@@ -679,6 +690,12 @@ export interface CatalogEntry {
   /// (rotorDiameterM serves the same purpose, and WTGs aren't grouped).
   /// Falls back to `defaultFootprintFor(kind)` when unset (see catalog.ts).
   footprintM?: { widthM: number; lengthM: number };
+  /// Height of the unit's enclosure (m) — the container/cabinet body, NOT the
+  /// acoustic-centre height (`sourceHeightM`). Only needed when the unit is
+  /// modelled as a screening box (see `ProjectSettings.containers`); the plan
+  /// dimensions come from `footprintM`. Absent = no container available for
+  /// this product, so it stays a bare point source.
+  containerHeightM?: number;
   /// File of origin, for traceability ('imported from V163.xlsx').
   source?: string;
   /// 'seed' = bundled with the app on first launch; 'user' = user-added.

@@ -1717,7 +1717,7 @@ function SettingsTab(props: Props) {
   }
 
   const propagation = settings.propagation ?? { maxContributionDistanceM: 20000, treeAcceptanceTheta: 0.25 };
-  const topography = settings.topography ?? { virtualBarrierMinHeightM: 2, despikeStrength: 'low' as const };
+  const topography = settings.topography ?? { despikeStrength: 'low' as const };
   const extrapolation = settings.extrapolation ?? { capPerBandDb: 6, capTotalDbA: 3 };
 
   return (
@@ -1741,6 +1741,24 @@ function SettingsTab(props: Props) {
       </section>
 
       <section className="sp-section">
+        <h3><span>Standard</span></h3>
+        <Field label="ISO 9613-2 edition">
+          <select
+            value={settings.standard ?? '2024'}
+            onChange={(e) => update({ standard: e.target.value as '1996' | '2024' })}
+          >
+            <option value="2024">2024 (default)</option>
+            <option value="1996">1996</option>
+          </select>
+        </Field>
+        <div className="hint">
+          The editions differ in the ground-effect geometry factor, the barrier
+          <code> Dz </code> bracket and <code>Kmet</code>, and the 2024-only annexes.
+          Existing projects were computed with 2024.
+        </div>
+      </section>
+
+      <section className="sp-section">
         <h3><span>Ground</span></h3>
         <Field label="Default ground factor G (0 = hard, 1 = porous)">
           <NumericInput min={0} max={1} step={0.05}
@@ -1749,6 +1767,49 @@ function SettingsTab(props: Props) {
           />
         </Field>
         <div className="hint">Annex D rules cap G at 0.5 for wind turbine sources regardless of this setting.</div>
+      </section>
+
+      <section className="sp-section">
+        <h3><span>Source containers</span></h3>
+        <Field label="Use in receiver calculations">
+          <input
+            type="checkbox"
+            checked={settings.containers?.receiverCalc ?? false}
+            onChange={(e) => update({
+              containers: { ...settings.containers, receiverCalc: e.target.checked },
+            })}
+          />
+        </Field>
+        <Field label="Use in grid / contour maps">
+          <input
+            type="checkbox"
+            checked={settings.containers?.grid ?? false}
+            onChange={(e) => update({
+              containers: { ...settings.containers, grid: e.target.checked },
+            })}
+          />
+        </Field>
+        <Field label="Source clearance above roof (m)">
+          <NumericInput min={0} max={5} step={0.1}
+            value={settings.containers?.roofOffsetM ?? 0.3} fallback={0.3}
+            onChange={(v) => update({
+              containers: { ...settings.containers, roofOffsetM: v },
+            })}
+          />
+        </Field>
+        <div className="hint">
+          Models each BESS / auxiliary unit as its physical enclosure — a screening
+          box using the product's footprint and container height — with the acoustic
+          centre sitting just above the roof. Units then screen each other within a
+          row. Off by default.
+          <br />
+          The two toggles are independent because a contour grid pays for the extra
+          obstacles at every cell: it's common to want the detail on reported
+          receiver levels but not on a whole-site map.
+          <br />
+          Only products whose catalog entry carries a container height are affected;
+          the rest stay bare point sources.
+        </div>
       </section>
 
       <section className="sp-section">
@@ -1832,24 +1893,12 @@ function SettingsTab(props: Props) {
         </div>
       </section>
 
+      {/* The old "barrier convention" selector is gone: the engine implements the
+          single literal-ISO combination (Abar = Dz − Agr, with Agr always carried
+          separately), so there is nothing to choose. `barrierConvention` is still
+          tolerated in stored projects and ignored. */}
       <section className="sp-section">
-        <h3><span>Barrier convention (Abar / Agr interaction)</span></h3>
-        <Field label="Convention">
-          <select
-            value={settings.barrierConvention ?? 'dz-minus-max-agr-0'}
-            onChange={(e) => update({ barrierConvention: e.target.value as 'iso-eq16' | 'dz-minus-max-agr-0' })}
-          >
-            <option value="dz-minus-max-agr-0">Abar = Dz − max(Agr, 0) (Recommended)</option>
-            <option value="iso-eq16">Abar = max(0, Dz − Agr) (Strict ISO 9613-2 §7.4 Eq 16/17)</option>
-          </select>
-        </Field>
-        <div className="hint">
-          Numerically equivalent in every Agr range; only the bookkeeping
-          differs. The recommended variant always adds Agr separately and
-          subtracts only the positive part from Dz, matching what the team's
-          reference tools produce.
-        </div>
-
+        <h3><span>Barrier diffraction</span></h3>
         <Field label="Diffraction limit Dz (dB) — general sources">
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <select
@@ -1975,47 +2024,35 @@ function SettingsTab(props: Props) {
 
       <section className="sp-section">
         <h3><span>Topography (DEM)</span></h3>
-        <div className="grid-2">
-          <Field label="Min ridge prominence (m)">
-            <NumericInput min={0} max={50} step={0.5}
-              value={topography.virtualBarrierMinHeightM} fallback={2}
-              onChange={(v) => update({
-                topography: { ...topography, virtualBarrierMinHeightM: v },
-              })}
-            />
-          </Field>
-          <Field label="DEM despike">
-            <select
-              value={topography.despikeStrength ?? 'low'}
-              onChange={(e) => update({
-                topography: {
-                  ...topography,
-                  despikeStrength: e.target.value as 'off' | 'low' | 'medium',
-                },
-              })}
-            >
-              <option value="off">Off</option>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-            </select>
-          </Field>
-        </div>
+        {/* The old "min ridge prominence" knob is gone: ridge selection is now
+            the engine's own hull over the elevation raster, not a web-side
+            pre-filter. Stored values are tolerated and ignored. */}
+        <Field label="DEM despike">
+          <select
+            value={topography.despikeStrength ?? 'low'}
+            onChange={(e) => update({
+              topography: {
+                ...topography,
+                despikeStrength: e.target.value as 'off' | 'low' | 'medium',
+              },
+            })}
+          >
+            <option value="off">Off</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+          </select>
+        </Field>
         <div className="hint">
-          With a DEM loaded, the solver samples the ground along each
-          source→receiver line <b>at the DEM's own resolution</b> (no sample
-          count to tune), reduces it to the upper silhouette (the ridge crests
-          that actually screen), and inserts a virtual barrier at each — so hills
-          shield like a wall.
+          With a DEM loaded, the elevation raster is handed to the solver, which
+          samples the ground profile along every source→receiver line itself and
+          diffracts over any ridge that breaks the line of sight — so hills shield
+          like a wall. Sampling follows the DEM's own resolution; there is nothing
+          to tune.
           <br />
-          <b>Min ridge prominence:</b> a crest is kept only if it rises this far
-          above its neighbouring silhouette edges — i.e. only if it adds a real
-          diffraction path. Higher = only major ridges screen. Default
-          <b> 2&nbsp;m</b>. Set to <b>0</b> to keep every crest.
-          <br />
-          <b>DEM despike:</b> a peak-preserving (Hampel) filter that removes
-          isolated DEM blunders without lowering genuine crests. <b>Low</b> suits
-          most public DEMs; <b>Medium</b> for noisy data; <b>Off</b> for clean
-          LiDAR.
+          <b>DEM despike:</b> a peak-preserving (Hampel) filter applied when the
+          raster is built, removing isolated DEM blunders without lowering genuine
+          crests. <b>Low</b> suits most public DEMs; <b>Medium</b> for noisy data;
+          <b>Off</b> for clean LiDAR.
         </div>
       </section>
 

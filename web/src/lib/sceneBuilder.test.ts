@@ -273,6 +273,43 @@ test('containers are omitted (and no clamp applied) when the toggle is off', () 
   assert.notDeepEqual(off.obstacles, on.obstacles);
 });
 
+test('containers use the catalog footprint convention (widthM is the LONG axis)', () => {
+  // BEESTY stores widthM = long axis, which at yaw 0 runs EAST along an
+  // unrotated row; our bearing is clockwise-from-north, hence the +90 the
+  // resolver applies. Verify the resulting box really is east-west at yaw 0.
+  const f = containerFootprint([0, 0], 12, 3, 90);   // 12 m long axis at bearing 90
+  const eastSpan = Math.max(...f.map((p) => p[0])) - Math.min(...f.map((p) => p[0]));
+  const northSpan = Math.max(...f.map((p) => p[1])) - Math.min(...f.map((p) => p[1]));
+  assert.ok(Math.abs(eastSpan - 12) < 1e-9, `long axis east: ${eastSpan}`);
+  assert.ok(Math.abs(northSpan - 3) < 1e-9, `short axis north: ${northSpan}`);
+});
+
+test('a row of containers is emitted with a shared orientation', () => {
+  // Three units on a 30° row: each gets its own box, all parallel, each centred
+  // on its own unit.
+  const units = [0, 1, 2].map((i) => src({
+    id: `u${i}`,
+    latLng: [ORIGIN[0] + i * 0.0001, ORIGIN[1] + i * 0.0001],
+    heightAglM: 2,
+    container: { lengthM: 12, widthM: 3, heightM: 3, bearingDeg: 30 },
+  }));
+  const scene = buildScene(input({ sources: units, includeContainers: true }));
+  const boxes = scene.obstacles.filter((o) => o.type === 'building');
+  assert.equal(boxes.length, 3, 'one box per unit');
+  for (const b of boxes) {
+    assert.equal(b.type === 'building' && b.footprint.length, 4);
+    assert.equal(b.type === 'building' && b.height_agl, 3);
+  }
+  // All three must be parallel: the first edge vector has the same direction.
+  const dir = (b: typeof boxes[number]) => {
+    const f = (b as { footprint: Array<[number, number]> }).footprint;
+    const [dx, dy] = [f[1][0] - f[0][0], f[1][1] - f[0][1]];
+    return Math.atan2(dy, dx);
+  };
+  assert.ok(Math.abs(dir(boxes[0]) - dir(boxes[1])) < 1e-9);
+  assert.ok(Math.abs(dir(boxes[1]) - dir(boxes[2])) < 1e-9);
+});
+
 // ------------------------------------------------------------------- settings
 
 test('settings default to the 2024 edition and ISO reference atmosphere', () => {

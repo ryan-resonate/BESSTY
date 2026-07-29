@@ -125,20 +125,20 @@ const THIRD_OCT_AW = [
 ];
 
 /// Energy-sum the Z-weighted per-source band levels reaching one cell into a
-/// single dB(A) total, applying A-weighting and the project's `DΩ` at sum time.
-/// `bands` arrives per source; contributions beyond the cutoff are already gone.
-function totalDbaFor(
-  contributions: number[][],
-  aw: number[],
-  dOmegaDb: number,
-): number {
+/// single dB(A) total, applying A-weighting at sum time. `bands` arrives per
+/// source; contributions beyond the cutoff are already gone.
+///
+/// `DΩ` is deliberately NOT included here — it is added after the floor test in
+/// the caller, because the −120 dB display floor is applied to the un-corrected
+/// level (otherwise a +3 dB `DΩ` would lift cells that should read as floor).
+function totalDbaFor(contributions: number[][], aw: number[]): number {
   let aSum = 0;
   for (const bands of contributions) {
     const n = Math.min(bands.length, aw.length);
     for (let i = 0; i < n; i++) {
       const v = bands[i];
       if (typeof v === 'number' && Number.isFinite(v)) {
-        aSum += Math.pow(10, (v + aw[i] + dOmegaDb) / 10);
+        aSum += Math.pow(10, (v + aw[i]) / 10);
       }
     }
   }
@@ -260,8 +260,10 @@ export function runBatchedGrid(job: GridJob, dem: DemRaster | null): GridResult 
             }
             kept.push(c.bands);
           }
-          const total = totalDbaFor(kept, aw, dOmegaDb);
-          dbA[cell.idx] = total > -119.9 ? total : -120;
+          // Floor first, THEN apply DΩ — the same order as the previous engine,
+          // so a cell that reads as floor doesn't get lifted off it by DΩ.
+          const total = totalDbaFor(kept, aw);
+          dbA[cell.idx] = total > -119.9 ? total + dOmegaDb : -120;
         }
       } catch (e) {
         console.error('grid solve failed:', e instanceof Error ? e.message : e);
