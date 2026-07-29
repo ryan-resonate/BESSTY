@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  buildScene, containerFootprint, projectOrigin, sceneSettingsFor, wallFromBarrier,
+  buildScene, containerFootprint, groupReceiversByConcave, projectOrigin, sceneSettingsFor,
+  wallFromBarrier, withConcave,
   type ResolvedSource, type SceneInput, type SceneWall,
 } from './sceneBuilder';
 import type { Barrier, Project } from './types';
@@ -137,6 +138,88 @@ test('degenerate barriers are skipped', () => {
     wallFromBarrier(barrier({ polylineLatLng: [[-27, 152], [NaN, 152]] }), ORIGIN, flatDem),
     null,
   );
+});
+
+test('a multi-vertex polyline densifies without duplicated or missing joins', () => {
+  // Three vertices with distinct heights: the join between edge 1 and edge 2
+  // must appear exactly once, and the last vertex must carry its own height.
+  const w = wallFromBarrier(
+    barrier({
+      polylineLatLng: [[-27.0, 152.0], [-27.0, 152.0005], [-26.9995, 152.0005]],
+      topHeightsM: [3, 6, 9],
+    }),
+    ORIGIN,
+    flatDem,
+  ) as SceneWall;
+  const heights = w.top_z!.map((t, i) => t - w.base_z[i]);
+  assert.ok(Math.abs(heights[0] - 3) < 1e-9, 'first vertex height');
+  assert.ok(Math.abs(heights[heights.length - 1] - 9) < 1e-9, 'last vertex height');
+  // The corner (6 m) must be present exactly once, and heights must rise
+  // monotonically 3 → 6 → 9 with no repeated vertex at the join.
+  assert.ok(heights.some((h) => Math.abs(h - 6) < 1e-6), 'join height present');
+  for (let i = 1; i < heights.length; i++) {
+    assert.ok(heights[i] >= heights[i - 1] - 1e-9, 'monotone across the join');
+  }
+  for (let i = 1; i < w.polyline.length; i++) {
+    const d = Math.hypot(w.polyline[i][0] - w.polyline[i - 1][0], w.polyline[i][1] - w.polyline[i - 1][1]);
+    assert.ok(d > 1e-9, `no zero-length segment at ${i}`);
+    assert.ok(d <= 10 + 1e-6, `segment ${i} within 10 m`);
+  }
+});
+
+test('duplicated consecutive vertices are dropped rather than making a zero-length wall', () => {
+  const w = wallFromBarrier(
+    barrier({ polylineLatLng: [[-27.0, 152.0], [-27.0, 152.0], [-27.0, 152.001]], topHeightsM: [4, 4, 4] }),
+    ORIGIN,
+    flatDem,
+  ) as SceneWall;
+  for (let i = 1; i < w.polyline.length; i++) {
+    const d = Math.hypot(w.polyline[i][0] - w.polyline[i - 1][0], w.polyline[i][1] - w.polyline[i - 1][1]);
+    assert.ok(d > 1e-9, 'no zero-length segment survives');
+  }
+  // A polyline that is ENTIRELY duplicates has no geometry at all.
+  assert.equal(
+    wallFromBarrier(barrier({ polylineLatLng: [[-27, 152], [-27, 152]], topHeightsM: [4, 4] }), ORIGIN, flatDem),
+    null,
+  );
+});
+
+// ------------------------------------------------- Annex D.5 concave grouping
+
+test('no turbines → a single receiver group (the common BESS case is free)', () => {
+  const rxs = [{ id: 'r1' }, { id: 'r2' }];
+  const groups = groupReceiversByConcave([src()], rxs, () => false);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].receivers.length, 2);
+  assert.equal(groups[0].concaveBySourceId.size, 0);
+});
+
+test('receivers are split by their per-pair concave verdict, not the source', () => {
+  // D.5 is a per source->receiver condition; r1 sits over a dip, r2 does not.
+  const sources = [src({ id: 'w1', wtg: { rotorDiameterM: 136, applyConcave: false } })];
+  const rxs = [{ id: 'r1' }, { id: 'r2' }, { id: 'r3' }];
+  const groups = groupReceiversByConcave(sources, rxs, (_s, r) => (r as { id: string }).id === 'r1');
+  assert.equal(groups.length, 2, 'disagreeing receivers cannot share a scene');
+  const concaveGroup = groups.find((g) => g.concaveBySourceId.get('w1') === true)!;
+  const flatGroup = groups.find((g) => g.concaveBySourceId.get('w1') === false)!;
+  assert.deepEqual(concaveGroup.receivers.map((r) => (r as { id: string }).id), ['r1']);
+  assert.deepEqual(flatGroup.receivers.map((r) => (r as { id: string }).id), ['r2', 'r3']);
+  // Every receiver appears exactly once across the groups.
+  assert.equal(groups.reduce((n, g) => n + g.receivers.length, 0), rxs.length);
+});
+
+test('withConcave stamps each group verdict onto its turbines only', () => {
+  const sources = [
+    src({ id: 'w1', wtg: { rotorDiameterM: 136, applyConcave: false } }),
+    src({ id: 'b1' }),
+  ];
+  const stamped = withConcave(sources, new Map([['w1', true]]));
+  assert.equal(stamped[0].wtg!.applyConcave, true);
+  assert.equal(stamped[1].wtg, undefined, 'general sources untouched');
+  assert.equal(sources[0].wtg!.applyConcave, false, 'input not mutated');
+  // ...and it reaches the scene.
+  const scene = buildScene(input({ sources: stamped }));
+  assert.equal(scene.sources[0].kind.apply_concave, true);
 });
 
 // ----------------------------------------------------------------- containers

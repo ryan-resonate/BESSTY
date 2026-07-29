@@ -72,7 +72,7 @@ test('every source kind and obstacle the builder emits is accepted', () => {
   }));
   assert.equal(r.per_receiver[0].per_source.length, 3, 'general + wtg + containered source all solved');
   for (const s of r.per_receiver[0].per_source) {
-    assert.ok(s.bands.every((b: number) => b === null || Number.isFinite(b)), `finite bands for ${s.source_id}`);
+    assert.ok(s.bands.every((b: number) => Number.isFinite(b)), `finite bands for ${s.source_id}`);
   }
 });
 

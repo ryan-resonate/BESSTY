@@ -237,6 +237,8 @@ export function wallFromBarrier(
     const p0 = poly[v];
     const p1 = poly[v + 1];
     if (!finiteLatLng(p0) || !finiteLatLng(p1)) return null;
+    // A double-clicked vertex would otherwise emit a zero-length segment.
+    if (p0[0] === p1[0] && p0[1] === p1[1]) continue;
     const hStart = barrier.topHeightsM?.[v] ?? h0;
     const hEnd = barrier.topHeightsM?.[v + 1] ?? h0;
     const [e0, n0] = latLngToLocalMetres(p0, origin);
@@ -251,6 +253,7 @@ export function wallFromBarrier(
       heights.push(hStart + (hEnd - hStart) * t);
     }
   }
+  if (latLngs.length === 0) return null;   // every segment was degenerate
   const last = poly[poly.length - 1];
   latLngs.push(last);
   heights.push(barrier.topHeightsM?.[poly.length - 1] ?? h0);
@@ -379,6 +382,61 @@ export function sceneSettingsFor(project: Project): SceneSettings {
     dzCapDb: cap != null && Number.isFinite(cap) && cap >= 0 ? cap : null,
     c0Db: s?.meteorology?.c0Db ?? 0,
   };
+}
+
+/**
+ * Partition receivers so that every receiver in a group agrees with the others
+ * about each wind-turbine source's Annex D.5 concave-ground verdict.
+ *
+ * Why this exists: D.5 (the −3 dB concave-ground correction) is a per
+ * source→RECEIVER condition — it asks whether the ground dips away beneath that
+ * particular path. The Scene model carries `apply_concave` on the SOURCE, so one
+ * scene can only express one verdict per turbine. Solving a batch of receivers
+ * that disagree would silently misapply ±3 dB to some pairs.
+ *
+ * So: bucket receivers by their verdict vector and solve one scene per bucket.
+ * Cost in practice is nil — a project with no turbines yields exactly one group
+ * (the overwhelmingly common BESS case), and a wind farm on consistent terrain
+ * usually yields one or two.
+ *
+ * `concaveFor(source, receiver)` supplies the verdict (the app's existing
+ * `concaveCorrectionMet`); groups arrive in first-appearance order so results
+ * can be reassembled deterministically.
+ */
+export function groupReceiversByConcave<R>(
+  sources: ResolvedSource[],
+  receivers: R[],
+  concaveFor: (source: ResolvedSource, receiver: R) => boolean,
+): Array<{ concaveBySourceId: Map<string, boolean>; receivers: R[] }> {
+  const wtgs = sources.filter((s) => s.wtg);
+  if (wtgs.length === 0 || receivers.length === 0) {
+    return receivers.length ? [{ concaveBySourceId: new Map(), receivers }] : [];
+  }
+  const groups = new Map<string, { concaveBySourceId: Map<string, boolean>; receivers: R[] }>();
+  for (const rx of receivers) {
+    const flags = wtgs.map((s) => concaveFor(s, rx));
+    const key = flags.map((f) => (f ? '1' : '0')).join('');
+    let g = groups.get(key);
+    if (!g) {
+      g = { concaveBySourceId: new Map(wtgs.map((s, i) => [s.id, flags[i]])), receivers: [] };
+      groups.set(key, g);
+    }
+    g.receivers.push(rx);
+  }
+  return [...groups.values()];
+}
+
+/** Apply a group's concave verdicts to the sources feeding its scene. */
+export function withConcave(
+  sources: ResolvedSource[],
+  concaveBySourceId: Map<string, boolean>,
+): ResolvedSource[] {
+  if (concaveBySourceId.size === 0) return sources;
+  return sources.map((s) =>
+    s.wtg && concaveBySourceId.has(s.id)
+      ? { ...s, wtg: { ...s.wtg, applyConcave: concaveBySourceId.get(s.id)! } }
+      : s,
+  );
 }
 
 /** Project origin — the local-metres datum. Must match everywhere. */
