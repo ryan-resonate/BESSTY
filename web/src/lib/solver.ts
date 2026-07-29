@@ -1,78 +1,63 @@
 // Wraps the Rust + WASM solver into a typed, project-shaped API.
 //
-// Both outputs (point receivers and the contour grid) use the PRIMAL solver
-// path — a direct exact evaluation per source→receiver pair (points) or one
-// batched `GridEvaluator.eval_cell_dba` per cell (grid, on a Web Worker). The
-// solve is fast enough that source drags simply re-evaluate.
+// The engine takes a whole `Scene` — sources, receivers, ground, terrain,
+// obstacles, atmosphere, settings — and returns per-receiver / per-source band
+// levels. `sceneBuilder.ts` owns that mapping; this module resolves catalog data
+// into it, drives the solve, and shapes the results back for the UI.
 //
-// The Rust crate still carries the forward-mode automatic-differentiation
-// (dual-number) gradient path and its WASM exports (`evaluate_*_with_grad_*`),
-// but the front end no longer wires them in: there is no snapshot / Taylor-
-// extrapolation layer here anymore. The AD feature is retained in the solver
-// for possible future use; it is simply not called from the app.
+// Two outputs share the path: point receivers solve the whole project in one
+// `solve_scene` call (per Annex D.5 receiver group), and the contour grid runs a
+// `WasmSession` on a Web Worker, swapping receivers tile by tile so obstacles
+// and terrain are decomposed once. The solve is fast enough that source drags
+// simply re-evaluate.
+//
+// Terrain is the engine's job now: the app hands over a DEM-sampled Heightfield
+// (`terrainField.ts`) instead of pre-reducing each path to synthetic barriers.
+//
+// `DΩ` (the solid-angle correction) has no place in the ISO model, so it is not
+// part of the Scene — it is added here, after the solve, exactly as before.
 
 import init, {
-  evaluate_general_octave,
-  evaluate_wtg_octave,
+  solve_scene,
   octave_a_weighting,
   octave_centres,
 } from '../wasm/iso9613_wasm.js';
 
 import type {
-  Barrier,
   Source,
   Project,
 } from './types';
 import { lookupEntry, sourceHeightFor, spectrumFor } from './catalog';
 import { type DemRaster, type DemRegion, captureDemRegion } from './dem';
 import {
-  concatBarriers,
   propagationSettings,
   type EffectiveSource,
 } from './propagation';
 import { buildSourceTree, walkSourceTreeForRegion } from './sourceTree';
 import {
-  approxDistanceM,
-  latLngToLocalMetres,
-  topographyBarriers,
+  buildScene,
+  groupReceiversByConcave,
+  projectOrigin,
+  sceneSettingsFor,
+  withConcave,
+  type ResolvedSource,
+  type SceneResults,
+} from './sceneBuilder';
+import { buildTerrainField } from './terrainField';
+import { approxDistanceM } from './geo';
+import {
   concaveCorrectionMet,
   runBatchedGrid,
   type GridJob,
   type GridTile,
   type GridResult,
-  type SolverEnv,
+
 } from './gridCore';
 
 // Re-export so downstream consumers (contourLines, exporters) keep importing
 // these from './solver'.
 export type { GridResult, GridJob } from './gridCore';
 export { latLngToLocalMetres } from './gridCore';
-
-// Atmosphere + barrier-convention parameters threaded through to every
-// WASM call. Atmosphere defaults match `Atmosphere::iso_reference()` in
-// the Rust solver (10 °C, 70 % RH, 101.325 kPa). Barrier convention
-// defaults to the simpler-bookkeeping variant (`Dz − max(Agr, 0)`) since
-// it's numerically equivalent to strict ISO Eq 16/17 in every case and
-// matches what the team's reference tools produce.
-function solverEnv(project: Project): SolverEnv {
-  const atm = project.settings?.atmosphere;
-  const tC = atm?.temperatureC ?? 10;
-  const rh = atm?.relativeHumidityPct ?? 70;
-  const pKpa = atm?.pressureKpa ?? 101.325;
-  // 1 = DzMinusMaxAgr0 (recommended); 0 = strict ISO Eq16. Default to 1
-  // when the project hasn't pinned a value.
-  const barConv = project.settings?.barrierConvention === 'iso-eq16' ? 0 : 1;
-  // Diffraction Dz cap. Sentinel −1.0 = "no override, use the standard
-  // ISO §7.4 caps (20 dB single edge / 25 dB multi-edge)". A finite
-  // non-negative value (e.g. 2) overrides those caps for general
-  // (non-WTG) sources. WTG sources use `annexD.barrierAbarCapDb`
-  // independently (default 3 dB) and aren't affected by this field.
-  const userCap = project.settings?.barrierDiffractionCapDb;
-  const dzCap = userCap != null && Number.isFinite(userCap) && userCap >= 0 ? userCap : -1;
-  // ISO 9613-2 §8 meteorological-correction factor C0 (dB). 0 = off (default).
-  const c0 = project.settings?.meteorology?.c0Db ?? 0;
-  return { tC, rh, pKpa, barConv, dzCap, c0 };
-}
 
 /// Project-wide DΩ correction (dB). Defaults to 0 dB (strict ISO 9613-2
 /// / IEC 61400-11), which matches SoundPlan-style validation tools.
@@ -115,12 +100,6 @@ function aWeights(bs: 'octave' | 'oneThirdOctave'): Float64Array {
 
 let initialized: Promise<void> | null = null;
 
-/// Lateral-diffraction edges are not yet packed from the web layer — the
-/// point-receiver path passes an empty set (matching current behaviour).
-/// Wiring finite-barrier end edges (with the TR §5.2 best-per-side + factor-8
-/// selection) is Phase-1 work. See docs/iso9613-solver-phase01-execution.md.
-const NO_LATERAL = new Float64Array(0);
-
 export function ensureSolverReady(): Promise<void> {
   // Wrap in an explicit `Promise<void>` rather than relying on the chained
   // `.then(() => undefined)` to settle the type. When CI couldn't resolve
@@ -139,64 +118,6 @@ export interface ReceiverResult {
   perBandLp: Float64Array;
   totalDbA: number;
   perSource: Array<{ sourceId: string; perBandLp: Float64Array }>;
-}
-
-/// Longest barrier sub-segment (m). A drawn barrier polyline is broken into
-/// pieces no longer than this so each piece follows the terrain (its base is
-/// the DEM ground under its own short span) instead of a single linear
-/// interpolation across the whole length. Each piece is a terrain-following
-/// `WallBarrier`: it carries the absolute ground elevation under each endpoint
-/// plus the height-above-ground; the solver interpolates the top at the
-/// diffraction crossing. No DEM → ground 0 → top = height (flat-ground
-/// behaviour unchanged).
-const MAX_BARRIER_SEGMENT_M = 10;
-
-function packBarriers(
-  barriers: Barrier[],
-  originLatLng: [number, number],
-  dem: DemRaster | null,
-): Float64Array {
-  const out: number[] = [];
-  const groundAt = (lat: number, lng: number): number => {
-    if (!dem) return 0;
-    const g = dem.elevation(lat, lng);
-    return Number.isFinite(g) ? g : 0;
-  };
-  for (const b of barriers) {
-    const poly = b.polylineLatLng;
-    if (poly.length < 2) continue;
-    const h0 = b.topHeightsM[0] ?? 0;
-    // Walk every polyline edge (not just the first), subdividing each into
-    // ≤ MAX_BARRIER_SEGMENT_M pieces.
-    for (let v = 0; v + 1 < poly.length; v++) {
-      const p0 = poly[v];
-      const p1 = poly[v + 1];
-      const hStart = b.topHeightsM[v] ?? h0;
-      const hEnd = b.topHeightsM[v + 1] ?? h0;
-      const segLen = approxDistanceM(p0, p1);
-      const nSub = Math.max(1, Math.ceil(segLen / MAX_BARRIER_SEGMENT_M));
-      for (let k = 0; k < nSub; k++) {
-        const t0 = k / nSub;
-        const t1 = (k + 1) / nSub;
-        const lat0 = p0[0] + (p1[0] - p0[0]) * t0;
-        const lng0 = p0[1] + (p1[1] - p0[1]) * t0;
-        const lat1 = p0[0] + (p1[0] - p0[0]) * t1;
-        const lng1 = p0[1] + (p1[1] - p0[1]) * t1;
-        const aXY = latLngToLocalMetres([lat0, lng0], originLatLng);
-        const cXY = latLngToLocalMetres([lat1, lng1], originLatLng);
-        // Top height interpolated at the piece midpoint (constant per piece;
-        // negligible variation over ≤10 m). Handles a sloping top if the
-        // barrier carries per-vertex heights.
-        const tm = (t0 + t1) / 2;
-        const height = hStart + (hEnd - hStart) * tm;
-        out.push(
-          aXY[0], aXY[1], cXY[0], cXY[1],
-          groundAt(lat0, lng0), groundAt(lat1, lng1), height,
-        );
-      }
-    }
-  }
-  return new Float64Array(out);
 }
 
 /// Source **height above local ground** (HAG) — the machine height fed to the
@@ -242,115 +163,154 @@ function energySumPerBand(perSource: Array<{ perBandLp: Float64Array }>): Float6
 
 // ============== Receiver-point evaluation (primal) ==============
 
-/// Exact per-band Lp (Z-weighted, length = band count) for one source →
-/// receiver pair via the primal WASM solver. Mirrors the geometry the old
-/// gradient snapshot used (A1 z-datum split: absolute z for divergence +
-/// barrier geometry, height-above-ground for the Table-3 ground functions),
-/// minus the dual-number gradient. No DEM → ground 0 → abs z = HAG.
-function evaluatePair(
-  source: Source,
-  rxLatLng: [number, number],
-  rxHeightAboveGround: number,
-  project: Project,
-  barriersFlat: Float64Array,
-  dem: DemRaster | null,
-  origin: [number, number],
-): Float64Array {
-  const [se, sn] = latLngToLocalMetres(source.latLng, origin);
-  const [re, rn] = latLngToLocalMetres(rxLatLng, origin);
-  const g = project.settings?.ground.defaultG ?? 0.5;
-  const groundSrcRaw = dem ? dem.elevation(source.latLng[0], source.latLng[1]) : 0;
-  const groundRxRaw = dem ? dem.elevation(rxLatLng[0], rxLatLng[1]) : 0;
-  const groundSrc = Number.isFinite(groundSrcRaw) ? groundSrcRaw : 0;
-  const groundRx = Number.isFinite(groundRxRaw) ? groundRxRaw : 0;
-  const rxZ = rxHeightAboveGround;        // receiver HAG
-  const rxZAbs = groundRx + rxZ;          // receiver absolute z
-
-  const entry = lookupEntry(project, source);
-  if (!entry) {
-    throw new Error(`Catalog entry not found: ${source.catalogScope}/${source.modelId}`);
+/// Resolve a project's sources into the solver-facing form: catalog lookups
+/// (sound power, machine height, rotor diameter) done once, geometry left to
+/// `sceneBuilder`. Sources whose catalog entry is missing, or whose coordinates
+/// are non-finite (busted import / glitched group drag), are dropped rather than
+/// fed to the engine as NaN.
+export function resolveSources(project: Project): ResolvedSource[] {
+  const out: ResolvedSource[] = [];
+  for (const source of project.sources) {
+    if (!Number.isFinite(source.latLng[0]) || !Number.isFinite(source.latLng[1])) continue;
+    const entry = lookupEntry(project, source);
+    if (!entry) {
+      console.warn(`Catalog entry not found: ${source.catalogScope}/${source.modelId}`);
+      continue;
+    }
+    const modeName = source.modeOverride ?? entry.defaultMode;
+    const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
+    const heightAglM = sourceHagl(source, project);
+    if (heightAglM == null) continue;
+    out.push({
+      id: source.id,
+      latLng: source.latLng,
+      heightAglM,
+      lw: Array.from(lw),
+      // `applyConcave` is a placeholder: Annex D.5 is a per source→receiver
+      // condition, stamped per receiver group below.
+      wtg: source.kind === 'wtg'
+        ? { rotorDiameterM: source.rotorDiameterM ?? entry.rotorDiameterM ?? 120, applyConcave: false }
+        : undefined,
+    });
   }
-  const modeName = source.modeOverride ?? entry.defaultMode;
-  const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
-  const env = solverEnv(project);
-
-  if (source.kind === 'wtg') {
-    const hubHeight = source.hubHeight ?? sourceHeightFor(entry);
-    const hubZ = hubHeight;              // hub HAG
-    const hubZAbs = groundSrc + hubZ;    // hub absolute z
-    const topoBars = topographyBarriers(
-      project.settings?.topography, source.latLng,
-      [se, sn, hubZAbs], rxLatLng, [re, rn, rxZAbs], origin, dem,
-    );
-    const allBars = concatBarriers(barriersFlat, topoBars);
-    const rotorD = source.rotorDiameterM ?? entry.rotorDiameterM ?? 120;
-    const concave = concaveCorrectionMet(source.latLng, hubZAbs, rxLatLng, rxZAbs, hubZ, rxZ, dem);
-    return evaluate_wtg_octave(
-      lw, se, sn, hubZAbs, hubZ, re, rn, rxZAbs, rxZ, g, allBars,
-      rotorD, concave, env.tC, env.rh, env.pKpa, env.barConv, env.c0,
-      NO_LATERAL,
-    );
-  }
-  const sourceZ = sourceHeightFor(entry) + (source.elevationOffset ?? 0); // HAG
-  const sourceZAbs = groundSrc + sourceZ;                                 // absolute z
-  const topoBars = topographyBarriers(
-    project.settings?.topography, source.latLng,
-    [se, sn, sourceZAbs], rxLatLng, [re, rn, rxZAbs], origin, dem,
-  );
-  const allBars = concatBarriers(barriersFlat, topoBars);
-  return evaluate_general_octave(
-    lw, se, sn, sourceZAbs, sourceZ, re, rn, rxZAbs, rxZ, g, allBars,
-    env.tC, env.rh, env.pKpa, env.barConv, env.dzCap, env.c0,
-    NO_LATERAL,
-  );
+  return out;
 }
 
-/// Exact point-receiver solve. Every receiver sums every (in-cutoff) source
-/// directly — no Barnes-Hut clustering (per-source contribution rows need real
-/// source ids, and there are typically few named receivers). Replaces the old
-/// snapshot + Taylor-extrapolation path: the solve is fast enough to re-run on
-/// every settled source drag.
+/// Ground elevation under a point, with the app's long-standing non-finite → 0
+/// guard (a DEM hole must not poison the geometry).
+function groundElevation(dem: DemRaster | null, latLng: [number, number]): number {
+  if (!dem) return 0;
+  const g = dem.elevation(latLng[0], latLng[1]);
+  return Number.isFinite(g) ? g : 0;
+}
+
+/// Exact point-receiver solve. Every receiver sums every (in-cutoff) source —
+/// no Barnes-Hut clustering, since per-source contribution rows need real source
+/// ids and there are typically few named receivers.
+///
+/// The whole project goes to the engine as ONE `Scene` (per Annex D.5 receiver
+/// group — see `groupReceiversByConcave`), so obstacles and terrain are
+/// decomposed once for all receivers instead of per source→receiver pair.
 export async function evaluateProject(
   project: Project,
   dem: DemRaster | null,
 ): Promise<ReceiverResult[]> {
   await ensureSolverReady();
 
-  const origin = project.calculationArea?.centerLatLng
-    ?? project.receivers[0]?.latLng
-    ?? project.sources[0]?.latLng
-    ?? [0, 0];
-  const barriersFlat = packBarriers(project.barriers, origin, dem);
+  const origin = projectOrigin(project);
   const aw = aWeights(project.scenario.bandSystem);
   const n = bandCount(project.scenario.bandSystem);
   const cutoffM = propagationSettings(project).maxContributionDistanceM;
+  const dOmega = projectDOmegaDb(project);
 
-  return project.receivers.map((rx) => {
-    // Non-finite receiver coords (busted import / glitched group drag): show a
-    // "—" row rather than feeding NaN into WASM (which poisons downstream sums).
-    if (!Number.isFinite(rx.latLng[0]) || !Number.isFinite(rx.latLng[1])) {
-      return { receiverId: rx.id, perBandLp: new Float64Array(n), totalDbA: -Infinity, perSource: [] };
+  const sources = resolveSources(project);
+  const valid = project.receivers.filter(
+    (rx) => Number.isFinite(rx.latLng[0]) && Number.isFinite(rx.latLng[1]),
+  );
+
+  // Terrain covers every source and receiver; the engine screens against it.
+  const terrain = buildTerrainField(
+    dem,
+    origin,
+    [...sources.map((s) => s.latLng), ...valid.map((r) => r.latLng)],
+    { despikeStrength: project.settings?.topography?.despikeStrength },
+  );
+
+  const settings = sceneSettingsFor(project);
+  const containers = project.settings?.containers;
+  const results = new Map<string, ReceiverResult>();
+
+  // Annex D.5's concave-ground test is per source→receiver, but a Scene carries
+  // `apply_concave` per source — so receivers that disagree can't share a scene.
+  // With no turbines this is a single group and costs nothing.
+  const groups = groupReceiversByConcave(sources, valid, (s, rx) => {
+    const ground = groundElevation(dem, s.latLng);
+    const rxGround = groundElevation(dem, rx.latLng);
+    return concaveCorrectionMet(
+      s.latLng, ground + s.heightAglM,
+      rx.latLng, rxGround + rx.heightAboveGroundM,
+      s.heightAglM, rx.heightAboveGroundM, dem,
+    );
+  });
+
+  for (const group of groups) {
+    const scene = buildScene({
+      origin,
+      sources: withConcave(sources, group.concaveBySourceId),
+      receivers: group.receivers.map((rx) => ({
+        id: rx.id, latLng: rx.latLng, heightAboveGroundM: rx.heightAboveGroundM,
+      })),
+      barriers: project.barriers ?? [],
+      dem,
+      terrain,
+      settings,
+      includeContainers: containers?.receiverCalc ?? false,
+      roofOffsetM: containers?.roofOffsetM,
+    });
+
+    let solved: SceneResults;
+    try {
+      solved = JSON.parse(solve_scene(JSON.stringify(scene))) as SceneResults;
+    } catch (e) {
+      // A rejected scene is a modelling error, not a crash: surface it and show
+      // "—" rows rather than taking the whole page down.
+      console.error('solve failed:', e instanceof Error ? e.message : e);
+      continue;
     }
-    const perSource: ReceiverResult['perSource'] = [];
-    for (const src of project.sources) {
-      if (!Number.isFinite(src.latLng[0]) || !Number.isFinite(src.latLng[1])) continue;
-      if (cutoffM > 0 && approxDistanceM(rx.latLng, src.latLng) > cutoffM) continue;
-      try {
-        const raw = evaluatePair(src, rx.latLng, rx.heightAboveGroundM, project, barriersFlat, dem, origin);
+
+    for (const rr of solved.per_receiver) {
+      const rx = group.receivers.find((r) => r.id === rr.receiver_id);
+      const perSource: ReceiverResult['perSource'] = [];
+      for (const contribution of rr.per_source) {
+        // The cutoff stays a per-PAIR rule, exactly as before: the engine solves
+        // every pair in the batch, and contributions from sources beyond the
+        // cutoff for THIS receiver are dropped here.
+        const src = sources.find((s) => s.id === contribution.source_id);
+        if (!src || !rx) continue;
+        if (cutoffM > 0 && approxDistanceM(rx.latLng, src.latLng) > cutoffM) continue;
         const perBandLp = new Float64Array(n);
-        for (let i = 0; i < n; i++) perBandLp[i] = Number.isFinite(raw[i]) ? raw[i] : -Infinity;
-        perSource.push({ sourceId: src.id, perBandLp });
-      } catch (e) {
-        console.warn(`eval pair ${src.id}|${rx.id} failed:`, e);
+        for (let i = 0; i < n; i++) {
+          const v = contribution.bands[i];
+          perBandLp[i] = typeof v === 'number' && Number.isFinite(v) ? v : -Infinity;
+        }
+        perSource.push({ sourceId: contribution.source_id, perBandLp });
       }
+      const summed = energySumPerBand(perSource);
+      results.set(rr.receiver_id, {
+        receiverId: rr.receiver_id,
+        perBandLp: summed,
+        totalDbA: aWeightedTotal(summed, aw, dOmega),
+        perSource,
+      });
     }
-    const summed = energySumPerBand(perSource);
-    return {
-      receiverId: rx.id,
-      perBandLp: summed,
-      totalDbA: aWeightedTotal(summed, aw, projectDOmegaDb(project)),
-      perSource,
-    };
+  }
+  // Preserve the caller's receiver order, and keep a "—" row for anything that
+  // didn't solve (non-finite coordinates, or a rejected scene).
+  return project.receivers.map((rx) => results.get(rx.id) ?? {
+    receiverId: rx.id,
+    perBandLp: new Float64Array(n),
+    totalDbA: -Infinity,
+    perSource: [],
   });
 }
 

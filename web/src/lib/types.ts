@@ -320,6 +320,30 @@ export interface CalculationArea {
 
 export interface ProjectSettings {
   ground: { defaultG: number };
+  /// Which edition of ISO 9613-2 the solver applies. Absent = `'2024'`, which
+  /// is what every project computed with before the selector existed.
+  ///
+  /// The editions differ in the ground-effect geometry factor, the barrier `Dz`
+  /// bracket and `Kmet`, and the 2024-only annexes; see
+  /// `docs/iso9613-2-1996-vs-2024-differences.md`.
+  standard?: '1996' | '2024';
+  /// Model each BESS / auxiliary unit as its rectangular container (a screening
+  /// box with the acoustic centre sitting just above the roof), rather than a
+  /// bare point. Off by default.
+  ///
+  /// Point-receiver and grid/contour calculations toggle INDEPENDENTLY: a grid
+  /// pays for the extra obstacles at every cell, so it's common to want the
+  /// detail on reported receiver levels but not on a whole-site map.
+  containers?: {
+    /// Include containers when solving named point receivers.
+    receiverCalc?: boolean;
+    /// Include containers when solving the contour grid.
+    grid?: boolean;
+    /// Clearance of the acoustic centre above the container roof (m).
+    /// The source must sit at or above the roof or the box would screen its own
+    /// emission. Default 0.3.
+    roofOffsetM?: number;
+  };
   /// Frequency-independent corrections applied at every source, in the
   /// `Lp = Lw + DΩ + Dc − A` form of ISO 9613-2 §5 Eq (1).
   ///
