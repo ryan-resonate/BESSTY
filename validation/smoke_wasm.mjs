@@ -51,13 +51,27 @@ walled.obstacles = [{ type: 'wall', polyline: [[100, -40], [100, 40]], base_z: [
 const wallTotal = JSON.parse(solve_scene(JSON.stringify(walled))).per_receiver[0].total_dba;
 ok(wallTotal < openTotal - 3, `6 m wall screens: ${openTotal.toFixed(2)} → ${wallTotal.toFixed(2)} dBA`);
 
-// --- error paths must throw, never trap ---
-const throws = (fn) => { try { fn(); return false; } catch { return true; } };
-ok(throws(() => solve_scene('{not json')), 'malformed JSON throws');
-ok(throws(() => solve_scene(JSON.stringify({ ...scene, ground: { default_g: 5, regions: [] } }))), 'invalid scene (G=5) throws');
-ok(throws(() => new WasmSession('{not json')), 'Session bad JSON throws');
-ok(throws(() => a_weighted_total(new Float64Array(7))), 'a_weighted_total bad band count throws');
-// ...and the instance still works afterwards (no poisoning)
+// --- error paths must throw a real Error, never TRAP ---
+// A wasm trap (`RuntimeError: unreachable`, i.e. a Rust panic) is also catchable,
+// so "it threw" alone proves nothing: reject RuntimeError explicitly.
+const throwsCleanly = (fn) => {
+  try { fn(); return false; } catch (e) { return !(e instanceof WebAssembly.RuntimeError); }
+};
+ok(throwsCleanly(() => solve_scene('{not json')), 'malformed JSON throws (not a trap)');
+ok(throwsCleanly(() => solve_scene(JSON.stringify({ ...scene, ground: { default_g: 5, regions: [] } }))), 'invalid scene (G=5) throws (not a trap)');
+ok(throwsCleanly(() => new WasmSession('{not json')), 'Session bad JSON throws (not a trap)');
+ok(throwsCleanly(() => a_weighted_total(new Float64Array(7))), 'a_weighted_total bad band count throws (not a trap)');
+
+// --- session mutators are transactional: a rejected set_receivers must leave
+// the session solving exactly as before (the core claims rollback) ---
+const before = JSON.parse(s.solve()).per_receiver.map((x) => x.total_dba);
+ok(throwsCleanly(() => s.set_receivers(JSON.stringify([{ id: 'bad', position: [0, 0, null], height_agl: 1.5 }]))),
+  'set_receivers rejects a malformed batch (not a trap)');
+const after = JSON.parse(s.solve()).per_receiver.map((x) => x.total_dba);
+ok(s.n_receivers() === 2 && JSON.stringify(before) === JSON.stringify(after),
+  'session unchanged and still solvable after a rejected set_receivers');
+
+// ...and the stateless path still works afterwards (no poisoning)
 ok(Number.isFinite(JSON.parse(solve_scene(JSON.stringify(scene))).per_receiver[0].total_dba), 'instance usable after errors');
 
 // --- helpers ---
