@@ -32,3 +32,7 @@ firebase-debug.log
 Thumbs.db
 *~
 ~$*
+
+# Pre-migration wasm snapshot used by validation/run_validation.mjs — a build
+# artefact, regenerated per the A/B memo rather than tracked.
+validation/old_wasm/
