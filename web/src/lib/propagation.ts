@@ -29,10 +29,12 @@
 import type { Project, Source, Receiver } from './types';
 import { buildSourceTree, walkSourceTree } from './sourceTree';
 
-// Geo helpers + the topography sampler now live in the worker-safe `gridCore`
-// (so the grid worker doesn't pull this module's catalog/firebase deps). Keep
-// re-exporting `approxDistanceM` here for existing importers (e.g. sourceTree).
-export { approxDistanceM, topographyBarriers, type TopoSettings } from './gridCore';
+// Geo helpers live in the worker-safe `./geo`; topography settings in
+// `./gridCore`. Re-exported here for existing importers (e.g. sourceTree).
+// The old `topographyBarriers` sampler is gone — terrain screening is the
+// engine's job now, fed by the elevation raster from `./terrainField`.
+export { approxDistanceM } from './geo';
+export { type TopoSettings } from './gridCore';
 
 /// Lightweight "source-shaped" thing handed to the snapshot loop. Includes
 /// real Sources (kept verbatim) and synthetic cluster aggregates.
@@ -123,8 +125,6 @@ export function effectiveSourcesForReceiver(
 }
 
 // =================== Barrier pack helpers ===================
-// `topographyBarriers` moved to `./gridCore` (worker-safe) and is re-exported
-// from the top of this file for backward-compatible imports.
 
 /// Concatenate two barrier-pack arrays into one. Both must already be in
 /// `packBarriers` format (5 numbers per barrier).

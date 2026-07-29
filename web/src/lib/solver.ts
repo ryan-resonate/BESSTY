@@ -316,65 +316,45 @@ export async function evaluateProject(
 
 // ============== Batched grid evaluation (S2) ==============
 
-/// Per-source data packed for `GridEvaluator`: one row per source as
-/// `[is_wtg, e, n, z_abs, hagl, rotor_d, lw_0 … lw_{nb-1}]`. Sources whose
-/// catalog entry is missing are dropped (so the returned `eff`/`srcLocal`/
-/// `srcZAbs` stay index-aligned with the evaluator's internal source order
-/// and with `cellTopoPack`).
-interface GridSourcePack {
-  eff: EffectiveSource[];
-  srcLocal: Array<[number, number]>;
-  srcZAbs: number[];
-  sourcesFlat: Float64Array;
-  nBands: number;
-}
-
-function buildGridSourcePack(
+/// Resolve one tile's effective sources (real units + Barnes-Hut cluster
+/// stand-ins) into the solver-facing form. Sources whose catalog entry is
+/// missing are dropped. Clusters carry their summed sound power and never take a
+/// container — they are a stand-in for a group, not a physical box.
+function resolveTileSources(
   project: Project,
-  dem: DemRaster | null,
-  origin: [number, number],
   effRaw: EffectiveSource[],
-): GridSourcePack {
-  const nBands = bandCount(project.scenario.bandSystem);
-  const stride = 6 + nBands;
-  const eff: EffectiveSource[] = [];
-  const rows: number[][] = [];
-  const srcLocal: Array<[number, number]> = [];
-  const srcZAbs: number[] = [];
+): ResolvedSource[] {
+  const out: ResolvedSource[] = [];
   for (const es of effRaw) {
-    let isWtg = false;
-    let hagl: number;
-    let rotorD = 120;
     let lw: Float64Array | null;
+    let heightAglM: number;
+    let wtg: ResolvedSource['wtg'];
     if (es.kind === 'real') {
       const entry = lookupEntry(project, es.source!);
-      if (!entry) continue; // missing catalog → drop (matches old `if (!meta) continue`)
+      if (!entry) continue;
       const modeName = es.source!.modeOverride ?? entry.defaultMode;
       lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
-      isWtg = es.source!.kind === 'wtg';
-      hagl = sourceHagl(es.source!, project) ?? 0;
-      rotorD = es.source!.rotorDiameterM ?? entry.rotorDiameterM ?? 120;
+      heightAglM = sourceHagl(es.source!, project) ?? 0;
+      if (es.source!.kind === 'wtg') {
+        wtg = {
+          rotorDiameterM: es.source!.rotorDiameterM ?? entry.rotorDiameterM ?? 120,
+          applyConcave: false,   // stamped per receiver group (Annex D.5)
+        };
+      }
     } else {
       lw = es.lwOverride!;
-      hagl = es.zAboveGround ?? 1.5;
+      heightAglM = es.zAboveGround ?? 1.5;
     }
     if (!lw) continue;
-    const [se, sn] = latLngToLocalMetres(es.latLng, origin);
-    const groundRaw = dem ? dem.elevation(es.latLng[0], es.latLng[1]) : 0;
-    const ground = Number.isFinite(groundRaw) ? groundRaw : 0;
-    const zAbs = ground + hagl;
-    const row = new Array<number>(stride);
-    row[0] = isWtg ? 1 : 0;
-    row[1] = se; row[2] = sn; row[3] = zAbs; row[4] = hagl; row[5] = rotorD;
-    for (let b = 0; b < nBands; b++) row[6 + b] = lw[b] ?? 0;
-    eff.push(es);
-    rows.push(row);
-    srcLocal.push([se, sn]);
-    srcZAbs.push(zAbs);
+    out.push({
+      id: es.kind === 'real' ? es.source!.id : `cluster:${es.latLng[0]},${es.latLng[1]}`,
+      latLng: es.latLng,
+      heightAglM,
+      lw: Array.from(lw),
+      wtg,
+    });
   }
-  const sourcesFlat = new Float64Array(rows.length * stride);
-  for (let i = 0; i < rows.length; i++) sourcesFlat.set(rows[i], i * stride);
-  return { eff, srcLocal, srcZAbs, sourcesFlat, nBands };
+  return out;
 }
 
 /// Resolve a project into a serializable `GridJob` (catalog + per-source
@@ -437,26 +417,35 @@ function buildGridJob(
         maxLng: Math.max(lngLo, lngHi) + marginLng,
       };
       const tileEff = tree ? walkSourceTreeForRegion(tree, region, theta, cutoffM) : [];
-      const pack = buildGridSourcePack(project, dem, origin, tileEff);
       tiles.push({
         col0, row0, cols: tcols, rows: trows,
-        sourcesFlat: pack.sourcesFlat,
-        srcLatLng: pack.eff.map((es) => es.latLng),
-        srcIsReal: pack.eff.map((es) => es.kind === 'real'),
+        sources: resolveTileSources(project, tileEff),
       });
     }
   }
 
+  // One elevation raster for the whole job: it must cover every cell AND every
+  // source, since the engine screens each source→cell path against it.
+  const corners: Array<[number, number]> = [
+    bounds.sw, bounds.ne, [bounds.sw[0], bounds.ne[1]], [bounds.ne[0], bounds.sw[1]],
+  ];
+  const sourceLatLngs = tiles.flatMap((t) => t.sources.map((s) => s.latLng));
+  const containers = project.settings?.containers;
+
   return {
     cols, rows, dxM, dyM, origin, bounds,
     nBands: bandCount(project.scenario.bandSystem),
-    g: project.settings?.ground.defaultG ?? 0.5,
     cutoffM,
     dOmegaDb: projectDOmegaDb(project),
-    env: solverEnv(project),
     rxHeightAboveGround,
-    userBarriers: packBarriers(project.barriers, origin, dem),
+    barriers: project.barriers ?? [],
+    settings: sceneSettingsFor(project),
     topo: project.settings?.topography,
+    terrain: buildTerrainField(dem, origin, [...corners, ...sourceLatLngs], {
+      despikeStrength: project.settings?.topography?.despikeStrength,
+    }),
+    includeContainers: containers?.grid ?? false,
+    roofOffsetM: containers?.roofOffsetM ?? 0.3,
     tiles,
   };
 }
@@ -535,10 +524,11 @@ function sourcePaddedBounds(job: GridJob): [[number, number], [number, number], 
   let maxLat = Math.max(job.bounds.sw[0], job.bounds.ne[0]);
   let minLng = Math.min(job.bounds.sw[1], job.bounds.ne[1]);
   let maxLng = Math.max(job.bounds.sw[1], job.bounds.ne[1]);
+  // Every source now gets terrain screening (clusters included), so the
+  // snapshot must span them all.
   for (const tile of job.tiles) {
-    for (let i = 0; i < tile.srcLatLng.length; i++) {
-      if (!tile.srcIsReal[i]) continue; // clusters skip topo, so don't widen for them
-      const [la, ln] = tile.srcLatLng[i];
+    for (const s of tile.sources) {
+      const [la, ln] = s.latLng;
       if (la < minLat) minLat = la; if (la > maxLat) maxLat = la;
       if (ln < minLng) minLng = ln; if (ln > maxLng) maxLng = ln;
     }
