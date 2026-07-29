@@ -2,7 +2,7 @@
 name = "iso9613-wasm"
 version = "0.5.0"
 edition = "2021"
-description = "WebAssembly bindings for iso9613-core (flat compat API consumed by BEESTY). Proprietary — Resonate Consultants internal use only."
+description = "WebAssembly bindings for iso9613-core (Scene JSON API consumed by BEESTY). Proprietary — Resonate Consultants internal use only."
 license-file = "../../LICENSE"
 publish = false
 
@@ -12,14 +12,20 @@ crate-type = ["cdylib"]
 [dependencies]
 iso9613-core = { path = "../iso9613-core" }
 wasm-bindgen = "0.2"
+serde_json = "1"
 
-# Disable wasm-opt during `wasm-pack build`.
+# Readable panic traces in the browser console. Debug builds only — a release
+# wasm should never panic (every fallible export returns `JsError`), and the
+# hook costs binary size.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+
+# Size-optimise with wasm-opt. The Scene API pulls in serde_json, which takes
+# the raw module to ~525 KB; `-Oz` brings it back to ~436 KB.
 #
-# Rust / wasm-bindgen produce WebAssembly modules with multiple table sections
-# (post-MVP feature). Older wasm-opt builds cached in CI crash on parse with
-# "Only 1 table definition allowed in MVP". The Rust release profile already
-# does LTO + opt-level 3 + codegen-units = 1, which is most of what wasm-opt
-# would add; the size delta is a few KB. If it ever comes back, pin a
-# wasm-pack whose bundled binaryen is 116+.
+# (History: wasm-opt used to be disabled here because older binaryen crashed on
+# wasm-bindgen's multiple table sections — "Only 1 table definition allowed in
+# MVP". The bundled binaryen is now new enough; if that error ever returns, set
+# `wasm-opt = false` and instead trim with opt-level = "z".)
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = false
+wasm-opt = ['-Oz']
