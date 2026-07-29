@@ -8,31 +8,9 @@
 import { GridEvaluator } from '../wasm/iso9613_wasm.js';
 import type { DemRaster } from './dem';
 
-/// Local east/north metres of `latLng` relative to `origin` (equirectangular
-/// approximation — exact enough over a project's few-km extent).
-export function latLngToLocalMetres(
-  latLng: [number, number],
-  origin: [number, number],
-): [number, number] {
-  const R = 6371008.8;
-  const lat0 = (origin[0] * Math.PI) / 180;
-  const dLat = ((latLng[0] - origin[0]) * Math.PI) / 180;
-  const dLng = ((latLng[1] - origin[1]) * Math.PI) / 180;
-  const n = R * dLat;
-  const e = R * dLng * Math.cos(lat0);
-  return [e, n];
-}
-
-/// Great-circle distance (equirectangular approx) in metres.
-export function approxDistanceM(a: [number, number], b: [number, number]): number {
-  const R = 6371008.8;
-  const lat0 = (a[0] * Math.PI) / 180;
-  const dLat = ((b[0] - a[0]) * Math.PI) / 180;
-  const dLng = ((b[1] - a[1]) * Math.PI) / 180;
-  const e = R * dLng * Math.cos(lat0);
-  const n = R * dLat;
-  return Math.sqrt(e * e + n * n);
-}
+// Geo helpers now live in `./geo` (wasm-free, so the scene builder and the
+// terrain sampler can share them). Re-exported here for existing importers.
+export { latLngToLocalMetres, approxDistanceM } from './geo';
 
 /// Topography settings subset needed for ridge sampling — passed explicitly
 /// (not the whole `project`) so this runs in a worker.

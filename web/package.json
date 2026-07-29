@@ -8,7 +8,8 @@
     "build": "tsc -b --noEmit && vite build",
     "preview": "vite preview",
     "lint": "tsc -b --noEmit",
-    "build:wasm": "cd ../solver/crates/iso9613-wasm && wasm-pack build --target web --out-dir ../../../web/src/wasm"
+    "build:wasm": "cd ../solver/crates/iso9613-wasm && wasm-pack build --target web --out-dir ../../../web/src/wasm",
+    "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "@tmcw/togeojson": "^5.8.1",
