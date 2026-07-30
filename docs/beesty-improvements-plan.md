@@ -1,6 +1,6 @@
 # BEESTY improvements plan (2026-07-30)
 
-Fifteen improvements to the BEESTY web app, scoped with Ryan (Q&A 2026-07-30 —
+Sixteen improvements to the BEESTY web app, scoped with Ryan (Q&A 2026-07-30 —
 every decision below is locked; the ONE open item needing approval is the
 Settings tab grouping / button placement in I10). Written for an implementing
 session. Items are ordered for execution: quick wins → the notification system
@@ -86,6 +86,36 @@ that mode and report "N skipped (mode not available)" via the I3 toast (plain
 text until I3 lands). Mode-only changes write the same per-unit override path
 the model swap uses.
 Gate: unit test on the swap helper (model+mode, mode-only incl. skip count).
+
+## I16 — Paste spectra from Excel into the new-source screen  *(quick win)*
+
+On the new/edit sound source screen (catalog entry editor), the per-band
+spectrum cells accept a **pasted Excel range**: click the first band cell,
+Ctrl+V, and the values fill across the bands — whether the copied range was
+**horizontal or vertical**. (The spreadsheet import stays the right tool for
+complex multi-mode sources; this is for quickly keying a simple source.)
+
+- Excel puts ranges on the clipboard as TSV: a horizontal range is one line of
+  tab-separated values, a vertical range is one value per line. An `onPaste`
+  handler on the spectrum inputs reads `clipboardData`, splits on
+  newlines/tabs, and treats EITHER a single row or a single column as the
+  value list. A genuine 2-D block is rejected with a toast ("paste a single
+  row or column of levels").
+- Fill starts **at the focused cell** and runs forward through the remaining
+  band cells; cells before the focus are untouched. Extra values beyond the
+  last band are ignored, and too-few values fill only what was pasted — both
+  cases noted in a toast ("10 of 12 values used"). Existing single-value paste
+  into one cell keeps working (a one-token paste is just that).
+- Parsing: trim whitespace, tolerate blank tokens (skipped), reject the paste
+  with a toast if any non-blank token isn't numeric — no partial writes on a
+  bad paste.
+- Build it as a small reusable helper (`lib/spectrumPaste.ts` + a hook) and
+  attach it to the catalog editor's spectrum grid; any other spectrum grid can
+  adopt it later for free.
+
+Gate: unit tests on the clipboard parser (horizontal TSV, vertical lines,
+2-D rejection, truncation/short-fill counts, non-numeric rejection); manual
+paste from real Excel in both orientations starting at cell 1 and mid-row.
 
 ## I13 — BUG: debug grid at 100 m renders as 200 m  *(quick win)*
 
@@ -360,16 +390,17 @@ afterwards); manual run on a demo project; XLSX opens in Excel with colours.
 | 3 | I13 debug-grid bug | S |
 | 4 | I9 3D pitch to 85° | S |
 | 5 | I6 change-all modes | S |
-| 6 | I3 notification system + 15-site sweep | M |
-| 7 | I2 localStorage removal + catalog migrations | M (careful) |
-| 8 | I4 group-member selection edits | M |
-| 9 | I5 copy/paste | M |
-| 10 | I12 progress + responsiveness | M |
-| 11 | I15 PDF export (basemap + vector results) | M |
-| 12 | I7 calc-area drag/rotation | M/L |
-| 13 | I10 settings window (after grouping approval) | M |
-| 14 | I11 help window | M |
-| 15 | I14 factorial study | L |
+| 6 | I16 paste spectra from Excel | S |
+| 7 | I3 notification system + 15-site sweep | M |
+| 8 | I2 localStorage removal + catalog migrations | M (careful) |
+| 9 | I4 group-member selection edits | M |
+| 10 | I5 copy/paste | M |
+| 11 | I12 progress + responsiveness | M |
+| 12 | I15 PDF export (basemap + vector results) | M |
+| 13 | I7 calc-area drag/rotation | M/L |
+| 14 | I10 settings window (after grouping approval) | M |
+| 15 | I11 help window | M |
+| 16 | I14 factorial study | L |
 
 ## Risks / watch-items
 
