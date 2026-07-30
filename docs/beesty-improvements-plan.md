@@ -1,6 +1,6 @@
 # BEESTY improvements plan (2026-07-30)
 
-Fourteen improvements to the BEESTY web app, scoped with Ryan (Q&A 2026-07-30 —
+Fifteen improvements to the BEESTY web app, scoped with Ryan (Q&A 2026-07-30 —
 every decision below is locked; the ONE open item needing approval is the
 Settings tab grouping / button placement in I10). Written for an implementing
 session. Items are ordered for execution: quick wins → the notification system
@@ -15,8 +15,9 @@ session. Items are ordered for execution: quick wins → the notification system
 - Firestore/project schema changes are additive and parse-tolerant; old
   projects must load unchanged (except the I2 migration, which is explicit).
 - New dependencies are limited to: `exceljs` (I14 formatted XLSX export),
-  `minisearch` (I11 help search), and a tiny in-repo window/toast layer built
-  by hand (no UI framework). Anything else needs Ryan's sign-off.
+  `minisearch` (I11 help search), `jspdf` (I15 PDF export), and a tiny in-repo
+  window/toast layer built by hand (no UI framework). Anything else needs
+  Ryan's sign-off.
 - The wasm/solver crates are untouched by this plan.
 
 ## Current-state anchors (verified in code)
@@ -208,6 +209,42 @@ Gate: a deliberately huge grid (e.g. 512×512) shows live progress, Cancel
 works, and Chrome raises no unresponsive warning through solve + contour
 build.
 
+## I15 — PDF export: bitmap basemap + vector results
+
+A report-quality "snapshot" of the map as a PDF: the **basemap as a bitmap**,
+everything computed drawn as **true vectors** on top — contour lines (when a
+grid has been calculated) and receiver values coloured by compliance, exactly
+as on screen.
+
+- **Extent = the current viewport** (it's a snapshot). Export dialog offers
+  page size (A4/A3, landscape default); the map extent is fitted to the page
+  at the current aspect.
+- **Basemap capture**: compose the visible raster tiles onto an offscreen
+  canvas by FETCHING the tile URLs for the export extent/zoom (fetch → blob →
+  `drawImage`) rather than screenshotting the Leaflet canvas — this sidesteps
+  canvas CORS tainting and lets us render at 2× resolution for print. Embed as
+  the PDF background image.
+- **Vector overlays**, transformed lat/lng → page coordinates with the same
+  projection as the basemap composition, mirroring the CURRENT layer toggles:
+  - contour polylines per level band in the on-screen colours (labels on the
+    major bands), from the already-computed contour geometry — no re-solve;
+  - receivers as vector markers with the level text coloured by the
+    active-period compliance (and the limit as the smaller second line when
+    the I1 toggle is on);
+  - sources, barriers, BESS group footprints and the calculation-area outline
+    as drawn on screen.
+- **Report furniture** (each a checkbox in the export dialog, all default ON —
+  veto if unwanted): title block (project name, scenario/period, date), contour
+  legend, scale bar, north arrow.
+- Library: **jsPDF** (vector paths + text + image embedding in-browser) — the
+  third and final new dependency, listed in the ground rules for sign-off.
+- Entry point: an "Export PDF…" action next to the existing export options.
+
+Gate: exported PDF opens in Acrobat/Chrome with selectable-text receiver
+values, zoomable crisp contour lines (vector, not rasterised), basemap aligned
+with the overlays at all zoom levels; a project with no grid exports receivers
+over the basemap without error.
+
 ## I7 — Calculation-area box: live drag, anchored corners, rotation
 
 1. **Live geometry while dragging** — box outline updates continuously during
@@ -328,10 +365,11 @@ afterwards); manual run on a demo project; XLSX opens in Excel with colours.
 | 8 | I4 group-member selection edits | M |
 | 9 | I5 copy/paste | M |
 | 10 | I12 progress + responsiveness | M |
-| 11 | I7 calc-area drag/rotation | M/L |
-| 12 | I10 settings window (after grouping approval) | M |
-| 13 | I11 help window | M |
-| 14 | I14 factorial study | L |
+| 11 | I15 PDF export (basemap + vector results) | M |
+| 12 | I7 calc-area drag/rotation | M/L |
+| 13 | I10 settings window (after grouping approval) | M |
+| 14 | I11 help window | M |
+| 15 | I14 factorial study | L |
 
 ## Risks / watch-items
 
