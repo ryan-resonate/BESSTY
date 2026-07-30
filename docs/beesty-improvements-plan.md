@@ -1,6 +1,6 @@
 # BEESTY improvements plan (2026-07-30)
 
-Sixteen improvements to the BEESTY web app, scoped with Ryan (Q&A 2026-07-30 —
+Seventeen improvements to the BEESTY web app, scoped with Ryan (Q&A 2026-07-30 —
 every decision below is locked; the ONE open item needing approval is the
 Settings tab grouping / button placement in I10). Written for an implementing
 session. Items are ordered for execution: quick wins → the notification system
@@ -11,7 +11,8 @@ session. Items are ordered for execution: quick wins → the notification system
 - Per-item gate: `npm run lint` (tsc), `npm run build`, `npm test` green.
   Commit per item, style `web(improve N): …`. No AI trailers.
 - **No solver-number changes.** Nothing here may alter computed levels except
-  where an item explicitly says so (none do — I13 fixes a *display* bug).
+  where an item explicitly says so (none do — I13 fixes a *display* bug, and
+  I17 changes pass/fail COLOURS by design, never the levels themselves).
 - Firestore/project schema changes are additive and parse-tolerant; old
   projects must load unchanged (except the I2 migration, which is explicit).
 - New dependencies are limited to: `exceljs` (I14 formatted XLSX export),
@@ -69,13 +70,48 @@ still fills.
 
 A second, **smaller** line under the level on the map receiver marker showing
 the **active period's** limit (`limitForPeriod`, already computed for colour).
-Colour behaviour unchanged. NOT added to the side panel (Ryan: map only).
+Colour behaviour unchanged in form, but the pass/fail test itself goes through
+the I17 comparison rule (integer by default). NOT added to the side panel
+(Ryan: map only).
 Toggle: a "Show limits" checkbox in the **layers tab** alongside the other
 display toggles, persisted with the same mechanism they use; default OFF.
 Touch: `MapView.tsx` `receiverMarker` (marker HTML/label), layers tab in
 `SidePanel.tsx`, the layers-state type.
 Gate: toggle on → both numbers render (level prominent, limit smaller);
 period switch updates the limit; toggle off → exactly today's marker.
+
+## I17 — Integer limit comparison (default), with exact-mode toggle  *(quick win)*
+
+Compliance is jurisdiction-flavoured: in the default mode, the computed level
+is **rounded to the nearest integer before comparing to the limit**, and only
+a genuine exceedance fails — 40.4 dB rounds to 40, which does NOT exceed a
+40 dB limit, so it shows **green**. 40.6 rounds to 41 → red. A project setting
+toggles back to exact comparison for jurisdictions that want it.
+
+- **One shared helper** (`lib/limits.ts`):
+  `exceedsLimit(levelDbA, limitDbA, mode: 'integer' | 'exact')` —
+  integer mode: `Math.round(level) > limit`; exact mode: `level > limit`.
+  Equality is a pass in both modes (only *exceedances* matter). The limit is
+  compared as entered (it's a set value, not a measurement); only the level
+  rounds. Rounding is standard half-up (`Math.round`), documented in the
+  helper.
+- **Setting**: `ProjectSettings.limitComparison?: 'integer' | 'exact'`,
+  **absent = `'integer'`** (locked: integer is the default). Note this
+  deliberately changes today's behaviour for existing projects — a 40.4 vs 40
+  receiver flips red → green — which is the requested default. Toggle lives in
+  the settings UI (Calculation tab once I10 lands) as
+  "Limit comparison: Rounded to integer (default) / Exact".
+- **Sweep every comparison site to the helper** — no inline `level > limit`
+  anywhere: the receiver marker fail test (`MapView.tsx` ~153), any receiver
+  list/row colouring, exporters that emit pass/fail, and the I14 factorial +
+  I15 PDF colours (both specs reference this helper).
+- **Displayed values are unchanged** — markers/tables keep showing the
+  computed level at current precision; only the compliance COLOUR uses the
+  rounded comparison.
+
+Gate: unit tests on the helper (40.4/40.5/40.6 vs 40 in both modes; equality
+passes; negative-level edge documented); marker colour flips with the setting;
+`grep` shows no remaining inline limit comparisons.
 
 ## I6 — BESS "change all" can change mode  *(quick win)*
 
@@ -387,20 +423,21 @@ afterwards); manual run on a demo project; XLSX opens in Excel with colours.
 |---|---|---|
 | 1 | I8 contour default | XS |
 | 2 | I1 limits on markers | S |
-| 3 | I13 debug-grid bug | S |
-| 4 | I9 3D pitch to 85° | S |
-| 5 | I6 change-all modes | S |
-| 6 | I16 paste spectra from Excel | S |
-| 7 | I3 notification system + 15-site sweep | M |
-| 8 | I2 localStorage removal + catalog migrations | M (careful) |
-| 9 | I4 group-member selection edits | M |
-| 10 | I5 copy/paste | M |
-| 11 | I12 progress + responsiveness | M |
-| 12 | I15 PDF export (basemap + vector results) | M |
-| 13 | I7 calc-area drag/rotation | M/L |
-| 14 | I10 settings window (after grouping approval) | M |
-| 15 | I11 help window | M |
-| 16 | I14 factorial study | L |
+| 3 | I17 integer limit comparison + toggle | S |
+| 4 | I13 debug-grid bug | S |
+| 5 | I9 3D pitch to 85° | S |
+| 6 | I6 change-all modes | S |
+| 7 | I16 paste spectra from Excel | S |
+| 8 | I3 notification system + 15-site sweep | M |
+| 9 | I2 localStorage removal + catalog migrations | M (careful) |
+| 10 | I4 group-member selection edits | M |
+| 11 | I5 copy/paste | M |
+| 12 | I12 progress + responsiveness | M |
+| 13 | I15 PDF export (basemap + vector results) | M |
+| 14 | I7 calc-area drag/rotation | M/L |
+| 15 | I10 settings window (after grouping approval) | M |
+| 16 | I11 help window | M |
+| 17 | I14 factorial study | L |
 
 ## Risks / watch-items
 
