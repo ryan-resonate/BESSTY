@@ -4,7 +4,7 @@ import type {
   Group, Project, ProjectSettings, Source, Receiver, SourceKind,
   ReferenceLayer, ReferenceLayerStyle, ReferenceFeature, ReferencePointShape,
 } from '../lib/types';
-import { limitForPeriod } from '../lib/types';
+import { limitForPeriod, settingsOf } from '../lib/types';
 import { exceedsLimit, limitComparisonFor } from '../lib/limits';
 import type { ReceiverResult } from '../lib/solver';
 import type { BaseMap, ContourMode } from './MapView';
@@ -1728,17 +1728,7 @@ function segmentLengthM(poly: Array<[number, number]>): number {
 /// rapid edits don't flood the solver.
 function SettingsTab(props: Props) {
   const { project, setProject, gridSpacingM, setGridSpacingM } = props;
-  const settings: ProjectSettings = project.settings ?? {
-    ground: { defaultG: 0.5 },
-    annexD: {
-      barrierAbarCapDb: 3.0,
-      useElevatedSourceForBarrier: true,
-      applyConcaveCorrection: true,
-      wtReceiverHeightMin: 4.0,
-    },
-    general: { defaultReceiverHeight: 1.5 },
-    extrapolation: { capPerBandDb: 6, capTotalDbA: 3 },
-  };
+  const settings: ProjectSettings = settingsOf(project);
 
   // Local draft for the band-system picker (which lives on the scenario
   // not the settings). Other settings commit immediately.

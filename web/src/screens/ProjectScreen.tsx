@@ -29,6 +29,7 @@ import {
 } from '../lib/bessGroups';
 import type { BessGroup } from '../lib/types';
 import type { Barrier, Project, Receiver, Source, SourceKind } from '../lib/types';
+import { settingsOf } from '../lib/types';
 
 let nextId = 1000;
 function newId(prefix: string) {
@@ -247,30 +248,88 @@ export function ProjectScreen() {
     });
   }
 
-  const [baseMap, setBaseMap] = useState<BaseMap>('satellite');
-  const [showContours, setShowContours] = useState(true);
+  // ===== Display settings (I19) =====
+  //
+  // One object rather than a dozen useStates, persisted on the project so a
+  // reload — or a colleague opening it — restores the same view. Defaults
+  // below are what a project with no saved display block opens on, which is
+  // also where I8's lines-only contour default lives.
+  //
+  // Deliberately NOT routed through `setProject`: that pushes onto the undo
+  // stack, so dragging the opacity slider would bury 50 real edits and make
+  // Ctrl+Z undo a palette change. `setProjectQuiet` persists (debounced 800 ms
+  // by useProjectDoc) without touching history.
+  const DEFAULT_DISPLAY = {
+    baseMap: 'satellite' as BaseMap,
+    showContours: true,
+    contourMode: 'lines' as ContourMode,   // I8
+    contourOpacity: 0.7,
+    contourStepDb: 5,
+    contourBounds: { min: 25, max: 60, step: 5 },
+    palette: 'viridis' as Palette,
+    domainMode: 'auto' as 'auto' | 'fixed',
+    fixedDomain: { min: 25, max: 60 },
+    showReceiverLimits: false,             // I1
+    gridSpacingM: 100,
+    gridSpacingTouched: false,
+  };
+  type DisplayState = typeof DEFAULT_DISPLAY;
+  const [display, setDisplayState] = useState<DisplayState>(DEFAULT_DISPLAY);
+  // Mirror in a ref so `patchDisplay` composes correctly when two settings are
+  // changed in the same tick (e.g. auto-fit writes bounds + domain together).
+  const displayRef = useRef<DisplayState>(DEFAULT_DISPLAY);
+  // Mirrored in an effect rather than assigned during render — a render that
+  // React discards must not leave a ref pointing at state that never committed.
+  const projectRef = useRef<Project | null>(null);
+  useEffect(() => { projectRef.current = project; }, [project]);
+
+  function patchDisplay(p: Partial<DisplayState>) {
+    const next = { ...displayRef.current, ...p };
+    displayRef.current = next;
+    setDisplayState(next);
+    const cur = projectRef.current;
+    if (cur) {
+      setProjectQuiet({ ...cur, settings: { ...settingsOf(cur), display: next } });
+    }
+  }
+
+  // Same names the rest of the screen already uses, so nothing downstream
+  // changes shape.
+  const { baseMap, showContours, contourMode, contourOpacity, contourStepDb,
+    contourBounds, palette, domainMode, fixedDomain, showReceiverLimits,
+    gridSpacingM } = display;
+  const setBaseMap = (v: BaseMap) => patchDisplay({ baseMap: v });
+  const setShowContours = (v: boolean) => patchDisplay({ showContours: v });
+  const setContourMode = (v: ContourMode) => patchDisplay({ contourMode: v });
+  const setContourOpacity = (v: number) => patchDisplay({ contourOpacity: v });
+  const setContourStepDb = (v: number) => patchDisplay({ contourStepDb: v });
+  const setContourBounds = (v: { min: number; max: number; step: number }) =>
+    patchDisplay({ contourBounds: v });
+  const setPalette = (v: Palette) => patchDisplay({ palette: v });
+  const setDomainMode = (v: 'auto' | 'fixed') => patchDisplay({ domainMode: v });
+  const setFixedDomain = (v: { min: number; max: number }) => patchDisplay({ fixedDomain: v });
+  const setShowReceiverLimits = (v: boolean) => patchDisplay({ showReceiverLimits: v });
+
+  // Diagnostic only — never persisted (a project reopening covered in pink
+  // dots looks broken).
   const [showGridDebug, setShowGridDebug] = useState(false);
-  const [showReceiverLimits, setShowReceiverLimits] = useState(false);   // I1, default OFF
-  // Lines-only by default (I8): the filled ramp obscures the basemap, and
-  // reviewers read contour lines. Session state, so this is the value every
-  // project opens with; switching to Filled/Both lasts until reload.
-  const [contourMode, setContourMode] = useState<ContourMode>('lines');
-  const [contourOpacity, setContourOpacity] = useState(0.7);
-  const [contourStepDb, setContourStepDb] = useState(5);
-  const [contourBounds, setContourBounds] = useState({ min: 25, max: 60, step: 5 });
-  const [palette, setPalette] = useState<Palette>('viridis');
-  const [domainMode, setDomainMode] = useState<'auto' | 'fixed'>('auto');
-  const [fixedDomain, setFixedDomain] = useState<{ min: number; max: number }>({ min: 25, max: 60 });
+
   // Grid spacing — auto-picked from the calc area on first appearance,
   // then frozen against the user's choice once they touch the picker.
   // Available choices live in `GRID_SPACING_CHOICES` (SidePanel) — pick
   // the smallest one that keeps cells per axis ≤ AUTO_TARGET_CELLS so
-  // contours stay smooth on a typical 5–10 km wind farm.
-  const [gridSpacingM, setGridSpacingMState] = useState(100);
+  // contours stay smooth on a typical 5–10 km wind farm. The touched flag
+  // persists too, or reopening would auto-pick over a deliberate choice.
+  // Declared before the auto-pick effect so it's refreshed first on each commit.
   const gridSpacingTouchedRef = useRef(false);
+  useEffect(() => {
+    gridSpacingTouchedRef.current = display.gridSpacingTouched;
+  }, [display.gridSpacingTouched]);
   function setGridSpacingM(v: number) {
-    gridSpacingTouchedRef.current = true;
-    setGridSpacingMState(v);
+    patchDisplay({ gridSpacingM: v, gridSpacingTouched: true });
+  }
+  function setGridSpacingMState(v: number) {   // auto-pick path — not a user choice
+    patchDisplay({ gridSpacingM: v });
   }
 
   const [dem, setDem] = useState<DemRaster | null>(null);
@@ -535,6 +594,15 @@ export function ProjectScreen() {
         nextSources = withGroupSources(nextSources, g.id, mat.sources);
       }
       setProjectState({ ...sanitised, sources: nextSources });
+      // I19: restore the saved view. Merged over the defaults so a project
+      // saved before this existed — or one saved by an older build missing a
+      // field — opens on today's defaults for anything absent.
+      const saved = sanitised.settings?.display;
+      if (saved) {
+        const merged = { ...DEFAULT_DISPLAY, ...saved } as DisplayState;
+        displayRef.current = merged;
+        setDisplayState(merged);
+      }
       undoStackRef.current = [];
       redoStackRef.current = [];
     }

@@ -315,6 +315,24 @@ export interface Receiver {
   period?: Period;     // legacy — period now lives on the project scenario
 }
 
+/// A project's settings with the historical defaults filled in for anything
+/// absent. `Project.settings` is optional and old documents predate several
+/// fields, so every reader needs the same fallback — duplicating the literal
+/// is how two call sites end up disagreeing about what "default" means.
+export function settingsOf(project: Project): ProjectSettings {
+  return project.settings ?? {
+    ground: { defaultG: 0.5 },
+    annexD: {
+      barrierAbarCapDb: 3.0,
+      useElevatedSourceForBarrier: true,
+      applyConcaveCorrection: true,
+      wtReceiverHeightMin: 4.0,
+    },
+    general: { defaultReceiverHeight: 1.5 },
+    extrapolation: { capPerBandDb: 6, capTotalDbA: 3 },
+  };
+}
+
 /// Pick the right limit for a receiver given the active scenario period.
 export function limitForPeriod(r: Receiver, period: Period): number {
   switch (period) {
@@ -331,8 +349,37 @@ export interface CalculationArea {
   rotationDeg: number;
 }
 
+/// How the project was last being LOOKED at (I19). Purely presentational —
+/// nothing here reaches the solver, and every field is optional so a project
+/// saved before this existed opens on today's defaults.
+///
+/// Persisted on the project rather than per user: reopening restores the view
+/// you left, and a colleague opening the same project sees the same
+/// presentation.
+///
+/// `showGridDebug` is deliberately absent — it's a diagnostic, and a project
+/// that reopens covered in pink dots looks broken.
+export interface DisplaySettings {
+  baseMap?: 'satellite' | 'osm';
+  showContours?: boolean;
+  contourMode?: 'filled' | 'lines' | 'both';
+  contourOpacity?: number;
+  contourStepDb?: number;
+  contourBounds?: { min: number; max: number; step: number };
+  palette?: string;
+  domainMode?: 'auto' | 'fixed';
+  fixedDomain?: { min: number; max: number };
+  showReceiverLimits?: boolean;
+  gridSpacingM?: number;
+  /// Whether the user has explicitly chosen a grid spacing. Persisted so
+  /// reopening doesn't re-run the auto-pick over a deliberate choice.
+  gridSpacingTouched?: boolean;
+}
+
 export interface ProjectSettings {
   ground: { defaultG: number };
+  /// Presentational state — see `DisplaySettings`. Never affects computed levels.
+  display?: DisplaySettings;
   /// How a computed level is judged against a receiver's limit. Absent =
   /// `'integer'`: the level is rounded to the nearest integer first, so 40.4
   /// does NOT exceed a 40 dB limit. `'exact'` compares unrounded. See
