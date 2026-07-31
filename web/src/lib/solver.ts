@@ -44,6 +44,7 @@ import {
   type SceneResults,
 } from './sceneBuilder';
 import { buildTerrainField } from './terrainField';
+import { Diagnostics } from './diagnostics';
 import { approxDistanceM } from './geo';
 import {
   concaveCorrectionMet,
@@ -212,9 +213,12 @@ function groundElevation(dem: DemRaster | null, latLng: [number, number]): numbe
 /// The whole project goes to the engine as ONE `Scene` (per Annex D.5 receiver
 /// group — see `groupReceiversByConcave`), so obstacles and terrain are
 /// decomposed once for all receivers instead of per source→receiver pair.
+/// `diagnostics` (I20) collects the approximations this solve applied. Pass one
+/// in to surface them; omit it and they're simply not recorded.
 export async function evaluateProject(
   project: Project,
   dem: DemRaster | null,
+  diagnostics: Diagnostics = new Diagnostics(),
 ): Promise<ReceiverResult[]> {
   await ensureSolverReady();
 
@@ -229,13 +233,30 @@ export async function evaluateProject(
     (rx) => Number.isFinite(rx.latLng[0]) && Number.isFinite(rx.latLng[1]),
   );
 
+  const droppedSources = project.sources.length - sources.length;
+  if (droppedSources > 0) {
+    diagnostics.note(
+      'sources.unresolved', 'material',
+      `${droppedSources} source${droppedSources === 1 ? '' : 's'} skipped — no catalog entry `
+      + 'for the referenced model. They contribute nothing to these levels.',
+      droppedSources,
+    );
+  }
+
   // Terrain covers every source and receiver; the engine screens against it.
   const terrain = buildTerrainField(
     dem,
     origin,
     [...sources.map((s) => s.latLng), ...valid.map((r) => r.latLng)],
-    { despikeStrength: project.settings?.topography?.despikeStrength },
+    { despikeStrength: project.settings?.topography?.despikeStrength, diagnostics },
   );
+  if (!terrain && dem) {
+    diagnostics.note(
+      'terrain.absent', 'material',
+      'No usable terrain raster — ground treated as flat. Any screening by '
+      + 'topography is missing from these levels.',
+    );
+  }
 
   const settings = sceneSettingsFor(project);
   const containers = project.settings?.containers;
@@ -288,7 +309,15 @@ export async function evaluateProject(
         // cutoff for THIS receiver are dropped here.
         const src = sources.find((s) => s.id === contribution.source_id);
         if (!src || !rx) continue;
-        if (cutoffM > 0 && approxDistanceM(rx.latLng, src.latLng) > cutoffM) continue;
+        if (cutoffM > 0 && approxDistanceM(rx.latLng, src.latLng) > cutoffM) {
+          // I20: a dropped contribution is a modelling choice, not a non-event.
+          diagnostics.note(
+            'sources.cutoff', 'info',
+            `Source contributions beyond the ${(cutoffM / 1000).toFixed(1)} km cutoff were `
+            + 'dropped. Raise "Propagation cutoffs" in settings if distant sources matter here.',
+          );
+          continue;
+        }
         const perBandLp = new Float64Array(n);
         for (let i = 0; i < n; i++) {
           const v = contribution.bands[i];

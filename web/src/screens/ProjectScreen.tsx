@@ -30,6 +30,7 @@ import {
 import type { BessGroup } from '../lib/types';
 import type { Barrier, Project, Receiver, Source, SourceKind } from '../lib/types';
 import { settingsOf } from '../lib/types';
+import { Diagnostics, type Diagnostic } from '../lib/diagnostics';
 import { applyPatchWithGroupOverrides } from '../lib/groupOverrides';
 
 let nextId = 1000;
@@ -178,6 +179,8 @@ export function ProjectScreen() {
   } = useProjectDoc(projectId, currentUid);
   const [project, setProjectState] = useState<Project | null>(null);
   const [results, setResults] = useState<ReceiverResult[] | null>(null);
+  /// I20: approximations applied by the last solve, surfaced in the dock.
+  const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
   const [grid, setGrid] = useState<GridResult | null>(null);
   const [computing, setComputing] = useState(false);
   const [gridStatus, setGridStatus] = useState<'idle' | 'computing' | 'ready'>('idle');
@@ -839,10 +842,12 @@ export function ProjectScreen() {
     const start = performance.now();
     const handle = setTimeout(() => {
       const gen = ++pointGenRef.current;
-      evaluateProject(project, dem)
+      const diag = new Diagnostics();
+      evaluateProject(project, dem, diag)
         .then((results) => {
           if (gen !== pointGenRef.current) return;       // superseded
           setResults(results);
+          setDiagnostics(diag.list());                   // I20
           setLastSolveMs(performance.now() - start);
         })
         .catch((e) => { if (gen === pointGenRef.current) setError(String(e)); })
@@ -1406,6 +1411,7 @@ export function ProjectScreen() {
             computing={computing} lastSolveMs={lastSolveMs}
             gridStatus={gridStatus}
             onRunGrid={runGrid}
+            diagnostics={diagnostics}
           />
         </div>
 

@@ -2,7 +2,9 @@
 // DEM controls have moved to the side panel's Layers tab; what stays on the
 // map is the legend, results dock, and status bar.
 
+import { useState } from 'react';
 import type { Project } from '../lib/types';
+import { summariseDiagnostics, type Diagnostic } from '../lib/diagnostics';
 import { limitForPeriod } from '../lib/types';
 import { exceedsLimit, limitComparisonFor } from '../lib/limits';
 import type { GridResult, ReceiverResult } from '../lib/solver';
@@ -51,10 +53,48 @@ interface ResultsDockProps {
   lastSolveMs: number | null;
   gridStatus: 'idle' | 'computing' | 'ready';
   onRunGrid(): void;
+  /// I20: approximations the last solve applied.
+  diagnostics?: Diagnostic[];
+}
+
+/// I20 — the count is always visible when non-zero; the detail is one click
+/// away. Deliberately not a toast: these are a property of the result, not an
+/// event, so they belong next to the result and must not be dismissable.
+function DiagnosticsRow({ items }: { items: Diagnostic[] }) {
+  const [open, setOpen] = useState(false);
+  const summary = summariseDiagnostics(items);
+  const hasMaterial = items.some((d) => d.severity === 'material');
+  return (
+    <div className="dock-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+      <button
+        className="btn small"
+        onClick={() => setOpen(!open)}
+        title="Approximations applied to this solve"
+        style={{
+          textAlign: 'left',
+          color: hasMaterial ? 'var(--amber, #b26a00)' : 'var(--ink-soft, #475569)',
+        }}
+      >
+        {open ? '▾' : '▸'} {hasMaterial ? '⚠' : 'ℹ'} {summary}
+      </button>
+      {open && (
+        <ul style={{ margin: 0, paddingLeft: 16, fontSize: 11, lineHeight: 1.4 }}>
+          {items.map((d) => (
+            <li key={d.code} style={{ marginBottom: 4 }}>
+              {d.message}
+              {d.count > 1 && (
+                <span style={{ color: 'var(--ink-soft, #475569)' }}> (×{d.count})</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 export function ResultsDock(props: ResultsDockProps) {
-  const { project, results, grid, computing, lastSolveMs, gridStatus, onRunGrid } = props;
+  const { project, results, grid, computing, lastSolveMs, gridStatus, onRunGrid, diagnostics } = props;
   const mode = limitComparisonFor(project);
   const exceedances = (results ?? []).filter((r) => {
     const rx = project.receivers.find((x) => x.id === r.receiverId);
@@ -97,6 +137,9 @@ export function ResultsDock(props: ResultsDockProps) {
             {' '}{worst.over > 0 ? '+' : ''}{worst.over.toFixed(1)} dB
           </span>
         </div>
+      )}
+      {diagnostics && diagnostics.length > 0 && (
+        <DiagnosticsRow items={diagnostics} />
       )}
       <div className="dock-row">
         <button className="btn primary block" disabled={computing || gridStatus === 'computing'} onClick={onRunGrid}>

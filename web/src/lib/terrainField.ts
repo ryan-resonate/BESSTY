@@ -14,6 +14,7 @@
 // Worker-safe and pure: geo helpers and a DemRaster only, no wasm, no firebase.
 
 import type { DemRaster } from './dem';
+import type { Diagnostics } from './diagnostics';
 import { latLngToLocalMetres, localMetresToLatLng } from './geo';
 import type { SceneHeightfield } from './sceneBuilder';
 
@@ -35,6 +36,8 @@ export interface TerrainFieldOptions {
   despikeStrength?: DespikeStrength;
   /** Override the sampling pitch (m). Defaults to the DEM's native resolution. */
   spacingM?: number;
+  /** I20: where to report that the cell cap forced a coarser pitch. */
+  diagnostics?: Diagnostics;
 }
 
 /** Median (lower-middle for even length). */
@@ -147,10 +150,19 @@ export function buildTerrainField(
   const spanN = Math.max(maxN - minN, 1);
   const native = opts.spacingM ?? dem.resolutionM ?? DEFAULT_DEM_RESOLUTION_M;
   // Never finer than the data, never so fine that the grid blows the cell cap.
-  const spacing = Math.max(
-    native > 0 ? native : DEFAULT_DEM_RESOLUTION_M,
-    Math.max(spanE, spanN) / TERRAIN_MAX_CELLS_PER_AXIS,
-  );
+  const nativeClean = native > 0 ? native : DEFAULT_DEM_RESOLUTION_M;
+  const capFloor = Math.max(spanE, spanN) / TERRAIN_MAX_CELLS_PER_AXIS;
+  const spacing = Math.max(nativeClean, capFloor);
+  // I20: the cap winning means terrain is screened at a coarser pitch than the
+  // DEM actually provides — small ridges shorter than a cell stop diffracting.
+  if (opts.diagnostics && capFloor > nativeClean) {
+    opts.diagnostics.note(
+      'terrain.resampled', 'material',
+      `Terrain resampled to ${spacing.toFixed(0)} m (DEM provides ${nativeClean.toFixed(0)} m) — `
+      + `the modelled area needs more than ${TERRAIN_MAX_CELLS_PER_AXIS} cells per axis. `
+      + 'Ridges narrower than a cell no longer screen.',
+    );
+  }
 
   const nx = Math.min(TERRAIN_MAX_CELLS_PER_AXIS, Math.max(2, Math.ceil(spanE / spacing) + 1));
   const ny = Math.min(TERRAIN_MAX_CELLS_PER_AXIS, Math.max(2, Math.ceil(spanN / spacing) + 1));
