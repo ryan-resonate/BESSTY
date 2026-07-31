@@ -3,6 +3,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { Project, Receiver, Source, ReferenceLayerStyle } from '../lib/types';
 import { limitForPeriod } from '../lib/types';
+import { exceedsLimit, limitComparisonFor, type LimitComparison } from '../lib/limits';
 import type { ReceiverResult, GridResult } from '../lib/solver';
 import { paletteRgb, paletteCss, type Palette, tForDb, makeBandsForRange } from '../lib/colormap';
 import { buildContourLines } from '../lib/contourLines';
@@ -67,6 +68,8 @@ interface Props {
   /// user can eyeball alignment between the raster, contour lines, and
   /// the actual sampled cells. Off by default.
   showGridDebug?: boolean;
+  /// I1: draw the active period's limit as a second line on receiver markers.
+  showReceiverLimits?: boolean;
   contourMode: ContourMode;
   contourOpacity: number;
   /// Step (dB) between iso-line thresholds, e.g. 5 dB.
@@ -149,23 +152,35 @@ function receiverMarker(
   activeLimit: number,
   selected: boolean,
   groupColor: string | undefined,
+  mode: LimitComparison,
+  showLimit: boolean,
 ): L.DivIcon {
-  const fail = dbA != null && dbA > activeLimit;
+  // The pass/fail rule lives in one place (I17) — never compare inline here.
+  // Note the DISPLAYED level keeps full precision: only the verdict rounds, so
+  // a green marker reading 40.4 against a 40 limit is correct, not a glitch.
+  const fail = exceedsLimit(dbA, activeLimit, mode);
   const colour = fail ? '#d32f2f' : '#2e7d32';
   const text = dbA != null ? `${dbA.toFixed(1)}` : '— ';
   const dotBorder = selected ? '#F2CB00' : (groupColor ?? '#fff');
   const dotBorderWidth = selected ? 3 : 2;
+  // I1: the active period's limit, smaller and dimmer under the level.
+  const limitLine = showLimit && Number.isFinite(activeLimit)
+    ? `<div style="font-size:9px;font-weight:500;opacity:.65;line-height:1.1;margin-top:-1px">
+        limit ${activeLimit.toFixed(0)}
+      </div>`
+    : '';
   return L.divIcon({
     className: 'recv-marker',
     html: `<div style="display:flex;flex-direction:column;align-items:center;gap:0;pointer-events:auto">
-      <div style="background:rgba(255,255,255,0.92);backdrop-filter:blur(6px);border:${selected ? 2 : 1.5}px solid ${selected ? '#F2CB00' : '#2A2A2A'};border-radius:99px;padding:2px 9px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;color:${colour};white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,.3)">
-        ${text} <span style="opacity:.6;font-weight:400">dB(A)</span>
+      <div style="background:rgba(255,255,255,0.92);backdrop-filter:blur(6px);border:${selected ? 2 : 1.5}px solid ${selected ? '#F2CB00' : '#2A2A2A'};border-radius:99px;padding:2px 9px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;color:${colour};white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,.3);text-align:center">
+        <div>${text} <span style="opacity:.6;font-weight:400">dB(A)</span></div>
+        ${limitLine}
       </div>
       <div style="width:0;height:8px;border-left:1.5px dashed ${colour}"></div>
       <div style="width:14px;height:14px;border-radius:50%;border:${dotBorderWidth}px solid ${dotBorder};background:${colour};box-shadow:0 1px 2px rgba(0,0,0,.4)"></div>
     </div>`,
-    iconSize: [80, 42],
-    iconAnchor: [40, 38],
+    iconSize: [80, showLimit ? 54 : 42],
+    iconAnchor: [40, showLimit ? 50 : 38],
   });
 }
 
@@ -482,7 +497,7 @@ export function MapView({
   onResizeCalcArea, onMoveCalcArea,
   onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
   selectedGroupId, onTranslateGroup, onRotateGroup,
-  addMode, baseMap, showContours, showGridDebug, contourMode, contourOpacity, contourStepDb,
+  addMode, baseMap, showContours, showGridDebug, showReceiverLimits, contourMode, contourOpacity, contourStepDb,
   palette, dbDomain, onCursorMove, onReady,
 }: Props) {
   // Map: object id → group color (for the small ring around the marker).
@@ -1370,13 +1385,17 @@ export function MapView({
       marker.addTo(group);
     }
 
+    const limitMode = limitComparisonFor(project);
     for (const r of project.receivers) {
       if (!validLatLng(r.latLng)) continue;
       const dbA = results?.find((x) => x.receiverId === r.id)?.totalDbA ?? null;
       const sel = isSelected(r.id);
       const activeLimit = limitForPeriod(r, project.scenario.period);
       const marker = L.marker(r.latLng, {
-        icon: receiverMarker(r, dbA && isFinite(dbA) ? dbA : null, activeLimit, sel, groupColorById.get(r.id)),
+        icon: receiverMarker(
+          r, dbA && isFinite(dbA) ? dbA : null, activeLimit, sel,
+          groupColorById.get(r.id), limitMode, showReceiverLimits ?? false,
+        ),
         title: r.name,
         opacity: dimNonSelected(r.id),
         draggable: true,
@@ -1495,7 +1514,7 @@ export function MapView({
     // `onSelect` deliberately omitted — we read it from callbacksRef inside
     // the click handlers, so we don't want a fresh closure to invalidate the
     // markers (and break in-flight drags) every time the parent re-renders.
-  }, [project, results, selectedIds]);
+  }, [project, results, selectedIds, showReceiverLimits]);
 
   // ===== BESS-group overlays: bounding rect + rotation handle + centre handle =====
   //

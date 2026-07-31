@@ -17,6 +17,7 @@
 import * as XLSX from 'xlsx';
 import { buildPolylineShapefile, buildPointShapefile, buildZip } from './shapefileWriter';
 import type { Project } from './types';
+import { exceedsLimit, limitComparisonFor } from './limits';
 import { projectDOmegaDb, type GridResult, type ReceiverResult } from './solver';
 import type { ContourLineSet } from './contourLines';
 
@@ -59,9 +60,10 @@ function receiverRows(project: Project, results: ReceiverResult[] | null): Recei
   return project.receivers.map((r) => {
     const result = results?.find((x) => x.receiverId === r.id);
     const total = result && Number.isFinite(result.totalDbA) ? result.totalDbA : null;
+    const mode = limitComparisonFor(project);
     const verdict = (limit: number): 'pass' | 'fail' | '—' => {
       if (total == null) return '—';
-      return total > limit ? 'fail' : 'pass';
+      return exceedsLimit(total, limit, mode) ? 'fail' : 'pass';
     };
     return {
       id: r.id,

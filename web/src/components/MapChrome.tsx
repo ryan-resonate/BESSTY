@@ -4,6 +4,7 @@
 
 import type { Project } from '../lib/types';
 import { limitForPeriod } from '../lib/types';
+import { exceedsLimit, limitComparisonFor } from '../lib/limits';
 import type { GridResult, ReceiverResult } from '../lib/solver';
 import type { Palette } from '../lib/colormap';
 import { paletteCss, makeBandsForRange } from '../lib/colormap';
@@ -54,15 +55,22 @@ interface ResultsDockProps {
 
 export function ResultsDock(props: ResultsDockProps) {
   const { project, results, grid, computing, lastSolveMs, gridStatus, onRunGrid } = props;
+  const mode = limitComparisonFor(project);
   const exceedances = (results ?? []).filter((r) => {
     const rx = project.receivers.find((x) => x.id === r.receiverId);
-    return rx && r.totalDbA > limitForPeriod(rx, project.scenario.period);
+    return rx && exceedsLimit(r.totalDbA, limitForPeriod(rx, project.scenario.period), mode);
   });
-  const worst = (results ?? []).reduce<{ id: string; over: number } | null>((acc, r) => {
+  // `over` stays the TRUE margin (it tells you how close you are), but the
+  // colour must come from the same rule as everything else — otherwise a
+  // receiver at 40.4 against a 40 limit reads green on the map and red here.
+  const worst = (results ?? []).reduce<{ id: string; over: number; fail: boolean } | null>((acc, r) => {
     const rx = project.receivers.find((x) => x.id === r.receiverId);
     if (!rx || !isFinite(r.totalDbA)) return acc;
-    const over = r.totalDbA - limitForPeriod(rx, project.scenario.period);
-    if (!acc || over > acc.over) return { id: r.receiverId, over };
+    const limit = limitForPeriod(rx, project.scenario.period);
+    const over = r.totalDbA - limit;
+    if (!acc || over > acc.over) {
+      return { id: r.receiverId, over, fail: exceedsLimit(r.totalDbA, limit, mode) };
+    }
     return acc;
   }, null);
   const total = project.receivers.length;
@@ -84,7 +92,7 @@ export function ResultsDock(props: ResultsDockProps) {
       {worst && worst.over > -50 && (
         <div className="dock-row dock-detail">
           <span className="muted">Worst:</span>
-          <span style={{ color: worst.over > 0 ? 'var(--red)' : 'var(--green)' }}>
+          <span style={{ color: worst.fail ? 'var(--red)' : 'var(--green)' }}>
             {project.receivers.find((r) => r.id === worst.id)?.name ?? worst.id}
             {' '}{worst.over > 0 ? '+' : ''}{worst.over.toFixed(1)} dB
           </span>

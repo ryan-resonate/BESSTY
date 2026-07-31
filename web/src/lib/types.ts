@@ -333,6 +333,11 @@ export interface CalculationArea {
 
 export interface ProjectSettings {
   ground: { defaultG: number };
+  /// How a computed level is judged against a receiver's limit. Absent =
+  /// `'integer'`: the level is rounded to the nearest integer first, so 40.4
+  /// does NOT exceed a 40 dB limit. `'exact'` compares unrounded. See
+  /// `lib/limits.ts` — every pass/fail site goes through `exceedsLimit`.
+  limitComparison?: 'integer' | 'exact';
   /// Which edition of ISO 9613-2 the solver applies. Absent = `'2024'`, which
   /// is what every project computed with before the selector existed.
   ///

@@ -250,7 +250,11 @@ export function ProjectScreen() {
   const [baseMap, setBaseMap] = useState<BaseMap>('satellite');
   const [showContours, setShowContours] = useState(true);
   const [showGridDebug, setShowGridDebug] = useState(false);
-  const [contourMode, setContourMode] = useState<ContourMode>('both');
+  const [showReceiverLimits, setShowReceiverLimits] = useState(false);   // I1, default OFF
+  // Lines-only by default (I8): the filled ramp obscures the basemap, and
+  // reviewers read contour lines. Session state, so this is the value every
+  // project opens with; switching to Filled/Both lasts until reload.
+  const [contourMode, setContourMode] = useState<ContourMode>('lines');
   const [contourOpacity, setContourOpacity] = useState(0.7);
   const [contourStepDb, setContourStepDb] = useState(5);
   const [contourBounds, setContourBounds] = useState({ min: 25, max: 60, step: 5 });
@@ -1235,6 +1239,7 @@ export function ProjectScreen() {
         baseMap={baseMap} setBaseMap={setBaseMap}
         showContours={showContours} setShowContours={setShowContours}
         showGridDebug={showGridDebug} setShowGridDebug={setShowGridDebug}
+        showReceiverLimits={showReceiverLimits} setShowReceiverLimits={setShowReceiverLimits}
         contourMode={contourMode} setContourMode={setContourMode}
         contourOpacity={contourOpacity} setContourOpacity={setContourOpacity}
         contourStepDb={contourStepDb} setContourStepDb={setContourStepDb}
@@ -1293,6 +1298,7 @@ export function ProjectScreen() {
           baseMap={baseMap}
           showContours={showContours}
           showGridDebug={showGridDebug}
+          showReceiverLimits={showReceiverLimits}
           contourMode={contourMode}
           contourOpacity={contourOpacity}
           contourStepDb={contourStepDb}

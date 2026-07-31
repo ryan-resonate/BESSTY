@@ -4,6 +4,7 @@ import type {
   ReferenceLayer, ReferenceLayerStyle, ReferenceFeature, ReferencePointShape,
 } from '../lib/types';
 import { limitForPeriod } from '../lib/types';
+import { exceedsLimit, limitComparisonFor } from '../lib/limits';
 import type { ReceiverResult } from '../lib/solver';
 import type { BaseMap, ContourMode } from './MapView';
 import type { Palette } from '../lib/colormap';
@@ -121,6 +122,8 @@ interface Props {
   /// the user verify alignment between the raster, contours, and the
   /// underlying source/receiver positions when something looks off.
   showGridDebug?: boolean;
+  showReceiverLimits?: boolean;
+  setShowReceiverLimits?(v: boolean): void;
   setShowGridDebug?(v: boolean): void;
   contourMode: ContourMode;
   setContourMode(m: ContourMode): void;
@@ -919,7 +922,7 @@ function ReceiversTab(props: Props) {
         {project.receivers.map((r) => {
           const result = results?.find((x) => x.receiverId === r.id);
           const activeLimit = limitForPeriod(r, project.scenario.period);
-          const fail = result && result.totalDbA > activeLimit;
+          const fail = exceedsLimit(result?.totalDbA, activeLimit, limitComparisonFor(project));
           return (
             <div key={r.id}
               className={`item${selectedIds.has(r.id) ? ' selected' : ''}`}
@@ -1195,9 +1198,10 @@ function ImportTab(props: Props) {
 
 function ResultsTab(props: Props) {
   const { project, results, grid, computing, lastSolveMs, onRunGrid, contourBounds } = props;
+  const limitMode = limitComparisonFor(project);
   const exceedances = (results ?? []).filter((r) => {
     const rx = project.receivers.find((x) => x.id === r.receiverId);
-    return rx && r.totalDbA > limitForPeriod(rx, project.scenario.period);
+    return rx && exceedsLimit(r.totalDbA, limitForPeriod(rx, project.scenario.period), limitMode);
   });
 
   const hasResults = (results?.length ?? 0) > 0;
@@ -1333,6 +1337,24 @@ function LayersTab(props: Props) {
         <div className="seg block">
           <button className={baseMap === 'satellite' ? 'on' : ''} onClick={() => setBaseMap('satellite')}>Satellite</button>
           <button className={baseMap === 'osm' ? 'on' : ''} onClick={() => setBaseMap('osm')}>OSM</button>
+        </div>
+      </Card>
+
+      <Card title="Receivers">
+        <Field label="">
+          <label className="row-checkbox">
+            <input
+              type="checkbox"
+              checked={!!props.showReceiverLimits}
+              onChange={(e) => props.setShowReceiverLimits?.(e.target.checked)}
+            />
+            <span>Show limits on markers</span>
+          </label>
+        </Field>
+        <div className="hint">
+          Adds the active period's limit under each receiver's level. The
+          pass/fail colour already uses it — this just shows the number you're
+          being judged against.
         </div>
       </Card>
 
@@ -1818,6 +1840,32 @@ function SettingsTab(props: Props) {
           flat, uniform row it is worth ~1–2 dB inside about 100 m and tends to zero
           by 200 m, where the remaining difference is the acoustic centre being
           lifted to the roof.
+        </div>
+      </section>
+
+      <section className="sp-section">
+        <h3><span>Limit comparison</span></h3>
+        <Field label="Compare levels">
+          <select
+            value={settings.limitComparison ?? 'integer'}
+            onChange={(e) => update({ limitComparison: e.target.value as 'integer' | 'exact' })}
+          >
+            <option value="integer">Rounded to integer (default)</option>
+            <option value="exact">Exact</option>
+          </select>
+        </Field>
+        <div className="hint">
+          Most conditions are written against whole decibels, so by default the
+          level is rounded to the nearest integer before the comparison and only
+          a genuine exceedance fails: <b>40.4 dB → 40, which does not exceed a
+          40 dB limit → green</b>. 40.6 → 41 → red. Landing exactly on the limit
+          passes either way.
+          <br />
+          Only the level rounds — the limit is compared as entered, since it's a
+          set value rather than a measurement. Displayed numbers never change;
+          this affects the pass/fail colour only.
+          <br />
+          Switch to <b>Exact</b> for jurisdictions that compare unrounded.
         </div>
       </section>
 
