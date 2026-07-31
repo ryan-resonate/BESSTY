@@ -13,6 +13,7 @@ import { notify } from '../lib/notify';
 import {
   describeBulk, mapAllSegments, setModeWhereSupported, swapModel,
 } from '../lib/bessBulkSwap';
+import { clearOverriddenFields } from '../lib/groupOverrides';
 import {
   groupToSequence,
   materialiseBessGroup,
@@ -189,7 +190,14 @@ export function BessGroupWizard(props: Props) {
           { scope: fromScope, modelId: fromModel },
           { scope: toScope, modelId: toModel, mode: defMode ?? undefined },
         );
-        return { ...g, sequence: r.sequence };
+        // I4: "change all" deliberately overwrites manual per-unit edits of the
+        // same fields. Leaving them would re-apply the old model over the new
+        // one on the next materialisation, so the swap would look like it
+        // silently failed on exactly the units the user had tuned.
+        return clearOverriddenFields(
+          { ...g, sequence: r.sequence },
+          ['modelOverride', 'modeOverride'],
+        );
       });
     },
     [catalogLookup],
@@ -200,13 +208,13 @@ export function BessGroupWizard(props: Props) {
   // group-wide control below.
   const setModeForModel = useCallback(
     (scope: CatalogScope, modelId: string, mode: string) => {
-      setGroup((g) => ({
+      setGroup((g) => clearOverriddenFields({
         ...g,
         sequence: mapAllSegments(g.sequence ?? [], (sg) =>
           sg.catalogScope === scope && sg.modelId === modelId
             ? { ...sg, modeOverride: mode }
             : sg),
-      }));
+      }, ['modeOverride']));
     },
     [],
   );
@@ -232,7 +240,7 @@ export function BessGroupWizard(props: Props) {
       setGroup((g) => {
         const r = setModeWhereSupported(g.sequence ?? [], mode, modesFor);
         notify.info(describeBulk(r, `set to "${mode}"`));
-        return { ...g, sequence: r.sequence };
+        return clearOverriddenFields({ ...g, sequence: r.sequence }, ['modeOverride']);
       });
     },
     [modesFor],
