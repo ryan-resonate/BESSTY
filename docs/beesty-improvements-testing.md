@@ -228,26 +228,71 @@ grouping is getting more valuable, not less.
   **overwrite** the manual per-unit edits — that's the locked behaviour. If the
   tuned units keep their old mode, the override clearing didn't fire.
 
-### I2 — Catalog migration *(engine only — nothing is wired up yet)*
+### I2 — localStorage removed, catalog migration behind a button
 
-Nothing to test in the app: this commit adds only the planning logic and its
-tests. See §5 for what it's waiting on.
+- **Open every project you care about and confirm it loads.** The localStorage
+  fallback is gone; projects are Firestore-only now. Ryan confirmed the
+  localStorage-only projects aren't needed — note the data is still sitting in
+  the browser untouched, it's just no longer read, so this is reversible if
+  something turns out to have been wanted.
+- Go offline / block Firestore and open a project: you should get a **red error
+  toast**, not a silent empty project.
+- Catalog screen: the **Local tab is gone**; Global + My library remain.
+- Open a project that has a local catalog → **Project tab → "Local catalog"**
+  section appears with a Migrate button. Press it, read the confirm (it tells
+  you what will happen), accept. Then check: the models appear in the Global
+  catalog, the project's sources still resolve, and **re-solving gives the same
+  levels**. The section should vanish afterwards.
+- A project with no local catalog should show no such section at all.
+
+### I20 — Approximations are visible
+
+- Solve a normal small project: the dock should show **nothing** new.
+- Force a cap and confirm it reports:
+  - **Terrain resample** — make the calculation area very large (tens of km) so
+    the DEM needs more than 2048 cells per axis. Expect an amber row:
+    *"Terrain resampled to N m (DEM provides 20 m)…"*
+  - **Cutoff** — set Propagation cutoffs low (say 2 km) on a project with
+    distant sources. Expect a grey info row.
+  - **Unresolved sources** — delete a catalog entry a project uses. Expect an
+    amber row saying N sources contribute nothing.
+- Click the row to expand the detail; amber = can move levels, grey = bounded a
+  resource only.
+- Not yet instrumented: Barnes-Hut clustering, the −120 dB grid floor and wall
+  densification, all of which live on the worker path. Those land with I12.
 
 ---
 
 ## 4. Not started
 
-Nine items remain: **I5**, **I12**, **I15**, **I7**, **I10** (now unblocked —
-5 tabs, gear in both places), **I11**, **I14**, **I18** (reflections) and
-**I20** (diagnostics). Three of them pull in a new dependency: `jspdf` (I15),
+Eight items remain: **I5** (copy/paste), **I12** (grid progress), **I15** (PDF
+export), **I7** (calc-area drag/rotation), **I10** (settings window — unblocked,
+5 tabs, gear in both places), **I11** (help window), **I14** (factorial study)
+and **I18** (reflections). Three pull in a new dependency: `jspdf` (I15),
 `minisearch` (I11), `exceljs` (I14).
+
+**I12 should go next** — it plumbs worker messages back to the main thread,
+which is also what I20 needs to finish instrumenting the clustering and grid
+caps. `Diagnostics.merge()` already exists and is tested for that.
 
 ---
 
-## 5. BLOCKED — I2 needs a decision before it can finish
+## 5. RESOLVED — the I2 decision
 
-The migration engine is written and tested, but **nothing calls it and nothing
-has been deleted**. Finishing I2 means three irreversible things in production:
+**Answered 2026-07-31 and actioned.** Ryan confirmed localStorage-only projects
+exist but aren't needed, so the fallback was deleted. The local-catalog
+migration was made an explicit button rather than automatic, since Ryan
+questioned why the catalog would be migrated at all — rewriting source model
+references on open would have been the wrong default.
+
+The one piece still deliberately undone: `seedCatalog.ts` stays in the bundle.
+Dropping it is only safe once the global Firestore catalog is confirmed
+populated in production. Check the Catalog screen shows the full model list on
+a fresh profile, then it can go.
+
+Original context follows.
+
+Finishing I2 meant three irreversible things in production:
 
 1. Executing the local-catalog migration (writes to the Firestore global
    catalog, rewrites project source references).
