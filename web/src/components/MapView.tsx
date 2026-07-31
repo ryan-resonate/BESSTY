@@ -184,7 +184,7 @@ function receiverMarker(
   });
 }
 
-const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max: number; subdomains?: string }> = {
+export const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max: number; subdomains?: string }> = {
   satellite: {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attribution: '© Esri',
@@ -2228,4 +2228,16 @@ export function MapView({
   }, [addMode]);
 
   return <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />;
+}
+
+/// I15 — resolve a slippy-tile URL for the PDF exporter, which composes tiles
+/// itself rather than screenshotting the (CORS-tainted) Leaflet canvas.
+export function tileUrlFor(base: BaseMap, z: number, x: number, y: number): string {
+  const cfg = TILE_URLS[base];
+  const subs = cfg.subdomains ?? 'abc';
+  return cfg.url
+    .replace('{s}', subs[(x + y) % subs.length])
+    .replace('{z}', String(z))
+    .replace('{x}', String(x))
+    .replace('{y}', String(y));
 }

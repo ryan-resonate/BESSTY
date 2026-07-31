@@ -6,6 +6,8 @@ import { MapView, type BaseMap, type ContourMode } from '../components/MapView';
 import { Map3DView } from '../components/Map3DView';
 import { MapControls } from '../components/MapControls';
 import { SettingsWindow } from '../components/SettingsWindow';
+import { PdfExportDialog } from '../components/PdfExportDialog';
+import { tileUrlFor } from '../components/MapView';
 import { Legend, ResultsDock, StatusBar } from '../components/MapChrome';
 import { SidePanel, type AddMode, type Tab } from '../components/SidePanel';
 import { listEntriesByKind, lookupEntry } from '../lib/catalog';
@@ -204,6 +206,20 @@ export function ProjectScreen() {
   const [show3D, setShow3D] = useState(false);
   /// I10: floating settings window.
   const [showSettings, setShowSettings] = useState(false);
+  /// I15: PDF export dialog. Holds the extent captured when it opened — the
+  /// export is a snapshot, so it must not follow the map if it moves behind
+  /// the dialog.
+  const [pdfExtent, setPdfExtent] = useState<{ sw: [number, number]; ne: [number, number] } | null>(null);
+
+  function openPdfExport() {
+    const map = mapHandleRef.current;
+    if (!map) return;
+    const b = map.getBounds();
+    setPdfExtent({
+      sw: [b.getSouth(), b.getWest()],
+      ne: [b.getNorth(), b.getEast()],
+    });
+  }
   const [cursorLatLng, setCursorLatLng] = useState<[number, number] | null>(null);
   /// Active tab — lifted into ProjectScreen so placing a new object can
   /// auto-switch the panel to Sources / Receivers.
@@ -1427,6 +1443,7 @@ export function ProjectScreen() {
         baseMap={baseMap} setBaseMap={setBaseMap}
         showContours={showContours} setShowContours={setShowContours}
         showGridDebug={showGridDebug} setShowGridDebug={setShowGridDebug}
+        onOpenPdfExport={openPdfExport}
         showReceiverLimits={showReceiverLimits} setShowReceiverLimits={setShowReceiverLimits}
         contourMode={contourMode} setContourMode={setContourMode}
         contourOpacity={contourOpacity} setContourOpacity={setContourOpacity}
@@ -1544,6 +1561,21 @@ export function ProjectScreen() {
         {error && <div className="map-toast error">solver error: {error}</div>}
         </ErrorBoundary>
       </div>
+
+      {pdfExtent && (
+        <PdfExportDialog
+          project={project}
+          results={results}
+          grid={grid}
+          extent={pdfExtent}
+          palette={palette}
+          dbDomain={dbDomain}
+          contourStepDb={contourStepDb}
+          showContours={showContours}
+          tileUrl={(z, x, y) => tileUrlFor(baseMap, z, x, y)}
+          onClose={() => setPdfExtent(null)}
+        />
+      )}
 
       {showSettings && (
         <SettingsWindow

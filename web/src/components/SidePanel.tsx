@@ -105,6 +105,8 @@ interface Props {
   projectSource?: 'firestore' | 'none';
   /// I10: open the floating settings window.
   onOpenSettings?(): void;
+  /// I15: open the PDF export dialog (captures the current viewport).
+  onOpenPdfExport?(): void;
   /// Called when the user reverts to a saved version. The handler should
   /// merge the snapshot's content into the live project while preserving
   /// current ownership + privacy metadata. Wired up in ProjectScreen.
@@ -1338,6 +1340,12 @@ function ResultsTab(props: Props) {
 
         <div className="meta-line" style={{ marginTop: 8 }}><b>Grid raster</b></div>
         <div className="add-row">
+          <button
+            className="btn small primary block"
+            onClick={() => props.onOpenPdfExport?.()}
+            disabled={!props.onOpenPdfExport}
+            title="Report-quality snapshot: basemap image with vector contours and receivers"
+          >📄 Export PDF…</button>
           <button className="btn small" disabled={!hasGrid} onClick={() => grid && download(exportGridGeoTiff(grid), 'grid', 'tif')}>
             ↓ GeoTIFF
           </button>
