@@ -14,6 +14,7 @@
 //     points at the future seeding flow (task #12).
 
 import { useEffect, useState } from 'react';
+import { notify } from '../lib/notify';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthState } from '../lib/auth';
 import {
@@ -69,7 +70,12 @@ export function ProjectListScreen() {
 
   async function handleNew() {
     if (!auth.user || !auth.profile) return;
-    const name = prompt('New project name', 'Untitled project');
+    const name = await notify.prompt({
+      title: 'New project',
+      label: 'Project name',
+      defaultValue: 'Untitled project',
+      confirmLabel: 'Create',
+    });
     if (!name) return;
     try {
       const id = await createProject(name.trim() || 'Untitled project', {}, {
@@ -85,7 +91,13 @@ export function ProjectListScreen() {
 
   async function handleDelete(item: ProjectListItem, e: React.MouseEvent) {
     e.preventDefault(); e.stopPropagation();
-    if (!confirm(`Delete project "${item.name}"? This cannot be undone.`)) return;
+    const ok = await notify.confirm({
+      title: `Delete project "${item.name}"?`,
+      body: 'This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       // Best-effort: clean up the project's Firebase Storage objects
       // BEFORE deleting the Firestore doc. The Storage rules gate this
@@ -114,11 +126,13 @@ export function ProjectListScreen() {
 
   async function handleSeed() {
     if (!auth.user || !auth.profile) return;
-    if (!confirm(
-      'Add the example projects (GP BESS + Tarong WF) to the cloud?\n\n' +
-      'They will be created as public projects owned by you, visible to ' +
-      'every signed-in BESSTY user.'
-    )) return;
+    const ok = await notify.confirm({
+      title: 'Add the example projects to the cloud?',
+      body: 'GP BESS + Tarong WF will be created as public projects owned by '
+        + 'you, visible to every signed-in BESSTY user.',
+      confirmLabel: 'Add examples',
+    });
+    if (!ok) return;
     setSeeding(true); setError(null);
     try {
       await seedExampleProjects({

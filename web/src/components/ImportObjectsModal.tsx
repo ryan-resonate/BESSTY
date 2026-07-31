@@ -5,6 +5,7 @@
 // and commits.
 
 import { useState } from 'react';
+import { notify } from '../lib/notify';
 import {
   guessLocationMapping,
   parseLocations,
@@ -151,7 +152,10 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
     const isCsv = parsed.format === 'csv';
     const isShapefileNoPrj = parsed.format === 'shapefile' && parsed.nativeEpsg !== 4326;
     if (isCsv && (!mapping.x || !mapping.y)) {
-      alert('CSV import needs columns assigned to X (longitude / easting) and Y (latitude / northing).');
+      notify.warning(
+        'CSV import needs columns assigned to X (longitude / easting) and '
+        + 'Y (latitude / northing).',
+      );
       return;
     }
 
@@ -206,7 +210,9 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
       const sk = kind as SourceKind;
       const candidates = listEntriesByKind(project, sk);
       if (candidates.length === 0) {
-        alert(`No ${sk} catalog entries available — add one before importing sources of this kind.`);
+        notify.warning(
+          `No ${sk} catalog entries available — add one before importing sources of this kind.`,
+        );
         return;
       }
       // Order of precedence for the per-feature model:

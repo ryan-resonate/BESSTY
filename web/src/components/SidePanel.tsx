@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { notify } from '../lib/notify';
 import type {
   Group, Project, ProjectSettings, Source, Receiver, SourceKind,
   ReferenceLayer, ReferenceLayerStyle, ReferenceFeature, ReferencePointShape,
@@ -313,8 +314,13 @@ function SelectionCard(props: Props) {
         {!group && selectedIds.size >= 2 && (
           <button
             className="btn small"
-            onClick={() => {
-              const name = prompt('Name this group', 'New group');
+            onClick={async () => {
+              const name = await notify.prompt({
+                title: 'Name this group',
+                label: 'Group name',
+                defaultValue: 'New group',
+                confirmLabel: 'Create',
+              });
               if (!name) return;
               const used = new Set((project.groups ?? []).map((g) => g.color));
               const colour = GROUP_PALETTE.find((c) => !used.has(c)) ?? GROUP_PALETTE[0];
@@ -358,8 +364,14 @@ function GroupEditor(props: {
         </div>
       </Field>
       <div className="add-row">
-        <button className="btn small" style={{ color: 'var(--red)' }} onClick={() => {
-          if (confirm(`Delete group "${group.name}"? Members will keep existing.`)) onDelete();
+        <button className="btn small" style={{ color: 'var(--red)' }} onClick={async () => {
+          const ok = await notify.confirm({
+            title: `Delete group "${group.name}"?`,
+            body: 'Members will keep existing — only the grouping is removed.',
+            confirmLabel: 'Delete group',
+            danger: true,
+          });
+          if (ok) onDelete();
         }}>Delete group</button>
       </div>
     </>
@@ -708,10 +720,14 @@ function SourcesTab(props: Props) {
                 <button
                   className="btn small"
                   type="button"
-                  onClick={() => {
-                    if (confirm(`Delete BESS group "${g.name}" and its ${count} units?`)) {
-                      props.onDeleteBessGroup?.(g.id);
-                    }
+                  onClick={async () => {
+                    const ok = await notify.confirm({
+                      title: `Delete BESS group "${g.name}"?`,
+                      body: `Its ${count} unit${count === 1 ? '' : 's'} will be deleted too.`,
+                      confirmLabel: 'Delete group + units',
+                      danger: true,
+                    });
+                    if (ok) props.onDeleteBessGroup?.(g.id);
                   }}
                   style={{ color: 'var(--red)' }}
                   title="Delete group + all its units"

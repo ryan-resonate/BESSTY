@@ -8,6 +8,7 @@
 // whichever scope is active.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { notify } from '../lib/notify';
 import { Link, useLocation } from 'react-router-dom';
 import {
   deleteGlobalEntry,
@@ -96,8 +97,15 @@ export function CatalogScreen() {
     return globalEntries;
   }
 
-  function handleDelete(e: CatalogEntry) {
-    if (!confirm(`Delete catalog entry "${e.displayName}"?`)) return;
+  async function handleDelete(e: CatalogEntry) {
+    const ok = await notify.confirm({
+      title: `Delete catalog entry "${e.displayName}"?`,
+      body: 'Sources already using this model keep their stored modelId and will '
+        + 'show as unresolved until pointed at another entry.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     if (scope === 'global') {
       deleteGlobalEntry(e.id);
       refreshGlobal();
@@ -309,17 +317,24 @@ function UploadButton(props: { onLoaded(entries: CatalogEntry[]): void }) {
           // (LwA per band — common for IEC 61400-11 and ISO 3744 datasheets)
           // or Z-weighted (un-weighted — the ISO 9613-2 convention). Wrong
           // answer here drives a 3–5 dB systematic error in propagated levels.
-          const isAWeighted = window.confirm(
-            'Are the per-band Lw values in this file A-weighted (LwA per band)?\n\n' +
-            'OK   → A-weighted   (typical for IEC 61400-11 turbine reports and many BESS datasheets)\n' +
-            'Cancel → Z-weighted / un-weighted   (raw Lw per band, ISO 9613-2 convention)\n\n' +
-            'BESSTY converts to Z internally. Pick wrong and propagated levels are off by ~3-5 dB.',
-          );
+          // Two named choices rather than a bare OK/Cancel — the old native
+          // confirm gave no clue which button meant which weighting, and the
+          // answer drives a 3–5 dB systematic error.
+          const isAWeighted = await notify.confirm({
+            title: 'How are the per-band Lw values weighted?',
+            body: 'A-weighted (LwA per band) is typical for IEC 61400-11 turbine '
+              + 'reports and many BESS datasheets. Z-weighted is raw un-weighted '
+              + 'Lw per band, the ISO 9613-2 convention.\n\n'
+              + 'BESSTY converts to Z internally — the wrong answer shifts every '
+              + 'propagated level by roughly 3–5 dB.',
+            confirmLabel: 'A-weighted (LwA)',
+            cancelLabel: 'Z-weighted (raw Lw)',
+          });
           setBusy(true);
           try {
             const entries = await parseCatalogXlsx(file);
             if (entries.length === 0) {
-              alert('No catalog entries found in that file.');
+              notify.warning('No catalog entries found in that file.');
             } else {
               // Tag every imported mode with the chosen weighting so the
               // converter in `spectrumFor` knows whether to un-weight.
@@ -332,7 +347,7 @@ function UploadButton(props: { onLoaded(entries: CatalogEntry[]): void }) {
               props.onLoaded(entries);
             }
           } catch (err) {
-            alert(`Import failed: ${err}`);
+            notify.error(`${err}`, { title: 'Catalog import failed' });
           }
           setBusy(false);
           e.target.value = '';

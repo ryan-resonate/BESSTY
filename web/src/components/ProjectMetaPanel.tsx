@@ -20,6 +20,7 @@
 //   - Snapshots are immutable; reverting never destroys history.
 
 import { useEffect, useState } from 'react';
+import { notify } from '../lib/notify';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import {
@@ -275,10 +276,15 @@ function VersionsBlock({
   }
 
   async function handleRevert(v: VersionListItem) {
-    if (!confirm(
-      `Revert the live project to version "${v.label}" (saved ${v.createdAt.toLocaleString()})?\n\n` +
-      'Your current state will be overwritten. (You can always Save a new version first to keep it.)'
-    )) return;
+    const ok = await notify.confirm({
+      title: `Revert to version "${v.label}"?`,
+      body: `Saved ${v.createdAt.toLocaleString()}.\n\n`
+        + 'Your current state will be overwritten. You can Save a new version '
+        + 'first if you want to keep it.',
+      confirmLabel: 'Revert',
+      danger: true,
+    });
+    if (!ok) return;
     setBusy(true); setError(null);
     try {
       // Load the snapshot and hand it to the editor. ProjectScreen routes
@@ -308,9 +314,13 @@ function VersionsBlock({
   }
 
   async function handleDelete(v: VersionListItem) {
-    if (!confirm(
-      `Delete version "${v.label}"?\n\nThis permanently removes the snapshot. Cannot be undone.`
-    )) return;
+    const ok = await notify.confirm({
+      title: `Delete version "${v.label}"?`,
+      body: 'This permanently removes the snapshot. Cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     setBusy(true); setError(null);
     try {
       await deleteVersion(projectId, v.id);

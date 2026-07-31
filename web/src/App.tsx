@@ -6,6 +6,7 @@ import {
   LoginScreen,
   VerifyEmailScreen,
 } from './components/LoginScreen';
+import { Notifications } from './components/Notifications';
 import { CatalogScreen } from './screens/CatalogScreen';
 import { HelpScreen } from './screens/HelpScreen';
 import { ProjectListScreen } from './screens/ProjectListScreen';
@@ -23,24 +24,35 @@ export default function App() {
   const projectMatch = location.pathname.match(/^\/projects\/([^/]+)/);
   const breadcrumb = projectMatch ? `Project · ${projectMatch[1]}` : undefined;
 
-  switch (authState.status) {
-    case 'loading':    return <LoadingScreen />;
-    case 'unauthed':   return <LoginScreen />;
-    case 'unverified': return <VerifyEmailScreen state={authState} />;
-    case 'blocked':    return <BlockedScreen state={authState} />;
-    case 'allowed':    break;
+  function screen() {
+    switch (authState.status) {
+      case 'loading':    return <LoadingScreen />;
+      case 'unauthed':   return <LoginScreen />;
+      case 'unverified': return <VerifyEmailScreen state={authState} />;
+      case 'blocked':    return <BlockedScreen state={authState} />;
+      case 'allowed':    break;
+    }
+    return (
+      <>
+        <Header projectBreadcrumb={breadcrumb} />
+        <Routes>
+          <Route path="/" element={<Navigate to="/projects" replace />} />
+          <Route path="/projects" element={<ProjectListScreen />} />
+          <Route path="/projects/:projectId" element={<ProjectScreen />} />
+          <Route path="/catalog" element={<CatalogScreen />} />
+          <Route path="/help" element={<HelpScreen />} />
+        </Routes>
+      </>
+    );
   }
 
+  // Mounted OUTSIDE the auth switch: a sign-in or Firestore failure needs to be
+  // able to raise a toast just as much as an in-app action does, and the
+  // imperative `notify.*` API silently no-ops if no provider is listening.
   return (
     <>
-      <Header projectBreadcrumb={breadcrumb} />
-      <Routes>
-        <Route path="/" element={<Navigate to="/projects" replace />} />
-        <Route path="/projects" element={<ProjectListScreen />} />
-        <Route path="/projects/:projectId" element={<ProjectScreen />} />
-        <Route path="/catalog" element={<CatalogScreen />} />
-        <Route path="/help" element={<HelpScreen />} />
-      </Routes>
+      {screen()}
+      <Notifications />
     </>
   );
 }

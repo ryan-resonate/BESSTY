@@ -7,6 +7,7 @@
 // passes it to `toWgs84` / `fromWgs84`.
 
 import { useMemo, useState } from 'react';
+import { notify } from '../lib/notify';
 import { groupedEpsgPresets, registerCustomEpsg } from '../lib/projections';
 
 interface Props {
@@ -37,7 +38,7 @@ export function EpsgPicker({ value, onChange, label = 'Coordinate system', hint 
   function commitCustom() {
     const code = parseInt(customCode, 10);
     if (!Number.isFinite(code) || !customDef.trim()) {
-      alert('Enter a numeric EPSG code and a proj4 definition string.');
+      notify.warning('Enter a numeric EPSG code and a proj4 definition string.');
       return;
     }
     registerCustomEpsg(code, customDef.trim());
