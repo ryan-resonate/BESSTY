@@ -889,16 +889,25 @@ export function ProjectScreen() {
     // Primal, per-tile clustered, on the Web Worker.
     setTimeout(() => {
       const gen = ++gridGenRef.current;
+      const gridDiag = new Diagnostics();
       evaluateGridViaWorker(project, dem, gridSpacingM, heightAbove, (done, total) => {
         // Late progress from a superseded or cancelled run must not resurrect
         // the progress bar.
         if (gen === gridGenRef.current) setGridProgress({ done, total });
-      })
+      }, gridDiag)
         .then((g) => {
           if (gen !== gridGenRef.current) return;
           setGrid(g);
           setGridStatus('ready');
           setGridProgress(null);
+          // I20: fold the grid's approximations in beside the receiver solve's,
+          // deduped by code — the two paths share several caps.
+          setDiagnostics((prev) => {
+            const merged = new Diagnostics();
+            merged.merge(prev);
+            merged.merge(gridDiag);
+            return merged.list();
+          });
         })
         .catch((e) => {
           if (gen !== gridGenRef.current) return;   // cancelled / superseded

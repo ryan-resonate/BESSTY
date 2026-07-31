@@ -398,6 +398,7 @@ function buildGridJob(
   dem: DemRaster | null,
   spacingM: number,
   rxHeightAboveGround: number,
+  diagnostics?: Diagnostics,
 ): GridJob {
   const ca = project.calculationArea;
   if (!ca) throw new Error('calculationArea not set; cannot compute grid');
@@ -450,6 +451,20 @@ function buildGridJob(
         maxLng: Math.max(lngLo, lngHi) + marginLng,
       };
       const tileEff = tree ? walkSourceTreeForRegion(tree, region, theta, cutoffM) : [];
+      // I20: a cluster stands in for several real sources. Cheap and usually
+      // harmless, but it IS an approximation and it was invisible.
+      if (diagnostics) {
+        const clustered = tileEff.filter((es) => es.kind !== 'real').length;
+        if (clustered > 0) {
+          diagnostics.note(
+            'sources.clustered', 'info',
+            `Distant sources were merged into Barnes-Hut cluster stand-ins for some `
+            + `tiles (θ = ${theta}). Lower "Tree acceptance θ" in Propagation cutoffs `
+            + 'for a more literal, slower grid.',
+            clustered,
+          );
+        }
+      }
       tiles.push({
         col0, row0, cols: tcols, rows: trows,
         sources: resolveTileSources(project, tileEff),
@@ -476,6 +491,7 @@ function buildGridJob(
     topo: project.settings?.topography,
     terrain: buildTerrainField(dem, origin, [...corners, ...sourceLatLngs], {
       despikeStrength: project.settings?.topography?.despikeStrength,
+      diagnostics,
     }),
     includeContainers: containers?.grid ?? false,
     roofOffsetM: containers?.roofOffsetM ?? 0.3,
@@ -519,9 +535,10 @@ export async function evaluateGridViaWorker(
   spacingM: number,
   rxHeightAboveGround: number,
   onProgress?: (tilesDone: number, tilesTotal: number) => void,
+  diagnostics?: Diagnostics,
 ): Promise<GridResult> {
   await ensureSolverReady();
-  const job = buildGridJob(project, dem, spacingM, rxHeightAboveGround);
+  const job = buildGridJob(project, dem, spacingM, rxHeightAboveGround, diagnostics);
   {
     // The DEM region must cover the calc area AND every (real) source, because
     // ridge sampling walks the whole source→cell line. Expand the snapshot
