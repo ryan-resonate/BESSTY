@@ -81,15 +81,20 @@ type PromptReq = Extract<NotifyState['dialogs'][number], { kind: 'prompt' }>;
 
 function ConfirmDialog({ req }: { req: ConfirmReq }) {
   const { opts } = req;
-  // Esc cancels, Enter confirms — matching the native dialog these replace.
+  // Esc cancels, matching the native dialog these replace.
+  //
+  // Enter confirms ONLY for non-destructive dialogs. A stray Enter — left over
+  // from submitting the form that opened this, or from keyboard navigation —
+  // must not delete a project. Destructive actions require an explicit click or
+  // a deliberate Tab-to-the-button.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') resolveDialog(req.id, false);
-      if (e.key === 'Enter') resolveDialog(req.id, true);
+      if (e.key === 'Enter' && !opts.danger) resolveDialog(req.id, true);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [req.id]);
+  }, [req.id, opts.danger]);
 
   return (
     <ModalBackdrop onClose={() => resolveDialog(req.id, false)}>
@@ -97,13 +102,19 @@ function ConfirmDialog({ req }: { req: ConfirmReq }) {
         <h3 style={{ marginTop: 0 }}>{opts.title}</h3>
         {opts.body && <div className="hint" style={{ whiteSpace: 'pre-wrap' }}>{opts.body}</div>}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
-          <button className="btn" onClick={() => resolveDialog(req.id, false)}>
+          <button
+            className="btn"
+            autoFocus={opts.danger}
+            onClick={() => resolveDialog(req.id, false)}
+          >
             {opts.cancelLabel ?? 'Cancel'}
           </button>
           <button
             className={opts.danger ? 'btn danger' : 'btn primary'}
             style={opts.danger ? { background: 'var(--red, #d32f2f)', color: '#fff' } : undefined}
-            autoFocus
+            // Destructive dialogs don't autofocus their confirm button either —
+            // focus lands on Cancel, so Space/Enter is a safe no-op.
+            autoFocus={!opts.danger}
             onClick={() => resolveDialog(req.id, true)}
           >
             {opts.confirmLabel ?? 'OK'}
