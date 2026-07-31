@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { Header } from './components/Header';
 import {
@@ -7,6 +8,7 @@ import {
   VerifyEmailScreen,
 } from './components/LoginScreen';
 import { Notifications } from './components/Notifications';
+import { HelpWindow } from './components/HelpWindow';
 import { CatalogScreen } from './screens/CatalogScreen';
 import { HelpScreen } from './screens/HelpScreen';
 import { ProjectListScreen } from './screens/ProjectListScreen';
@@ -14,6 +16,8 @@ import { ProjectScreen } from './screens/ProjectScreen';
 import { useAuthState } from './lib/auth';
 
 export default function App() {
+  // I11: help opens as a floating window over whatever you're doing.
+  const [helpOpen, setHelpOpen] = useState(false);
   // Reactive Firebase auth + profile state. Re-renders the tree any time
   // the user signs in/out, verifies their email, or has their profile
   // doc updated (e.g. an admin flips `allowed = true`).
@@ -34,7 +38,7 @@ export default function App() {
     }
     return (
       <>
-        <Header projectBreadcrumb={breadcrumb} />
+        <Header projectBreadcrumb={breadcrumb} onOpenHelp={() => setHelpOpen(true)} />
         <Routes>
           <Route path="/" element={<Navigate to="/projects" replace />} />
           <Route path="/projects" element={<ProjectListScreen />} />
@@ -52,6 +56,7 @@ export default function App() {
   return (
     <>
       {screen()}
+      {helpOpen && <HelpWindow onClose={() => setHelpOpen(false)} />}
       <Notifications />
     </>
   );

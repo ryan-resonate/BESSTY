@@ -1,16 +1,19 @@
-import { NavLink, useLocation, useNavigate } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 import { Logo } from './Logo';
 import { logout } from '../lib/auth';
 
 interface Props {
   projectBreadcrumb?: string;
+  /// I11: open the floating help window instead of navigating to /help.
+  /// Absent on screens with nothing to stay on, where navigation is correct.
+  onOpenHelp?(): void;
 }
 
-export function Header({ projectBreadcrumb }: Props) {
+export function Header({ projectBreadcrumb, onOpenHelp }: Props) {
   // Carry the current project id through to /catalog so the Local tab is
   // immediately scoped to that project.
   const location = useLocation();
-  const navigate = useNavigate();
+
   const projectMatch = location.pathname.match(/^\/projects\/([^/]+)/);
   const projectId = projectMatch?.[1];
   const catalogTo = projectId ? `/catalog?project=${projectId}` : '/catalog';
@@ -68,12 +71,21 @@ export function Header({ projectBreadcrumb }: Props) {
         >
           {__APP_VERSION_SHA__} · {__APP_VERSION_DATE__}
         </span>
-        <button
+        {/* I11: a REAL anchor, so ctrl/middle-click opens the standalone
+            /help route in a new tab natively. Plain left-click is intercepted
+            to open the floating window instead, which keeps the project on
+            screen. */}
+        <a
           className="ic-btn"
-          title="Help / user guide"
-          type="button"
-          onClick={() => navigate('/help')}
-        >?</button>
+          title="Help / user guide (ctrl-click for a new tab)"
+          href="#/help"
+          onClick={(e) => {
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+            if (!onOpenHelp) return;      // no handler here → let it navigate
+            e.preventDefault();
+            onOpenHelp();
+          }}
+        >?</a>
         <button
           className="ic-btn"
           title="Sign out"
