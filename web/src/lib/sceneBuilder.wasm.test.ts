@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 
 import init, { solve_scene, WasmSession } from '../wasm/iso9613_wasm.js';
 import { buildScene, type ResolvedSource, type SceneInput } from './sceneBuilder';
+import { resolveContainer } from './catalogDims';
 import type { Barrier } from './types';
 
 const ORIGIN: [number, number] = [-27.0, 152.0];
@@ -119,6 +120,63 @@ test('enabling a container lifts a low source (net effect is not a silent no-op)
   assert.equal(offScene.sources[0].height_agl, 1.0);
   assert.equal(onScene.obstacles.length, 1);
   assert.equal(offScene.obstacles.length, 0);
+});
+
+// END-TO-END on the path the app actually takes: catalog entry → resolveContainer
+// → buildScene → engine. The earlier container tests all hand-build a
+// `ResolvedSource.container`, which is precisely why the feature could ship as a
+// silent no-op — nothing exercised the resolver, and the resolver was the part
+// that never fired. This one starts from a BARE catalog entry, as shipped.
+test('a stock BESS row changes its answer when containers are switched on', () => {
+  const entry = {
+    id: 'mp', displayName: 'Stock unit', kind: 'bess',
+    defaultMode: 'nominal', modes: [], origin: 'seed',
+  } as unknown as Parameters<typeof resolveContainer>[1];
+
+  // Six units in an east-west line, receiver 200 m further east, so the front
+  // units stand between the back ones and the receiver.
+  const units = Array.from({ length: 6 }, (_, i) => {
+    const source = {
+      id: `u${i}`, name: `U${i}`, kind: 'bess', modelId: 'mp', catalogScope: 'global',
+      latLng: [ORIGIN[0], ORIGIN[1] + i * 0.00007],
+    } as unknown as Parameters<typeof resolveContainer>[0];
+    const container = resolveContainer(source, entry);
+    assert.ok(container, `unit ${i}: a stock catalog entry must resolve a container`);
+    return src({
+      id: `u${i}`,
+      latLng: [ORIGIN[0], ORIGIN[1] + i * 0.00007],
+      heightAglM: 1.5,          // catalog default emission height
+      container,
+    });
+  });
+
+  // Receiver ~60 m east. Distance matters: every unit's acoustic centre is
+  // clamped to roof + 0.3 m, so a source only falls below a NEIGHBOUR's roofline
+  // once the ray descends steeply enough to get there. Across a 40 m row of
+  // 2.6 m boxes that needs a close receiver — at 200 m the ray grazes the roofs
+  // (screening ≈ 0.00 dB) and at 1 km it clears them entirely. Mutual screening
+  // in a flat, uniform row is a near-field effect, not a far-field one.
+  const scene = (containers: boolean) => buildScene(input({
+    sources: units,
+    receivers: [{ id: 'r1', latLng: [ORIGIN[0], ORIGIN[1] + 0.0006], heightAboveGroundM: 1.5 }],
+    includeContainers: containers,
+    roofOffsetM: 0.3,
+  }));
+  const off = scene(false);
+  const on = scene(true);
+
+  // The two things enabling the setting must do, neither of which happened before.
+  assert.equal(off.obstacles.length, 0, 'off: no boxes');
+  assert.equal(on.obstacles.length, 6, 'on: one box per unit');
+  assert.equal(off.sources[0].height_agl, 1.5, 'off: bare catalog height');
+  assert.equal(on.sources[0].height_agl, 2.9, 'on: clamped to roof (2.6) + 0.3');
+
+  const lvl = (s: ReturnType<typeof scene>) =>
+    JSON.parse(solve_scene(JSON.stringify(s))).per_receiver[0].total_dba as number;
+  const a = lvl(off);
+  const b = lvl(on);
+  assert.ok(b < a - 1,
+    `containers must screen a stock row at 60 m: ${a.toFixed(2)} → ${b.toFixed(2)} dBA`);
 });
 
 test('the session path accepts builder scenes and swaps receivers', () => {

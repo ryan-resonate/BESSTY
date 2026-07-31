@@ -548,6 +548,30 @@ export function CatalogEntryEditor(props: {
                 </div>
               </div>
             )}
+            {(draft.kind === 'bess' || draft.kind === 'auxiliary') && (
+              <div className="fld" style={{ flex: '1 1 100%' }}>
+                <span>Container height (m) — enclosure body, used when Source containers is on</span>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input
+                    type="number" step="0.1" min="0.1" max="20"
+                    placeholder="height"
+                    style={{ width: 80 }}
+                    value={draft.containerHeightM ?? ''}
+                    onChange={(e) => {
+                      const h = +e.target.value;
+                      update('containerHeightM',
+                        Number.isFinite(h) && h > 0 ? h : undefined);
+                    }}
+                  />
+                  <span style={{ color: 'var(--ink-soft)', fontSize: 11 }}>
+                    Leave blank to use kind default
+                    ({draft.kind === 'bess' ? '2.6 m' : '2.2 m'}). This is the
+                    physical enclosure height, not the acoustic-centre height above —
+                    with containers on, the source sits just above this roof.
+                  </span>
+                </div>
+              </div>
+            )}
           </section>
 
           <section className="settings-section">

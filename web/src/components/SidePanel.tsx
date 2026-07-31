@@ -7,7 +7,7 @@ import { limitForPeriod } from '../lib/types';
 import type { ReceiverResult } from '../lib/solver';
 import type { BaseMap, ContourMode } from './MapView';
 import type { Palette } from '../lib/colormap';
-import { listEntriesByKind, lookupEntry } from '../lib/catalog';
+import { containerHeightFor, footprintFor, listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { ImportObjectsModal } from './ImportObjectsModal';
 import { ReferenceImportModal } from './ReferenceImportModal';
 import { ProjectMetaPanel } from './ProjectMetaPanel';
@@ -1807,8 +1807,17 @@ function SettingsTab(props: Props) {
           obstacles at every cell: it's common to want the detail on reported
           receiver levels but not on a whole-site map.
           <br />
-          Only products whose catalog entry carries a container height are affected;
-          the rest stay bare point sources.
+          Every BESS / auxiliary unit is boxed: dimensions come from the catalog
+          product, falling back to a kind default (BESS 2.6 m, auxiliary 2.2 m tall)
+          when it doesn't pin one. Set exact dimensions per product in the catalog,
+          or per unit via the ▤ button on a source.
+          <br />
+          Expect most of the change at close receivers. Because every unit's source
+          sits above its own roof, a unit only screens a neighbour once the ray
+          descends below that neighbour's roofline — a near-field effect. Across a
+          flat, uniform row it is worth ~1–2 dB inside about 100 m and tends to zero
+          by 200 m, where the remaining difference is the acoustic centre being
+          lifted to the roof.
         </div>
       </section>
 
@@ -2326,9 +2335,50 @@ function SourceItem(props: {
   const candidates = listEntriesByKind(project, s.kind);
   const entry = lookupEntry(project, s);
   const modes = entry?.modes ?? [];
+  const [openBox, setOpenBox] = useState(false);
+  const boxable = s.kind === 'bess' || s.kind === 'auxiliary';
+
+  // Catalog-resolved container dimensions, shown as input placeholders so a
+  // blank field visibly means "inherit" rather than "zero". Note the axis swap:
+  // the box's LONG axis is the footprint's `widthM` (see `resolveContainer`).
+  const fp = entry
+    ? footprintFor(entry)
+    : (s.kind === 'bess' ? { widthM: 5.1, lengthM: 1.7 } : { widthM: 2.0, lengthM: 1.5 });
+  const defBox = {
+    lengthM: fp.widthM,
+    widthM: fp.lengthM,
+    heightM: entry ? containerHeightFor(entry) : (s.kind === 'bess' ? 2.6 : 2.2),
+  };
+  const boxOn = s.container?.enabled !== false;
+  const cset = project.settings?.containers;
+  const boxUsedAnywhere = (cset?.receiverCalc ?? false) || (cset?.grid ?? false);
+
+  function patchBox(p: Partial<NonNullable<Source['container']>>) {
+    onChange({ container: { ...s.container, ...p } });
+  }
+  // A plain function, NOT a component: declaring a component inside the render
+  // gives it a new identity every pass, so React would remount the input on each
+  // keystroke and the field would lose focus after one character.
+  function boxDim(k: 'lengthM' | 'widthM' | 'heightM', label: string) {
+    return (
+      <Field label={label}>
+        <input
+          type="number" step="0.1" min="0.1" max="50" style={{ width: 72 }}
+          placeholder={defBox[k].toFixed(1)}
+          value={s.container?.[k] ?? ''}
+          onChange={(e) => {
+            const v = +e.target.value;
+            patchBox({ [k]: Number.isFinite(v) && v > 0 ? v : undefined });
+          }}
+        />
+      </Field>
+    );
+  }
+
   return (
     <div
       className={`item${selected ? ' selected' : ''}`}
+      style={openBox ? { flexDirection: 'column', alignItems: 'stretch', gap: 6 } : undefined}
       onClick={(e) => onSelect({ shift: e.shiftKey })}
     >
       <div className="item-name">{s.name}</div>
@@ -2372,8 +2422,62 @@ function SourceItem(props: {
               title="Rotor diameter (m) — feeds Annex D.3 elevated source for barriers" />
           </>
         )}
+        {boxable && (
+          <button
+            className="btn small"
+            title="Container (screening box)"
+            style={{ opacity: boxOn ? 1 : 0.45 }}
+            onClick={() => setOpenBox(!openBox)}
+          >▤{openBox ? '▾' : '▸'}</button>
+        )}
         <button className="x-btn" onClick={(e) => { e.stopPropagation(); onRemove(); }}>✕</button>
       </div>
+      {openBox && boxable && (
+        <div style={{ paddingLeft: 4 }} onClick={(e) => e.stopPropagation()}>
+          <Field label="Model as a container">
+            <input
+              type="checkbox"
+              checked={boxOn}
+              onChange={(e) => patchBox({ enabled: e.target.checked ? undefined : false })}
+            />
+          </Field>
+          {boxOn && (
+            <>
+              <div className="grid-2">
+                {boxDim('lengthM', 'Length (m)')}
+                {boxDim('widthM', 'Width (m)')}
+                {boxDim('heightM', 'Height (m)')}
+                {s.groupId == null && (
+                  <Field label="Bearing (°)">
+                    <input
+                      type="number" step="1" min="0" max="359" style={{ width: 72 }}
+                      placeholder="0"
+                      value={s.container?.bearingDeg ?? ''}
+                      onChange={(e) => {
+                        const v = +e.target.value;
+                        patchBox({ bearingDeg: Number.isFinite(v) ? v : undefined });
+                      }}
+                    />
+                  </Field>
+                )}
+              </div>
+              <div className="hint">
+                Blank inherits the catalog product
+                ({defBox.lengthM.toFixed(1)} × {defBox.widthM.toFixed(1)} × {defBox.heightM.toFixed(1)} m).
+                {s.groupId != null
+                  ? ' Orientation follows the BESS group’s row heading.'
+                  : ' Bearing is the long axis, clockwise from north.'}
+              </div>
+            </>
+          )}
+          {!boxUsedAnywhere && (
+            <div className="hint" style={{ color: 'var(--warn, #b26a00)' }}>
+              Source containers is off for this project — these dimensions are
+              stored but not modelled. Turn it on in Settings → Source containers.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

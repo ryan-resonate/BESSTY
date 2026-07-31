@@ -6,7 +6,7 @@ import { limitForPeriod } from '../lib/types';
 import type { ReceiverResult, GridResult } from '../lib/solver';
 import { paletteRgb, paletteCss, type Palette, tForDb, makeBandsForRange } from '../lib/colormap';
 import { buildContourLines } from '../lib/contourLines';
-import { footprintFor, lookupEntry } from '../lib/catalog';
+import { footprintFor, lookupEntry, resolveContainer } from '../lib/catalog';
 
 export type ContourMode = 'filled' | 'lines' | 'both';
 
@@ -1197,11 +1197,20 @@ export function MapView({
       // visual scale via rotorDiameterM.
       if (footprints && (s.kind === 'bess' || s.kind === 'auxiliary')) {
         const entry = lookupEntry(projectRef.current, s);
-        const fp = entry
+        const fpCat = entry
           ? footprintFor(entry)
           : (s.kind === 'bess'
               ? { widthM: 5.1, lengthM: 1.7 }
               : { widthM: 2.0, lengthM: 1.5 });
+        // When "Source containers" is on, this rectangle IS the screening box
+        // the engine models, so draw the resolved box (per-source overrides
+        // included) rather than the bare catalog footprint. Same resolver the
+        // solver uses, so the drawing cannot drift from the obstacle.
+        // `box.lengthM` is the long axis == the footprint's `widthM`.
+        const cset = projectRef.current.settings?.containers;
+        const boxModelled = (cset?.receiverCalc ?? false) || (cset?.grid ?? false);
+        const box = entry && boxModelled ? resolveContainer(s, entry) : undefined;
+        const fp = box ? { widthM: box.lengthM, lengthM: box.widthM } : fpCat;
         // 4 corners in a local metre frame centred on the source,
         // rotated by yawDeg (clockwise from north == screen-clockwise
         // with y pointing south, same convention as the materialiser).
@@ -1233,13 +1242,23 @@ export function MapView({
           opacity: 0.95,
           fillColor: kindColor,
           // Mild fill so the polygon is visible at high zoom without
-          // visually drowning the centred marker icon.
-          fillOpacity: 0.35,
+          // visually drowning the centred marker icon. A modelled container
+          // reads heavier — the rectangle is now an acoustic obstacle, not
+          // just a scale reference.
+          fillOpacity: box ? 0.55 : 0.35,
           // Click + select; clicks pass through the marker icon as
           // well, so either target selects the source.
           interactive: true,
           bubblingMouseEvents: false,
         });
+        if (box) {
+          // Height only shows up here — the plan view can't convey it, and it
+          // is what decides whether a unit screens its neighbours.
+          fpPoly.bindTooltip(
+            `Container ${box.lengthM.toFixed(1)} × ${box.widthM.toFixed(1)} × ${box.heightM.toFixed(1)} m`,
+            { direction: 'top', opacity: 0.9 },
+          );
+        }
         fpPoly.on('click', (e: L.LeafletMouseEvent) => {
           const shift = !!e.originalEvent?.shiftKey;
           callbacksRef.current.onSelect(s.id, { shift });

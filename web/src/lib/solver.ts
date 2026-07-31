@@ -24,11 +24,10 @@ import init, {
 } from '../wasm/iso9613_wasm.js';
 
 import type {
-  CatalogEntry,
   Source,
   Project,
 } from './types';
-import { footprintFor, lookupEntry, sourceHeightFor, spectrumFor } from './catalog';
+import { lookupEntry, resolveContainer, sourceHeightFor, spectrumFor } from './catalog';
 import { type DemRaster, type DemRegion, captureDemRegion } from './dem';
 import {
   propagationSettings,
@@ -196,35 +195,6 @@ export function resolveSources(project: Project): ResolvedSource[] {
     });
   }
   return out;
-}
-
-/// The screening box for one BESS / auxiliary unit, or `undefined` when the
-/// product has no enclosure height (so it stays a bare point source) or the unit
-/// opted out.
-///
-/// Dimensions come from the catalog product — `footprintM` for the plan and
-/// `containerHeightM` for the body — with per-source overrides on top.
-///
-/// **Orientation.** BEESTY's footprint convention is `widthM` = the LONG axis,
-/// which at `yawDeg = 0` runs EAST along an unrotated row (see `bessGroups.ts`),
-/// and `yawDeg` is clockwise from north. `containerFootprint` instead takes the
-/// long axis along a compass `bearingDeg` with 0 = north. Hence the +90: a unit
-/// with no yaw lies east-west, as the map draws it.
-function resolveContainer(
-  source: Source,
-  entry: CatalogEntry,
-): ResolvedSource['container'] {
-  if (source.kind === 'wtg') return undefined;              // turbines have no box
-  const override = source.container;
-  if (override?.enabled === false) return undefined;
-  const heightM = override?.heightM ?? entry.containerHeightM;
-  if (heightM == null || !Number.isFinite(heightM) || heightM <= 0) return undefined;
-  const fp = footprintFor(entry);
-  const lengthM = override?.lengthM ?? fp.widthM;           // widthM is the long axis
-  const widthM = override?.widthM ?? fp.lengthM;
-  if (!(lengthM > 0) || !(widthM > 0)) return undefined;
-  const yaw = source.yawDeg ?? override?.bearingDeg ?? 0;
-  return { lengthM, widthM, heightM, bearingDeg: yaw + 90 };
 }
 
 /// Ground elevation under a point, with the app's long-standing non-finite → 0

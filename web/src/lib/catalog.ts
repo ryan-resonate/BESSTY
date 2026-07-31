@@ -24,63 +24,18 @@
 
 import type { CatalogEntry, Project, Source, SourceKind } from './types';
 
-/// Per-kind defaults used when a CatalogEntry doesn't specify
-/// `footprintM`. Picked from typical product datasheets:
-///   - BESS: Tesla Megapack 2 XL exterior dims.
-///   - Auxiliary: a generic inverter cabinet (Sungrow SG3300-ish).
-///   - WTG: not applicable (rotorDiameterM serves the same purpose).
-const DEFAULT_FOOTPRINT_M: Record<SourceKind, { widthM: number; lengthM: number }> = {
-  bess:      { widthM: 5.1, lengthM: 1.7 },
-  auxiliary: { widthM: 2.0, lengthM: 1.5 },
-  wtg:       { widthM: 0,   lengthM: 0 },
-};
+// Physical dimension resolution (emission height, footprint, container box)
+// lives in the dependency-free `catalogDims` leaf so it can be unit-tested and
+// imported by `MapView` without dragging the Firebase SDK along. Re-exported
+// here so `from './catalog'` keeps working for every existing call site.
+export {
+  sourceHeightFor,
+  footprintFor,
+  containerHeightFor,
+  resolveContainer,
+  type ContainerBox,
+} from './catalogDims';
 
-/// Per-kind default source emission height above local ground (m), used
-/// when the catalog entry doesn't pin a `sourceHeightM`. WTG default
-/// matches the previous hard-coded fallback in solver.ts; BESS / Aux
-/// default matches the previous hard-coded 1.5 m base.
-const DEFAULT_SOURCE_HEIGHT_M: Record<SourceKind, number> = {
-  wtg: 100,
-  bess: 1.5,
-  auxiliary: 1.5,
-};
-
-/// Resolve a catalog entry's default source emission height (m above
-/// local ground). Order of precedence:
-///   1. `entry.sourceHeightM` if set
-///   2. WTG only: `entry.hubHeights[0]` (legacy convention)
-///   3. Per-kind default (WTG 100 m; BESS / Aux 1.5 m)
-///
-/// Callers should ADD the per-source delta on top of this:
-///   - WTG: `Source.hubHeight ?? sourceHeightFor(entry)` (the override
-///     replaces the catalog default rather than stacking).
-///   - BESS / Aux: `(Source.elevationOffset ?? 0) + sourceHeightFor(entry)`
-///     (the offset is a delta from the library height).
-export function sourceHeightFor(entry: CatalogEntry | null | undefined): number {
-  if (!entry) return DEFAULT_SOURCE_HEIGHT_M.bess;
-  if (Number.isFinite(entry.sourceHeightM) && (entry.sourceHeightM as number) > 0) {
-    return entry.sourceHeightM as number;
-  }
-  if (entry.kind === 'wtg' && entry.hubHeights && entry.hubHeights.length > 0) {
-    return entry.hubHeights[0];
-  }
-  return DEFAULT_SOURCE_HEIGHT_M[entry.kind];
-}
-
-/// Resolve a catalog entry's footprint, falling back to the kind default
-/// when the entry doesn't pin a value. Always returns finite positive
-/// dimensions for grouped kinds (BESS, auxiliary); WTGs are zero-sized
-/// because they're never grouped.
-export function footprintFor(entry: CatalogEntry): { widthM: number; lengthM: number } {
-  if (entry.footprintM
-      && Number.isFinite(entry.footprintM.widthM)
-      && Number.isFinite(entry.footprintM.lengthM)
-      && entry.footprintM.widthM > 0
-      && entry.footprintM.lengthM > 0) {
-    return entry.footprintM;
-  }
-  return DEFAULT_FOOTPRINT_M[entry.kind];
-}
 import { SEED_CATALOG } from './seedCatalog';
 import {
   deleteGlobalEntryFs,

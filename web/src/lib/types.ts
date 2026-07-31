@@ -691,10 +691,13 @@ export interface CatalogEntry {
   /// Falls back to `defaultFootprintFor(kind)` when unset (see catalog.ts).
   footprintM?: { widthM: number; lengthM: number };
   /// Height of the unit's enclosure (m) — the container/cabinet body, NOT the
-  /// acoustic-centre height (`sourceHeightM`). Only needed when the unit is
+  /// acoustic-centre height (`sourceHeightM`). Only used when the unit is
   /// modelled as a screening box (see `ProjectSettings.containers`); the plan
-  /// dimensions come from `footprintM`. Absent = no container available for
-  /// this product, so it stays a bare point source.
+  /// dimensions come from `footprintM`.
+  /// Falls back to `containerHeightFor(kind)` when unset (BESS 2.6 m,
+  /// auxiliary 2.2 m — see catalog.ts), exactly as `footprintM` does, so the
+  /// containers setting applies to every unit rather than only to products
+  /// whose catalog entry has been filled in.
   containerHeightM?: number;
   /// File of origin, for traceability ('imported from V163.xlsx').
   source?: string;
