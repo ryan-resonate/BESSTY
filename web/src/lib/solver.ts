@@ -502,18 +502,27 @@ export async function evaluateGrid(
 
 /// Run the contour grid in a Web Worker so the main thread stays responsive
 /// (S1). The worker reconstructs the DEM from a transferable region snapshot
-/// and runs the SAME `runBatchedGrid` core. Falls back to the synchronous path
-/// on any worker error (unsupported environment, init failure, etc.) so the
-/// grid always renders.
+/// and runs the SAME `runBatchedGrid` core.
+///
+/// I12: this is now the ONLY grid path. It used to fall back to running the
+/// solve inline on any worker error, which is precisely what made Chrome flag
+/// the page as unresponsive — a large grid on the main thread blocks every
+/// frame for tens of seconds, and the fallback fired silently, so a broken
+/// worker looked like "the app just freezes sometimes". A failed worker now
+/// rejects and the caller reports it.
+///
+/// `onProgress` receives (tilesDone, tilesTotal), throttled to ~10 Hz by the
+/// worker.
 export async function evaluateGridViaWorker(
   project: Project,
   dem: DemRaster | null,
   spacingM: number,
   rxHeightAboveGround: number,
+  onProgress?: (tilesDone: number, tilesTotal: number) => void,
 ): Promise<GridResult> {
   await ensureSolverReady();
   const job = buildGridJob(project, dem, spacingM, rxHeightAboveGround);
-  try {
+  {
     // The DEM region must cover the calc area AND every (real) source, because
     // ridge sampling walks the whole source→cell line. Expand the snapshot
     // bounds to the union of the calc-area rectangle and the source positions,
@@ -526,10 +535,7 @@ export async function evaluateGridViaWorker(
     // re-run of the same area) reuses the sampled terrain instead of
     // re-sampling ~10⁶ DEM points on the main thread each time.
     const region = dem ? captureDemRegionCached(dem, sourcePaddedBounds(job)) : null;
-    return await runGridJobOnWorker(job, region);
-  } catch (e) {
-    console.warn('[BESSTY] grid worker unavailable, running inline:', e);
-    return runBatchedGrid(job, dem);
+    return await runGridJobOnWorker(job, region, onProgress);
   }
 }
 
@@ -588,22 +594,60 @@ function getGridWorker(): Worker {
   return gridWorker;
 }
 
-function runGridJobOnWorker(job: GridJob, region: DemRegion | null): Promise<GridResult> {
+/// Kill the in-flight grid solve (I12). The worker is terminated rather than
+/// asked to stop — `runBatchedGrid` is a tight synchronous loop with no
+/// yield point, so a cooperative cancel flag would not be read until it
+/// finished, which is the thing we're trying to avoid. The next run lazily
+/// builds a fresh worker.
+///
+/// In-flight promises reject with `GRID_CANCELLED`; callers should treat that
+/// as "no result", not an error to surface.
+export const GRID_CANCELLED = 'grid cancelled';
+
+export function cancelGridRun(): void {
+  if (!gridWorker) return;
+  gridWorker.terminate();
+  gridWorker = null;
+  // Bump the sequence so any late message from the dead worker is ignored.
+  gridWorkerSeq++;
+}
+
+function runGridJobOnWorker(
+  job: GridJob,
+  region: DemRegion | null,
+  onProgress?: (tilesDone: number, tilesTotal: number) => void,
+): Promise<GridResult> {
   const worker = getGridWorker();
   const id = ++gridWorkerSeq;
   return new Promise<GridResult>((resolve, reject) => {
+    // The timeout is a DEAD-MAN switch, not a total budget: it's rearmed by
+    // every progress message, so a genuinely long grid that is visibly
+    // advancing is never killed, while a wedged worker still fails in 60 s.
+    const IDLE_TIMEOUT_MS = 60000;
+    let timeout = 0;
+    const arm = () => {
+      clearTimeout(timeout);
+      timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error('grid worker stopped responding'));
+      }, IDLE_TIMEOUT_MS);
+    };
     const cleanup = () => {
       clearTimeout(timeout);
       worker.removeEventListener('message', onMessage);
       worker.removeEventListener('error', onError);
     };
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error('grid worker timed out'));
-    }, 60000);
     const onMessage = (ev: MessageEvent) => {
-      const data = ev.data as { id: number; ok: boolean; result?: GridResult; error?: string };
+      const data = ev.data as {
+        id: number; ok?: boolean; result?: GridResult; error?: string;
+        progress?: { tilesDone: number; tilesTotal: number };
+      };
       if (data.id !== id) return;
+      if (data.progress) {
+        arm();
+        onProgress?.(data.progress.tilesDone, data.progress.tilesTotal);
+        return;
+      }
       cleanup();
       if (data.ok && data.result) resolve(data.result);
       else reject(new Error(data.error ?? 'grid worker failed'));
@@ -618,6 +662,7 @@ function runGridJobOnWorker(job: GridJob, region: DemRegion | null): Promise<Gri
     };
     worker.addEventListener('message', onMessage);
     worker.addEventListener('error', onError);
+    arm();
     worker.postMessage({ id, job, region });
   });
 }

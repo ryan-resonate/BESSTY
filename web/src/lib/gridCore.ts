@@ -154,7 +154,15 @@ function totalDbaFor(contributions: number[][], aw: number[]): number {
 /// no turbines, which is the common case). The engine caches the obstacle and
 /// terrain decomposition across `set_receivers`, so the expensive geometry work
 /// happens once per tile instead of once per cell.
-export function runBatchedGrid(job: GridJob, dem: DemRaster | null): GridResult {
+/// Called after each tile completes (I12). Runs on whichever thread the solve
+/// is on, so it must be cheap — the worker just forwards a postMessage.
+export type GridProgress = (tilesDone: number, tilesTotal: number) => void;
+
+export function runBatchedGrid(
+  job: GridJob,
+  dem: DemRaster | null,
+  onProgress?: GridProgress,
+): GridResult {
   const t0 = performance.now();
   const {
     cols, rows, dxM, dyM, origin, nBands, cutoffM, dOmegaDb, rxHeightAboveGround,
@@ -165,8 +173,11 @@ export function runBatchedGrid(job: GridJob, dem: DemRaster | null): GridResult 
   const dbA = new Float32Array(cols * rows).fill(-120);
   const aw = nBands === 31 ? THIRD_OCT_AW : OCTAVE_AW;
 
+  let tilesDone = 0;
   for (const tile of tiles) {
-    if (tile.sources.length === 0) continue;
+    // Empty tiles still count toward progress — otherwise a sparse job appears
+    // to stall, then jump.
+    if (tile.sources.length === 0) { onProgress?.(++tilesDone, tiles.length); continue; }
 
     // Cells of this tile, as receivers. `id` is the flat grid index so results
     // map straight back regardless of grouping or engine ordering.
@@ -194,7 +205,7 @@ export function runBatchedGrid(job: GridJob, dem: DemRaster | null): GridResult 
         });
       }
     }
-    if (cells.length === 0) continue;
+    if (cells.length === 0) { onProgress?.(++tilesDone, tiles.length); continue; }
 
     // Annex D.5 is a per source→receiver condition but the Scene carries
     // `apply_concave` per source, so cells that disagree can't share a solve.
@@ -271,6 +282,7 @@ export function runBatchedGrid(job: GridJob, dem: DemRaster | null): GridResult 
         session.free();
       }
     }
+    onProgress?.(++tilesDone, tiles.length);
   }
   return { cols, rows, bounds, dbA, computedMs: performance.now() - t0 };
 }

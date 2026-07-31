@@ -25,7 +25,18 @@ self.onmessage = async (ev: MessageEvent<GridRequest>) => {
   try {
     await ensureReady();
     const dem = region ? regionRaster(region) : null;
-    const result: GridResult = runBatchedGrid(job, dem);
+    // I12: report per-tile progress so the UI can show something moving. Posted
+    // at most every PROGRESS_MS — a 512×512 grid is ~1000 tiles, and a
+    // postMessage per tile would flood the main thread we're trying to keep
+    // free.
+    let lastPost = 0;
+    const PROGRESS_MS = 100;
+    const result: GridResult = runBatchedGrid(job, dem, (tilesDone, tilesTotal) => {
+      const now = performance.now();
+      if (tilesDone < tilesTotal && now - lastPost < PROGRESS_MS) return;
+      lastPost = now;
+      (self as unknown as Worker).postMessage({ id, progress: { tilesDone, tilesTotal } });
+    });
     // Transfer the dB(A) buffer back to avoid a copy.
     (self as unknown as Worker).postMessage(
       { id, ok: true, result },

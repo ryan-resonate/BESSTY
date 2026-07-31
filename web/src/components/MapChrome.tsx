@@ -53,6 +53,10 @@ interface ResultsDockProps {
   lastSolveMs: number | null;
   gridStatus: 'idle' | 'computing' | 'ready';
   onRunGrid(): void;
+  /// I12: live tile progress while a grid is solving, or null.
+  gridProgress?: { done: number; total: number } | null;
+  /// I12: kill the running solve. Absent = no cancel affordance.
+  onCancelGrid?(): void;
   /// I20: approximations the last solve applied.
   diagnostics?: Diagnostic[];
 }
@@ -94,7 +98,14 @@ function DiagnosticsRow({ items }: { items: Diagnostic[] }) {
 }
 
 export function ResultsDock(props: ResultsDockProps) {
-  const { project, results, grid, computing, lastSolveMs, gridStatus, onRunGrid, diagnostics } = props;
+  const {
+    project, results, grid, computing, lastSolveMs, gridStatus, onRunGrid,
+    gridProgress, onCancelGrid, diagnostics,
+  } = props;
+  // null until the first tile reports, so the bar can be indeterminate.
+  const pct = gridProgress && gridProgress.total > 0
+    ? Math.min(100, Math.round((gridProgress.done / gridProgress.total) * 100))
+    : null;
   const mode = limitComparisonFor(project);
   const exceedances = (results ?? []).filter((r) => {
     const rx = project.receivers.find((x) => x.id === r.receiverId);
@@ -141,10 +152,39 @@ export function ResultsDock(props: ResultsDockProps) {
       {diagnostics && diagnostics.length > 0 && (
         <DiagnosticsRow items={diagnostics} />
       )}
-      <div className="dock-row">
-        <button className="btn primary block" disabled={computing || gridStatus === 'computing'} onClick={onRunGrid}>
-          {gridStatus === 'computing' ? 'Computing grid…' : grid ? '↻ Recompute grid' : '▶ Run grid'}
-        </button>
+      <div className="dock-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+        {gridStatus === 'computing' ? (
+          <>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button className="btn block" disabled style={{ flex: 1 }}>
+                {pct == null ? 'Computing grid…' : `Computing ${pct}%…`}
+              </button>
+              {onCancelGrid && (
+                <button
+                  className="btn"
+                  onClick={onCancelGrid}
+                  title="Stop the grid solve"
+                  style={{ color: 'var(--red)' }}
+                >Cancel</button>
+              )}
+            </div>
+            {/* Indeterminate until the first tile lands — a bar sitting at 0%
+                reads as "stuck", which is the impression we're fixing. */}
+            <div className="dock-bar">
+              <span
+                className="dock-bar-pass"
+                style={{
+                  width: pct == null ? '100%' : `${pct}%`,
+                  opacity: pct == null ? 0.35 : 1,
+                }}
+              />
+            </div>
+          </>
+        ) : (
+          <button className="btn primary block" disabled={computing} onClick={onRunGrid}>
+            {grid ? '↻ Recompute grid' : '▶ Run grid'}
+          </button>
+        )}
       </div>
       <div className="dock-row dock-meta">
         {lastSolveMs != null && <span>solve: {lastSolveMs.toFixed(0)} ms</span>}

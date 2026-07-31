@@ -208,3 +208,37 @@ test('PERF GATE: a 128x128 grid solves in reasonable wall-clock', () => {
   // old per-cell path took ~10-20 s for this shape on a dev laptop.
   assert.ok(ms < 60_000, `grid took ${ms.toFixed(0)} ms`);
 });
+
+// ---------------------------------------------------------------- I12 progress
+
+test('progress reports every tile exactly once and finishes at 100%', () => {
+  const job = makeJob(32, 32, 1000, centreSource);
+  const seen: Array<[number, number]> = [];
+  runBatchedGrid(job, flatDem, (done, total) => seen.push([done, total]));
+
+  assert.ok(seen.length > 0, 'progress must fire');
+  assert.equal(seen.length, job.tiles.length, 'one report per tile');
+  // Monotonic 1..N against a constant total — a bar that jumps backwards or
+  // never reaches the end is worse than no bar.
+  assert.deepEqual(seen.map(([d]) => d), job.tiles.map((_, i) => i + 1));
+  assert.ok(seen.every(([, t]) => t === job.tiles.length), 'total stays constant');
+  const [lastDone, lastTotal] = seen[seen.length - 1];
+  assert.equal(lastDone, lastTotal, 'ends at 100%');
+});
+
+test('tiles with no sources still count toward progress', () => {
+  // A source in one corner leaves most tiles empty. Skipping them would make a
+  // sparse job appear to stall and then jump.
+  const corner: ResolvedSource[] = [{
+    id: 's1', latLng: [ORIGIN[0] + 0.004, ORIGIN[1] + 0.004], heightAglM: 4, lw: lw10(),
+  }];
+  const job = makeJob(32, 32, 200, corner, { cutoffM: 100 });
+  let last = 0;
+  runBatchedGrid(job, flatDem, (done) => { last = done; });
+  assert.equal(last, job.tiles.length, 'every tile reported, including empty ones');
+});
+
+test('omitting the progress callback is fine', () => {
+  const job = makeJob(16, 16, 1000, centreSource);
+  assert.doesNotThrow(() => runBatchedGrid(job, flatDem));
+});

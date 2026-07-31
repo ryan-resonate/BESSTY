@@ -12,6 +12,7 @@ import { gridDomain, type Palette } from '../lib/colormap';
 import { loadDemForBounds, type DemRaster } from '../lib/dem';
 import {
   evaluateGridViaWorker,
+  cancelGridRun,
   evaluateProject,
   type GridResult,
   type ReceiverResult,
@@ -184,6 +185,8 @@ export function ProjectScreen() {
   const [grid, setGrid] = useState<GridResult | null>(null);
   const [computing, setComputing] = useState(false);
   const [gridStatus, setGridStatus] = useState<'idle' | 'computing' | 'ready'>('idle');
+  /// I12: live tile progress for the running grid solve, or null when idle.
+  const [gridProgress, setGridProgress] = useState<{ done: number; total: number } | null>(null);
   const [lastSolveMs, setLastSolveMs] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -881,18 +884,39 @@ export function ProjectScreen() {
   function runGrid() {
     if (!project) return;
     setGridStatus('computing');
+    setGridProgress(null);
     const heightAbove = project.settings?.general.defaultReceiverHeight ?? 1.5;
     // Primal, per-tile clustered, on the Web Worker.
     setTimeout(() => {
       const gen = ++gridGenRef.current;
-      evaluateGridViaWorker(project, dem, gridSpacingM, heightAbove)
+      evaluateGridViaWorker(project, dem, gridSpacingM, heightAbove, (done, total) => {
+        // Late progress from a superseded or cancelled run must not resurrect
+        // the progress bar.
+        if (gen === gridGenRef.current) setGridProgress({ done, total });
+      })
         .then((g) => {
           if (gen !== gridGenRef.current) return;
           setGrid(g);
           setGridStatus('ready');
+          setGridProgress(null);
         })
-        .catch((e) => { if (gen === gridGenRef.current) { setError(String(e)); setGridStatus('idle'); } });
+        .catch((e) => {
+          if (gen !== gridGenRef.current) return;   // cancelled / superseded
+          setError(String(e));
+          setGridStatus('idle');
+          setGridProgress(null);
+        });
     }, 0);
+  }
+
+  /// I12 — kill the running grid. Bumping the generation makes the in-flight
+  /// promise's handlers no-ops, so the terminated worker's rejection is
+  /// swallowed rather than surfacing as an error the user didn't cause.
+  function cancelGrid() {
+    gridGenRef.current++;
+    cancelGridRun();
+    setGridStatus('idle');
+    setGridProgress(null);
   }
 
   function handleAddSource(latLng: [number, number]) {
@@ -1411,6 +1435,8 @@ export function ProjectScreen() {
             computing={computing} lastSolveMs={lastSolveMs}
             gridStatus={gridStatus}
             onRunGrid={runGrid}
+            gridProgress={gridProgress}
+            onCancelGrid={cancelGrid}
             diagnostics={diagnostics}
           />
         </div>
