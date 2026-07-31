@@ -260,6 +260,7 @@ export async function evaluateProject(
 
   const settings = sceneSettingsFor(project);
   const containers = project.settings?.containers;
+  const reflections = project.settings?.reflections;
   const results = new Map<string, ReceiverResult>();
 
   // Annex D.5's concave-ground test is per source→receiver, but a Scene carries
@@ -288,6 +289,8 @@ export async function evaluateProject(
       settings,
       includeContainers: containers?.receiverCalc ?? false,
       roofOffsetM: containers?.roofOffsetM,
+      includeReflections: reflections?.receiverCalc ?? false,
+      maxReflectionOrder: reflections?.maxOrder ?? 3,
     });
 
     let solved: SceneResults;
@@ -495,6 +498,8 @@ function buildGridJob(
     }),
     includeContainers: containers?.grid ?? false,
     roofOffsetM: containers?.roofOffsetM ?? 0.3,
+    includeReflections: project.settings?.reflections?.grid ?? false,
+    maxReflectionOrder: project.settings?.reflections?.maxOrder ?? 3,
     tiles,
   };
 }

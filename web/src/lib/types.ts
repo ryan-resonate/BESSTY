@@ -380,6 +380,20 @@ export interface ProjectSettings {
   ground: { defaultG: number };
   /// Presentational state — see `DisplaySettings`. Never affects computed levels.
   display?: DisplaySettings;
+  /// I18 — specular reflections off barriers and source containers.
+  ///
+  /// Absent ⇒ OFF everywhere, so existing projects keep their current levels
+  /// until this is deliberately switched on.
+  ///
+  /// Point receivers and the contour grid toggle independently: a grid re-culls
+  /// reflectors per tile and pays for it at every cell.
+  reflections?: {
+    receiverCalc?: boolean;
+    grid?: boolean;
+    /// Requested specular order, 1–3. Degraded automatically when the reflector
+    /// count would exceed the engine's path-enumeration guard.
+    maxOrder?: number;
+  };
   /// How a computed level is judged against a receiver's limit. Absent =
   /// `'integer'`: the level is rounded to the nearest integer first, so 40.4
   /// does NOT exceed a 40 dB limit. `'exact'` compares unrounded. See

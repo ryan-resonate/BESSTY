@@ -199,3 +199,54 @@ test('the 1996 edition selector reaches the engine and changes the result', () =
   assert.ok(Number.isFinite(y1996));
   assert.notEqual(y1996, y2024, 'the two editions must not be identical for this geometry');
 });
+
+// ------------------------------------------------------------ I18 reflections
+
+test('a wall listed as BOTH obstacle and reflector screens AND reflects', () => {
+  // The engine keeps `obstacles` and `reflectors` separate so a reflected ray
+  // isn't re-diffracted by the surface it bounced off — so the same wall
+  // belongs in both lists. This looks like duplication; it is the contract.
+  // Wall runs north-south, well to the SIDE of the source→receiver path, so it
+  // reflects without screening.
+  const beside: Barrier = {
+    id: 'b1', name: 'w', type: 'wall',
+    polylineLatLng: [[ORIGIN[0] + 0.0006, ORIGIN[1]], [ORIGIN[0] + 0.0006, ORIGIN[1] + 0.002]],
+    topHeightsM: [8, 8], baseFromGroundM: 0, surfaceDensityKgM2: 20, absorptionCoeff: 0,
+  };
+  const scene = (refl: boolean) => buildScene(input({
+    barriers: [beside], includeReflections: refl, maxReflectionOrder: 1,
+  }));
+
+  const off = scene(false);
+  const on = scene(true);
+  assert.equal(off.reflectors.length, 0, 'off: nothing reflects');
+  assert.ok(on.reflectors.length > 0, 'on: facades emitted');
+  assert.equal(on.obstacles.length, off.obstacles.length,
+    'the wall still screens either way — reflectors are ADDITIONAL, not a swap');
+
+  const lvl = (s: ReturnType<typeof scene>) =>
+    JSON.parse(solve_scene(JSON.stringify(s))).per_receiver[0].total_dba as number;
+  const a = lvl(off);
+  const b = lvl(on);
+  assert.ok(b > a, `a reflecting wall must ADD energy: ${a.toFixed(2)} → ${b.toFixed(2)} dBA`);
+});
+
+test('a fully absorptive wall contributes no reflection', () => {
+  const beside = (alpha: number): Barrier => ({
+    id: 'b1', name: 'w', type: 'wall',
+    polylineLatLng: [[ORIGIN[0] + 0.0006, ORIGIN[1]], [ORIGIN[0] + 0.0006, ORIGIN[1] + 0.002]],
+    topHeightsM: [8, 8], baseFromGroundM: 0, surfaceDensityKgM2: 20, absorptionCoeff: alpha,
+  });
+  const scene = (alpha: number) => buildScene(input({
+    barriers: [beside(alpha)], includeReflections: true, maxReflectionOrder: 1,
+  }));
+  // alpha = 1 gives 10*lg(1-alpha) = -infinity, so the facade is culled entirely.
+  assert.equal(scene(1).reflectors.length, 0);
+  assert.ok(scene(0).reflectors.length > 0);
+});
+
+test('reflections stay off unless asked for, so existing projects are unchanged', () => {
+  const s = buildScene(input({ barriers: [] }));
+  assert.deepEqual(s.reflectors, []);
+  assert.equal(s.settings.max_reflection_order, 1);
+});

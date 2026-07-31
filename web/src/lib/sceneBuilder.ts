@@ -22,6 +22,7 @@
 import type { Barrier, BandSystem, Project } from './types';
 import type { DemRaster } from './dem';
 import { latLngToLocalMetres } from './geo';
+import { cullFacades, facadesFromFootprint, type Facade } from './reflectors';
 
 // ---------------------------------------------------------------- Scene JSON
 
@@ -69,6 +70,14 @@ export interface SceneBuilding {
 
 export type SceneObstacle = SceneWall | SceneBuilding;
 
+/** A reflecting vertical facade (§7.5). `alpha` 0 = perfectly reflecting. */
+export interface SceneReflector {
+  segment: [[number, number], [number, number]];
+  base_z: number;
+  top_z: number;
+  alpha: number;
+}
+
 export interface SceneHeightfield {
   type: 'heightfield';
   origin: [number, number];
@@ -88,7 +97,10 @@ export interface Scene {
   extended_sources: [];
   receivers: SceneReceiver[];
   obstacles: SceneObstacle[];
-  reflectors: [];
+  /// I18: reflecting facades. Kept SEPARATE from `obstacles` by the engine's
+  /// design, so a reflected ray isn't also diffracted by the same surface — a
+  /// wall that both screens and reflects appears in both lists.
+  reflectors: SceneReflector[];
   cylinders: [];
   amisc: Record<string, never>;
   settings: {
@@ -155,6 +167,14 @@ export interface SceneInput {
   settings: SceneSettings;
   /** Emit `Building` obstacles for sources that carry a container. */
   includeContainers?: boolean;
+  /// I18: emit reflecting facades for barriers (and containers, when those are
+  /// modelled). Off ⇒ `reflectors` stays empty and nothing reflects.
+  includeReflections?: boolean;
+  /// Requested specular order (1–4). Degraded automatically if the reflector
+  /// count would blow the engine's path-enumeration guard.
+  maxReflectionOrder?: number;
+  /// Absorption for container facades when the catalog doesn't pin one.
+  containerAlpha?: number;
   /** Clearance of the acoustic centre above a container roof (m). */
   roofOffsetM?: number;
 }
@@ -284,10 +304,34 @@ export function buildScene(input: SceneInput): Scene {
   const { origin, dem, settings } = input;
   const roofOffsetM = input.roofOffsetM ?? 0.3;
   const obstacles: SceneObstacle[] = [];
+  // I18: candidate reflecting facades, culled to the engine's budget below.
+  const candidateFacades: Facade[] = [];
+  const wantReflections = input.includeReflections ?? false;
 
   for (const b of input.barriers ?? []) {
     const wall = wallFromBarrier(b, origin, dem);
-    if (wall) obstacles.push(wall);
+    if (!wall) continue;
+    obstacles.push(wall);
+    // The SAME wall is also listed as reflectors. The engine separates the two
+    // lists so a reflected ray isn't re-diffracted by the surface it bounced
+    // off; listing twice is the intended usage, not double-counting.
+    if (wantReflections) {
+      const alpha = Number.isFinite(b.absorptionCoeff)
+        ? Math.max(0, Math.min(1, b.absorptionCoeff))
+        : 0.2;
+      for (let i = 0; i + 1 < wall.polyline.length; i++) {
+        const topA = wall.top_z?.[i] ?? wall.base_z[i];
+        const topB = wall.top_z?.[i + 1] ?? wall.base_z[i + 1];
+        candidateFacades.push({
+          segment: [wall.polyline[i], wall.polyline[i + 1]],
+          base_z: Math.min(wall.base_z[i], wall.base_z[i + 1]),
+          // A sloping wall segment reflects off a rectangle at its mean top —
+          // the engine's facade is a height band, not a trapezoid.
+          top_z: (topA + topB) / 2,
+          alpha,
+        });
+      }
+    }
   }
 
   const sources: SceneSource[] = [];
@@ -303,12 +347,22 @@ export function buildScene(input: SceneInput): Scene {
     const container = input.includeContainers ? s.container : undefined;
     if (container) {
       heightAgl = Math.max(heightAgl, container.heightM + roofOffsetM);
+      const footprint = containerFootprint(
+        [e, n], container.lengthM, container.widthM, container.bearingDeg,
+      );
       obstacles.push({
         type: 'building',
-        footprint: containerFootprint([e, n], container.lengthM, container.widthM, container.bearingDeg),
+        footprint,
         base_z: ground,
         height_agl: container.heightM,
       });
+      // A hard-faced container row bouncing sound at a receiver is a real
+      // effect, so its four facades are reflector candidates too.
+      if (wantReflections) {
+        candidateFacades.push(...facadesFromFootprint(
+          footprint, ground, container.heightM, input.containerAlpha ?? 0.1,
+        ));
+      }
     }
 
     sources.push({
@@ -334,6 +388,19 @@ export function buildScene(input: SceneInput): Scene {
     });
   }
 
+  // I18: fit the candidate facades into the engine's path-enumeration guard,
+  // degrading the order rather than emitting a scene the engine will reject.
+  const cull = wantReflections && candidateFacades.length > 0
+    ? cullFacades(
+        candidateFacades,
+        sources.map((s) => [s.position[0], s.position[1]] as [number, number]),
+        receivers.map((r) => [r.position[0], r.position[1]] as [number, number]),
+        { order: input.maxReflectionOrder ?? 1 },
+      )
+    : null;
+  const reflectors: SceneReflector[] = cull ? cull.facades : [];
+  const reflectionOrder = cull ? cull.order : 1;
+
   return {
     schema_version: SCHEMA_VERSION,
     standard: settings.standard,
@@ -348,14 +415,14 @@ export function buildScene(input: SceneInput): Scene {
     extended_sources: [],
     receivers,
     obstacles,
-    reflectors: [],
+    reflectors,
     cylinders: [],
     amisc: {},
     settings: {
       dz_cap_db: settings.dzCapDb,
       c0_db: settings.c0Db,
       ground_method: 'general',
-      max_reflection_order: 1,
+      max_reflection_order: reflectionOrder,
     },
   };
 }

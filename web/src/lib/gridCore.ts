@@ -110,6 +110,11 @@ export interface GridJob {
   /// Model source containers as screening boxes in the grid.
   includeContainers: boolean;
   roofOffsetM: number;
+  /// I18 — emit reflecting facades for this grid, and the requested specular
+  /// order. Degraded per tile if the reflector count would exceed the engine's
+  /// path-enumeration guard.
+  includeReflections?: boolean;
+  maxReflectionOrder?: number;
   /// The grid partitioned into tiles, each with its own adaptively-clustered
   /// source set. Union of tiles covers the whole grid exactly once.
   tiles: GridTile[];
@@ -167,6 +172,7 @@ export function runBatchedGrid(
   const {
     cols, rows, dxM, dyM, origin, nBands, cutoffM, dOmegaDb, rxHeightAboveGround,
     barriers, settings, terrain, includeContainers, roofOffsetM, bounds, tiles,
+    includeReflections, maxReflectionOrder,
   } = job;
   const R = 6371008.8;
   const lat0 = (origin[0] * Math.PI) / 180;
@@ -231,6 +237,8 @@ export function runBatchedGrid(
         settings,
         includeContainers,
         roofOffsetM,
+        includeReflections,
+        maxReflectionOrder,
       });
 
       let session: WasmSession;

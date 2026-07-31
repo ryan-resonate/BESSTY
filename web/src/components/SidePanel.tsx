@@ -1710,6 +1710,15 @@ function BarriersTab(props: Props) {
                   title="Top height (m)" />
                 <span className="inline-unit-label">m</span>
               </span>
+              {/* I18: absorption. Only matters when reflections are on, but
+                  it's a property of the wall, so it lives with the wall. */}
+              <span className="inline-unit" title="Absorption coefficient (0 = hard/reflective, 1 = fully absorptive). Used when Reflections is on.">
+                <NumericInput className="inline-edit" min={0} max={1} step={0.05}
+                  value={b.absorptionCoeff ?? 0.2} fallback={0.2}
+                  onChange={(v) => updateBarrier(b.id, { absorptionCoeff: v })}
+                  title="Absorption α" />
+                <span className="inline-unit-label">α</span>
+              </span>
               <button className="x-btn" onClick={() => removeBarrier(b.id)}>✕</button>
             </div>
           </div>
@@ -1894,6 +1903,59 @@ export function SettingsTab(props: SettingsTabProps) {
           flat, uniform row it is worth ~1–2 dB inside about 100 m and tends to zero
           by 200 m, where the remaining difference is the acoustic centre being
           lifted to the roof.
+        </div>
+      </section>
+      )}
+
+      {tab === 'sources' && (
+      <section className="sp-section">
+        <h3><span>Reflections</span></h3>
+        <Field label="Use in receiver calculations">
+          <input
+            type="checkbox"
+            checked={settings.reflections?.receiverCalc ?? false}
+            onChange={(e) => update({
+              reflections: { ...settings.reflections, receiverCalc: e.target.checked },
+            })}
+          />
+        </Field>
+        <Field label="Use in grid / contour maps">
+          <input
+            type="checkbox"
+            checked={settings.reflections?.grid ?? false}
+            onChange={(e) => update({
+              reflections: { ...settings.reflections, grid: e.target.checked },
+            })}
+          />
+        </Field>
+        <Field label="Maximum order">
+          <select
+            value={String(settings.reflections?.maxOrder ?? 3)}
+            onChange={(e) => update({
+              reflections: { ...settings.reflections, maxOrder: +e.target.value },
+            })}
+          >
+            <option value="1">1 — single bounce</option>
+            <option value="2">2</option>
+            <option value="3">3 (default)</option>
+          </select>
+        </Field>
+        <div className="hint">
+          Specular reflection off barriers and, when Source containers is on,
+          off container facades. Each barrier carries its own absorption α
+          (edit it in the Barriers tab); container facades default to 0.1,
+          typical for painted steel. Off by default — switching it on WILL
+          raise levels at receivers facing a wall or a container row.
+          <br />
+          The engine caps how many reflection paths it will enumerate, so a
+          large site cannot use high orders across every surface. BESSTY keeps
+          the facades nearest the source→receiver corridor and <b>lowers the
+          order automatically</b> rather than failing the solve. Order 3 fits
+          about 46 surfaces; a container contributes 4 facades.
+          <br />
+          Reflections are conformance-validated in the engine (ISO/TR 17534-3
+          case T19) but have not been A/B'd against SoundPLAN in BEESTY yet —
+          treat the first results as provisional.
         </div>
       </section>
       )}
