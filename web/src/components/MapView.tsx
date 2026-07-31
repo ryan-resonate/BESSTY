@@ -46,6 +46,15 @@ interface Props {
   /// centre handle is dragged.
   onResizeCalcArea?(widthM: number, heightM: number): void;
   onMoveCalcArea?(centerLatLng: [number, number]): void;
+  /// I7 - one commit for the calc-area box after a drag or rotate. Corner drags
+  /// now move the centre (the opposite corner is anchored), so centre, size and
+  /// rotation all have to land together.
+  onEditCalcArea?(patch: {
+    centerLatLng: [number, number];
+    widthM: number;
+    heightM: number;
+    rotationDeg: number;
+  }): void;
   /// BESS-group on-map editing callbacks. `onOpenBessGroupWizard` opens
   /// the editor wizard for a group (fired on double-click of any
   /// group member). `onMoveBessGroup` is fired on centre-handle drag.
@@ -499,7 +508,7 @@ function gridToCanvas(
 export function MapView({
   project, results, grid, selectedIds, onSelect, onBoxSelect,
   onAddSource, onAddReceiver, onAddBarrierPolyline, onUpdateBarrier, onMoveSource, onMoveReceiver,
-  onResizeCalcArea, onMoveCalcArea,
+  onResizeCalcArea, onMoveCalcArea, onEditCalcArea,
   onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
   selectedGroupId, onTranslateGroup, onRotateGroup,
   addMode, baseMap, showContours, showGridDebug, showReceiverLimits, contourMode, contourOpacity, contourStepDb,
@@ -586,14 +595,14 @@ export function MapView({
   // marker rebuilt mid-drag drops the drag interaction).
   const callbacksRef = useRef({
     onAddSource, onAddReceiver, onAddBarrierPolyline, onUpdateBarrier, onMoveSource, onMoveReceiver,
-    onResizeCalcArea, onMoveCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
+    onResizeCalcArea, onMoveCalcArea, onEditCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
     onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
     onTranslateGroup, onRotateGroup,
   });
   useEffect(() => {
     callbacksRef.current = {
       onAddSource, onAddReceiver, onAddBarrierPolyline, onUpdateBarrier, onMoveSource, onMoveReceiver,
-      onResizeCalcArea, onMoveCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
+      onResizeCalcArea, onMoveCalcArea, onEditCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
       onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
       onTranslateGroup, onRotateGroup,
     };
@@ -1475,52 +1484,164 @@ export function MapView({
       const north = ca.centerLatLng[0] + dLat;
       const west = ca.centerLatLng[1] - dLng;
       const east = ca.centerLatLng[1] + dLng;
-      const bounds: L.LatLngBoundsExpression = [[south, west], [north, east]];
-      L.rectangle(bounds, {
+      void south; void north; void west; void east;
+
+      // I7 — the calculation area is a ROTATABLE box with live drag feedback.
+      //
+      // Everything is computed in the BOX frame (axes aligned to the box) and
+      // rotated out to the world, matching exactly what `runBatchedGrid` does
+      // when it lays out cells — so the outline you drag is the lattice you
+      // compute on.
+      const cosLat = Math.cos(lat0);
+
+      // Live geometry. Dragging mutates this and redraws; only `dragend`
+      // commits to the project, so the grid recompute still fires on release.
+      let live = {
+        centre: [ca.centerLatLng[0], ca.centerLatLng[1]] as [number, number],
+        widthM: ca.widthM,
+        heightM: ca.heightM,
+        rotationDeg: ca.rotationDeg ?? 0,
+      };
+
+      const rotRad = () => (live.rotationDeg * Math.PI) / 180;
+      /// Box-frame offset (metres) → world lat/lng.
+      const boxToLatLng = (eBox: number, nBox: number): [number, number] => {
+        const c = Math.cos(rotRad());
+        const sn = Math.sin(rotRad());
+        const e = eBox * c + nBox * sn;
+        const n = -eBox * sn + nBox * c;
+        return [
+          live.centre[0] + (n / R) * (180 / Math.PI),
+          live.centre[1] + (e / (R * cosLat)) * (180 / Math.PI),
+        ];
+      };
+      /// World lat/lng → metres east/north from the CURRENT live centre.
+      const toWorld = (lat: number, lng: number): [number, number] => [
+        (lng - live.centre[1]) * (Math.PI / 180) * R * cosLat,
+        (lat - live.centre[0]) * (Math.PI / 180) * R,
+      ];
+      const toBox = (e: number, n: number): [number, number] => {
+        const c = Math.cos(rotRad());
+        const sn = Math.sin(rotRad());
+        return [e * c - n * sn, e * sn + n * c];
+      };
+
+      const signs: Array<[number, number]> = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+      const cornerLatLngs = () =>
+        signs.map(([sx, sy]) => boxToLatLng(sx * live.widthM / 2, sy * live.heightM / 2));
+
+      const outline = L.polygon(cornerLatLngs(), {
         color: '#F2CB00', weight: 1.5, dashArray: '8 6', fillOpacity: 0, interactive: false,
       }).addTo(group);
 
-      // Corner handles. Dragging a corner resizes the rectangle keeping the
-      // centre fixed: width = 2·|Δlng→m|, height = 2·|Δlat→m|.
-      const cornerHandle = () =>
-        L.divIcon({
-          className: 'ca-handle',
-          html: `<div style="width:12px;height:12px;background:#F2CB00;border:1.5px solid #1f2937;border-radius:2px;cursor:nwse-resize;box-shadow:0 1px 2px rgba(0,0,0,.4)"></div>`,
-          iconSize: [14, 14], iconAnchor: [7, 7],
-        });
-      const corners: Array<[number, number]> = [
-        [south, west], [south, east], [north, east], [north, west],
-      ];
-      for (const c of corners) {
-        const m = L.marker(c, { icon: cornerHandle(), draggable: true, zIndexOffset: 800 });
-        m.on('dragend', (e: L.LeafletEvent) => {
-          const handle = e.target as L.Marker;
-          const ll = handle.getLatLng();
-          const cb = callbacksRef.current.onResizeCalcArea;
-          if (!cb) return;
-          // Convert lat/lng delta from centre to metres.
-          const dLatM = (ll.lat - ca.centerLatLng[0]) * (Math.PI / 180) * R;
-          const dLngM = (ll.lng - ca.centerLatLng[1]) * (Math.PI / 180) * R * Math.cos(lat0);
-          const newW = Math.max(500, Math.abs(dLngM) * 2);
-          const newH = Math.max(500, Math.abs(dLatM) * 2);
-          cb(newW, newH);
-        });
-        m.addTo(group);
-      }
+      const armLen = () => live.heightM / 2 + Math.max(live.heightM, live.widthM) * 0.08;
+      const rotAnchor = () => boxToLatLng(0, armLen());
+      const arm = L.polyline([boxToLatLng(0, live.heightM / 2), rotAnchor()], {
+        color: '#F2CB00', weight: 1.2, dashArray: '3 3', interactive: false,
+      }).addTo(group);
 
-      // Centre handle. Drag → translate the entire rectangle.
-      const centreHandle = L.divIcon({
-        className: 'ca-handle-centre',
-        html: `<div style="width:14px;height:14px;background:#fff;border:2px solid #F2CB00;border-radius:50%;cursor:move;box-shadow:0 1px 3px rgba(0,0,0,.4)"></div>`,
-        iconSize: [18, 18], iconAnchor: [9, 9],
+      const cornerMarkers: L.Marker[] = [];
+      let centreMarker: L.Marker | null = null;
+      let rotMarker: L.Marker | null = null;
+
+      /// Redraw everything from `live`; `skip` is the marker under the pointer,
+      /// which Leaflet is already positioning.
+      const redraw = (skip?: L.Marker | null) => {
+        const cs = cornerLatLngs();
+        outline.setLatLngs(cs);
+        arm.setLatLngs([boxToLatLng(0, live.heightM / 2), rotAnchor()]);
+        cornerMarkers.forEach((m, i) => { if (m !== skip) m.setLatLng(cs[i]); });
+        if (centreMarker && centreMarker !== skip) centreMarker.setLatLng(live.centre);
+        if (rotMarker && rotMarker !== skip) rotMarker.setLatLng(rotAnchor());
+      };
+      const commit = () => callbacksRef.current.onEditCalcArea?.({
+        centerLatLng: live.centre,
+        widthM: live.widthM,
+        heightM: live.heightM,
+        rotationDeg: live.rotationDeg,
       });
-      const cm = L.marker(ca.centerLatLng, { icon: centreHandle, draggable: true, zIndexOffset: 850 });
-      cm.on('dragend', (e: L.LeafletEvent) => {
-        const handle = e.target as L.Marker;
-        const ll = handle.getLatLng();
-        callbacksRef.current.onMoveCalcArea?.([ll.lat, ll.lng]);
+
+      // ---- corner handles: the OPPOSITE corner is anchored ----
+      //
+      // Standard drawing-tool behaviour. Previously the CENTRE stayed fixed and
+      // both sides grew, so dragging one corner moved the opposite edge — the
+      // one you were trying to hold still.
+      const cornerIcon = L.divIcon({
+        className: 'ca-handle',
+        html: `<div style="width:12px;height:12px;background:#F2CB00;border:1.5px solid #1f2937;border-radius:2px;cursor:nwse-resize;box-shadow:0 1px 2px rgba(0,0,0,.4)"></div>`,
+        iconSize: [14, 14], iconAnchor: [7, 7],
       });
-      cm.addTo(group);
+      signs.forEach(([sx, sy], i) => {
+        const m = L.marker(cornerLatLngs()[i], {
+          icon: cornerIcon, draggable: true, zIndexOffset: 800,
+        });
+        const move = (ev: L.LeafletEvent) => {
+          const ll = (ev.target as L.Marker).getLatLng();
+          // Pin the opposite corner in world space BEFORE moving the centre.
+          const opp = boxToLatLng(-sx * live.widthM / 2, -sy * live.heightM / 2);
+          const [oe, on] = toWorld(opp[0], opp[1]);
+          const [de, dn] = toWorld(ll.lat, ll.lng);
+          const [bx, by] = toBox(de - oe, dn - on);
+          const ce = (oe + de) / 2;
+          const cn = (on + dn) / 2;
+          live = {
+            ...live,
+            widthM: Math.max(200, Math.abs(bx)),
+            heightM: Math.max(200, Math.abs(by)),
+            centre: [
+              live.centre[0] + (cn / R) * (180 / Math.PI),
+              live.centre[1] + (ce / (R * cosLat)) * (180 / Math.PI),
+            ],
+          };
+          redraw(m);
+        };
+        m.on('drag', move);
+        m.on('dragend', (ev) => { move(ev); redraw(null); commit(); });
+        m.addTo(group);
+        cornerMarkers.push(m);
+      });
+
+      // ---- centre handle: translate ----
+      centreMarker = L.marker(live.centre, {
+        icon: L.divIcon({
+          className: 'ca-handle-centre',
+          html: `<div style="width:14px;height:14px;background:#fff;border:2px solid #F2CB00;border-radius:50%;cursor:move;box-shadow:0 1px 3px rgba(0,0,0,.4)"></div>`,
+          iconSize: [18, 18], iconAnchor: [9, 9],
+        }),
+        draggable: true, zIndexOffset: 850,
+      });
+      const moveCentre = (ev: L.LeafletEvent) => {
+        const ll = (ev.target as L.Marker).getLatLng();
+        live = { ...live, centre: [ll.lat, ll.lng] };
+        redraw(centreMarker);
+      };
+      centreMarker.on('drag', moveCentre);
+      centreMarker.on('dragend', (ev) => { moveCentre(ev); redraw(null); commit(); });
+      centreMarker.addTo(group);
+
+      // ---- rotation handle ----
+      rotMarker = L.marker(rotAnchor(), {
+        icon: L.divIcon({
+          className: 'ca-handle-rot',
+          html: `<div style="width:13px;height:13px;background:#fff;border:2px solid #F2CB00;border-radius:50%;cursor:grab;box-shadow:0 1px 3px rgba(0,0,0,.4)"></div>`,
+          iconSize: [17, 17], iconAnchor: [8, 8],
+        }),
+        draggable: true, zIndexOffset: 860,
+        title: 'Rotate the calculation area',
+      });
+      const rotate = (ev: L.LeafletEvent) => {
+        const ll = (ev.target as L.Marker).getLatLng();
+        const [de, dn] = toWorld(ll.lat, ll.lng);
+        if (Math.hypot(de, dn) < 1e-6) return;
+        // Bearing clockwise from north — the handle sits due north at 0°.
+        let deg = (Math.atan2(de, dn) * 180) / Math.PI;
+        if (deg < 0) deg += 360;
+        live = { ...live, rotationDeg: deg };
+        redraw(rotMarker);
+      };
+      rotMarker.on('drag', rotate);
+      rotMarker.on('dragend', (ev) => { rotate(ev); redraw(null); commit(); });
+      rotMarker.addTo(group);
     }
     // `onSelect` deliberately omitted — we read it from callbacksRef inside
     // the click handlers, so we don't want a fresh closure to invalidate the

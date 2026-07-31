@@ -329,6 +329,18 @@ export function ProjectScreen() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  /// I7 - commit a calc-area drag or rotation. One patch because a corner drag
+  /// anchors the opposite corner, which moves the centre as well as resizing.
+  function handleEditCalcArea(patch: {
+    centerLatLng: [number, number]; widthM: number; heightM: number; rotationDeg: number;
+  }) {
+    if (!project?.calculationArea) return;
+    setProject({
+      ...project,
+      calculationArea: { ...project.calculationArea, ...patch },
+    });
+  }
+
   function selectOne(id: string | null) {
     setSelectedIds(id ? new Set([id]) : new Set());
     setSelectedGroupId(null);
@@ -1520,6 +1532,7 @@ export function ProjectScreen() {
           onMoveReceiver={handleMoveReceiver}
           onResizeCalcArea={handleResizeCalcArea}
           onMoveCalcArea={handleMoveCalcArea}
+          onEditCalcArea={handleEditCalcArea}
           onCursorMove={setCursorLatLng}
           onReady={(m) => { mapHandleRef.current = m; }}
           onOpenBessGroupWizard={openBessGroupWizard}
