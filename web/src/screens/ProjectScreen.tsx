@@ -32,6 +32,10 @@ import type { BessGroup } from '../lib/types';
 import type { Barrier, Project, Receiver, Source, SourceKind } from '../lib/types';
 import { settingsOf } from '../lib/types';
 import { Diagnostics, type Diagnostic } from '../lib/diagnostics';
+import {
+  buildEnvelope, describePaste as describeObjectPaste, materialisePaste, parseEnvelope,
+} from '../lib/clipboardObjects';
+import { notify } from '../lib/notify';
 import { applyPatchWithGroupOverrides } from '../lib/groupOverrides';
 
 let nextId = 1000;
@@ -218,6 +222,87 @@ export function ProjectScreen() {
       setAddMode('none');
       setSelectedIds(new Set());
       setSelectedGroupId(null);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // I5 — Ctrl/Cmd+C / Ctrl/Cmd+V for map objects. Same skip-when-in-a-text-field
+  // rule as Esc above: copying text out of an input must keep working.
+  //
+  // The clipboard carries a JSON envelope, so copy in one project and paste in
+  // another (or another tab) works without any shared state. `clipboardFallback`
+  // covers browsers/contexts where the Clipboard API is denied.
+  const clipboardFallbackRef = useRef<string | null>(null);
+  // Mirrored so the (once-mounted) key handler reads current values without
+  // re-subscribing on every selection or mouse move.
+  const selectedIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => { selectedIdsRef.current = selectedIds; }, [selectedIds]);
+  const cursorLatLngRef = useRef<[number, number] | null>(null);
+  useEffect(() => { cursorLatLngRef.current = cursorLatLng; }, [cursorLatLng]);
+  useEffect(() => {
+    async function onKey(ev: KeyboardEvent) {
+      if (!(ev.ctrlKey || ev.metaKey)) return;
+      const k = ev.key.toLowerCase();
+      if (k !== 'c' && k !== 'v') return;
+      const t = ev.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+
+      const p = projectRef.current;
+      if (!p) return;
+
+      if (k === 'c') {
+        const env = buildEnvelope(p, {
+          sourceIds: selectedIdsRef.current,
+          receiverIds: selectedIdsRef.current,
+          barrierIds: selectedIdsRef.current,
+        });
+        if (!env) return;
+        ev.preventDefault();
+        const text = JSON.stringify(env);
+        clipboardFallbackRef.current = text;
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch {
+          // Denied (insecure context, permissions) — the in-memory buffer still
+          // makes same-tab paste work, so say what was lost rather than failing.
+          notify.info('Copied within this tab (clipboard access was denied, so '
+            + 'pasting into another tab won\'t work).');
+          return;
+        }
+        const n = env.objects.sources.length + env.objects.receivers.length
+          + env.objects.barriers.length;
+        notify.success(`Copied ${n} object${n === 1 ? '' : 's'}.`);
+        return;
+      }
+
+      // Paste.
+      ev.preventDefault();
+      let text: string | null = null;
+      try {
+        text = await navigator.clipboard.readText();
+      } catch {
+        text = clipboardFallbackRef.current;
+      }
+      const env = text ? parseEnvelope(text) : null;
+      // Not our content (a spreadsheet cell, a URL) — silently do nothing.
+      if (!env) return;
+      // Cursor outside the map (or never moved) → fall back to the calc-area
+      // centre, then to the copied set's own origin so paste never silently
+      // does nothing.
+      const anchor = cursorLatLngRef.current
+        ?? p.calculationArea?.centerLatLng
+        ?? env.origin;
+      const out = materialisePaste(env, anchor, newId);
+      setProject({
+        ...p,
+        sources: [...p.sources, ...out.sources],
+        receivers: [...p.receivers, ...out.receivers],
+        barriers: [...(p.barriers ?? []), ...out.barriers],
+        bessGroups: [...(p.bessGroups ?? []), ...out.bessGroups],
+      });
+      setSelectedIds(new Set(out.newIds));
+      notify.success(describeObjectPaste(out));
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
