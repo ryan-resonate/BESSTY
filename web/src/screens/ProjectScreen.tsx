@@ -5,6 +5,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 import { MapView, type BaseMap, type ContourMode } from '../components/MapView';
 import { Map3DView } from '../components/Map3DView';
 import { MapControls } from '../components/MapControls';
+import { SettingsWindow } from '../components/SettingsWindow';
 import { Legend, ResultsDock, StatusBar } from '../components/MapChrome';
 import { SidePanel, type AddMode, type Tab } from '../components/SidePanel';
 import { listEntriesByKind, lookupEntry } from '../lib/catalog';
@@ -201,6 +202,8 @@ export function ProjectScreen() {
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [addMode, setAddMode] = useState<AddMode>('none');
   const [show3D, setShow3D] = useState(false);
+  /// I10: floating settings window.
+  const [showSettings, setShowSettings] = useState(false);
   const [cursorLatLng, setCursorLatLng] = useState<[number, number] | null>(null);
   /// Active tab — lifted into ProjectScreen so placing a new object can
   /// auto-switch the panel to Sources / Receivers.
@@ -1515,6 +1518,7 @@ export function ProjectScreen() {
           onPan={(dx, dy) => mapHandleRef.current?.panBy([dx, dy], { animate: true })}
           onHome={fitCalcArea}
           onOpen3D={() => setShow3D(true)}
+          onOpenSettings={() => setShowSettings(true)}
         />
 
         <div className="back-link">
@@ -1540,6 +1544,16 @@ export function ProjectScreen() {
         {error && <div className="map-toast error">solver error: {error}</div>}
         </ErrorBoundary>
       </div>
+
+      {showSettings && (
+        <SettingsWindow
+          project={project}
+          setProject={setProject}
+          gridSpacingM={gridSpacingM}
+          setGridSpacingM={setGridSpacingM}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
 
       {show3D && (
         <Map3DView

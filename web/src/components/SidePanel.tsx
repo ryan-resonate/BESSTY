@@ -103,6 +103,8 @@ interface Props {
   /// version + privacy controls; anything else shows a "local project"
   /// note instead.
   projectSource?: 'firestore' | 'none';
+  /// I10: open the floating settings window.
+  onOpenSettings?(): void;
   /// Called when the user reverts to a saved version. The handler should
   /// merge the snapshot's content into the live project while preserving
   /// current ownership + privacy metadata. Wired up in ProjectScreen.
@@ -230,7 +232,20 @@ export function SidePanel(props: Props) {
         {tab === 'receivers' && <ReceiversTab {...props} />}
         {tab === 'barriers' && <BarriersTab {...props} />}
         {tab === 'import' && <ImportTab {...props} />}
-        {tab === 'settings' && <SettingsTab {...props} />}
+        {/* I10: settings live in a floating window now. This slot keeps a
+            link so the old muscle memory still lands somewhere useful. */}
+        {tab === 'settings' && (
+          <div className="sp-section">
+            <div className="hint" style={{ marginBottom: 10 }}>
+              Settings moved to a floating window, so you can see the map change
+              as you adjust them. Open it from the <b>⚙</b> button on the map,
+              or here:
+            </div>
+            <button className="btn primary block" onClick={() => props.onOpenSettings?.()}>
+              ⚙ Open settings…
+            </button>
+          </div>
+        )}
         {tab === 'project' && props.projectId && props.currentUid && (
           <ProjectMetaPanel
             projectId={props.projectId}
@@ -1726,8 +1741,34 @@ function segmentLengthM(poly: Array<[number, number]>): number {
 /// Live-edit Settings tab. Each control commits to project state on the
 /// fly — the structural-key effect in ProjectScreen debounces re-evals so
 /// rapid edits don't flood the solver.
-function SettingsTab(props: Props) {
+/// I10 — the 15 settings sections, grouped into 5 tabs.
+///
+/// Compliance is deliberately separate from Calculation: "which standard" and
+/// "how we round before judging" are different decisions, often owned by
+/// different people, and burying a jurisdiction rule under acoustics settings
+/// is how it gets missed by whoever inherits the project.
+export const SETTINGS_TABS = [
+  { id: 'calculation', label: 'Calculation' },
+  { id: 'compliance', label: 'Compliance' },
+  { id: 'environment', label: 'Environment' },
+  { id: 'sources', label: 'Sources' },
+  { id: 'performance', label: 'Performance' },
+] as const;
+
+export type SettingsTabId = typeof SETTINGS_TABS[number]['id'];
+
+export interface SettingsTabProps {
+  project: Project;
+  setProject(p: Project): void;
+  gridSpacingM: number;
+  setGridSpacingM(v: number): void;
+  /// Which group of sections to show. Omitted = Calculation.
+  tab?: SettingsTabId;
+}
+
+export function SettingsTab(props: SettingsTabProps) {
   const { project, setProject, gridSpacingM, setGridSpacingM } = props;
+  const tab = props.tab ?? 'calculation';
   const settings: ProjectSettings = settingsOf(project);
 
   // Local draft for the band-system picker (which lives on the scenario
@@ -1750,6 +1791,7 @@ function SettingsTab(props: Props) {
 
   return (
     <>
+      {tab === 'calculation' && (
       <section className="sp-section">
         <h3><span>Band system</span></h3>
         <Field label="Solve in">
@@ -1767,7 +1809,9 @@ function SettingsTab(props: Props) {
           sum; octave → third by equal distribution across the three children).
         </div>
       </section>
+      )}
 
+      {tab === 'calculation' && (
       <section className="sp-section">
         <h3><span>Standard</span></h3>
         <Field label="ISO 9613-2 edition">
@@ -1785,7 +1829,9 @@ function SettingsTab(props: Props) {
           Existing projects were computed with 2024.
         </div>
       </section>
+      )}
 
+      {tab === 'environment' && (
       <section className="sp-section">
         <h3><span>Ground</span></h3>
         <Field label="Default ground factor G (0 = hard, 1 = porous)">
@@ -1796,7 +1842,9 @@ function SettingsTab(props: Props) {
         </Field>
         <div className="hint">Annex D rules cap G at 0.5 for wind turbine sources regardless of this setting.</div>
       </section>
+      )}
 
+      {tab === 'sources' && (
       <section className="sp-section">
         <h3><span>Source containers</span></h3>
         <Field label="Use in receiver calculations">
@@ -1848,7 +1896,9 @@ function SettingsTab(props: Props) {
           lifted to the roof.
         </div>
       </section>
+      )}
 
+      {tab === 'compliance' && (
       <section className="sp-section">
         <h3><span>Limit comparison</span></h3>
         <Field label="Compare levels">
@@ -1874,7 +1924,9 @@ function SettingsTab(props: Props) {
           Switch to <b>Exact</b> for jurisdictions that compare unrounded.
         </div>
       </section>
+      )}
 
+      {tab === 'calculation' && (
       <section className="sp-section">
         <h3><span>Solid-angle correction (DΩ)</span></h3>
         <Field label="DΩ (dB)">
@@ -1897,7 +1949,9 @@ function SettingsTab(props: Props) {
           hemispherical reflection, so DΩ is 0.
         </div>
       </section>
+      )}
 
+      {tab === 'calculation' && (
       <section className="sp-section">
         <h3><span>Meteorological correction (Cmet, §8)</span></h3>
         <Field label="C₀ (dB)">
@@ -1918,7 +1972,9 @@ function SettingsTab(props: Props) {
           10(hs+hr) and grows with distance.
         </div>
       </section>
+      )}
 
+      {tab === 'environment' && (
       <section className="sp-section">
         <h3><span>Atmosphere (ISO 9613-1 Aatm)</span></h3>
         <div className="grid-2">
@@ -1955,11 +2011,13 @@ function SettingsTab(props: Props) {
           (10 °C / 70 % RH) is the ISO 9613-2 reference.
         </div>
       </section>
+      )}
 
       {/* The old "barrier convention" selector is gone: the engine implements the
           single literal-ISO combination (Abar = Dz − Agr, with Agr always carried
           separately), so there is nothing to choose. `barrierConvention` is still
           tolerated in stored projects and ignored. */}
+      {tab === 'calculation' && (
       <section className="sp-section">
         <h3><span>Barrier diffraction</span></h3>
         <Field label="Diffraction limit Dz (dB) — general sources">
@@ -1995,7 +2053,9 @@ function SettingsTab(props: Props) {
           affected by this field.
         </div>
       </section>
+      )}
 
+      {tab === 'sources' && (
       <section className="sp-section">
         <h3><span>Annex D — wind turbines</span></h3>
         <Field label="Barrier Abar cap (dB)">
@@ -2027,7 +2087,9 @@ function SettingsTab(props: Props) {
           />
         </Field>
       </section>
+      )}
 
+      {tab === 'sources' && (
       <section className="sp-section">
         <h3><span>General sources</span></h3>
         <Field label="Default receiver height (m) for non-WT calcs">
@@ -2037,7 +2099,9 @@ function SettingsTab(props: Props) {
           />
         </Field>
       </section>
+      )}
 
+      {tab === 'performance' && (
       <section className="sp-section">
         <h3><span>Contour grid spacing</span></h3>
         <Field label="Grid spacing (m)">
@@ -2054,7 +2118,9 @@ function SettingsTab(props: Props) {
           creation; pick a value to override and your choice sticks.
         </div>
       </section>
+      )}
 
+      {tab === 'performance' && (
       <section className="sp-section">
         <h3><span>Propagation cutoffs</span></h3>
         <div className="grid-2">
@@ -2084,7 +2150,9 @@ function SettingsTab(props: Props) {
           one virtual source. Lower = more accurate but slower (default 0.25).
         </div>
       </section>
+      )}
 
+      {tab === 'environment' && (
       <section className="sp-section">
         <h3><span>Topography (DEM)</span></h3>
         {/* The old "min ridge prominence" knob is gone: ridge selection is now
@@ -2118,7 +2186,9 @@ function SettingsTab(props: Props) {
           <b>Off</b> for clean LiDAR.
         </div>
       </section>
+      )}
 
+      {tab === 'performance' && (
       <section className="sp-section">
         <h3><span>Drag extrapolation caps</span></h3>
         <div className="grid-2">
@@ -2144,6 +2214,7 @@ function SettingsTab(props: Props) {
           the displayed value is clamped and an exact re-snapshot is queued.
         </div>
       </section>
+      )}
     </>
   );
 }

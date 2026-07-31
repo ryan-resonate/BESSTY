@@ -17,6 +17,8 @@ interface Props {
   onHome(): void;
   /// Open the 3D MapLibre view.
   onOpen3D?(): void;
+  /// I10: open the floating settings window.
+  onOpenSettings?(): void;
 }
 
 export function MapControls(props: Props) {
@@ -35,6 +37,15 @@ export function MapControls(props: Props) {
         <button title="Pan east" onClick={() => props.onPan(120, 0)}>▶</button>
         <div /><button title="Pan south" onClick={() => props.onPan(0, 120)}>▼</button><div />
       </div>
+
+      {/* I10: primary settings affordance — always visible, one click from
+          anywhere, and it keeps the map interactive because the window is
+          non-modal. */}
+      {props.onOpenSettings && (
+        <div className="map-controls-group settings">
+          <button title="Settings" onClick={props.onOpenSettings}>⚙</button>
+        </div>
+      )}
 
       <div className="map-controls-group layers">
         <button title="Layers" onClick={() => setLayerOpen((v) => !v)}>≡</button>
