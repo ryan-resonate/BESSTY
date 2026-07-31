@@ -9,6 +9,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { notify } from '../lib/notify';
+import { applySpectrumPaste, describePaste, parseSpectrumPaste } from '../lib/spectrumPaste';
 import { Link, useLocation } from 'react-router-dom';
 import {
   deleteGlobalEntry,
@@ -714,6 +715,33 @@ export function CatalogEntryEditor(props: {
                                   updateMode(activeModeIdx, {
                                     spectra: { ...m.spectra, [k]: next },
                                   });
+                                }}
+                                // I16: paste a whole spectrum from Excel — click
+                                // a band cell, Ctrl+V, and the column fills from
+                                // here down. Row or column copy both work.
+                                onPaste={(e) => {
+                                  const text = e.clipboardData.getData('text/plain');
+                                  if (!text) return;
+                                  const parsed = parseSpectrumPaste(text);
+                                  if (!parsed.ok) {
+                                    // A single value is a normal cell paste — only
+                                    // complain about things that were clearly meant
+                                    // to be a range.
+                                    e.preventDefault();
+                                    notify.warning(parsed.reason);
+                                    return;
+                                  }
+                                  if (parsed.orientation === 'single') return;  // let the browser handle it
+                                  e.preventDefault();
+                                  const applied = applySpectrumPaste(
+                                    m.spectra[k] ?? [], i, parsed.values, m.frequencies.length,
+                                  );
+                                  updateMode(activeModeIdx, {
+                                    spectra: { ...m.spectra, [k]: applied.next },
+                                  });
+                                  const msg = describePaste(applied, m.frequencies.length);
+                                  if (msg) notify.info(msg);
+                                  else notify.success(`${applied.written} bands pasted.`);
                                 }}
                                 style={{ width: 60, fontFamily: 'inherit', fontSize: 11, padding: '2px 4px', textAlign: 'right' }}
                               />
