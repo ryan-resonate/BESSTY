@@ -7,6 +7,7 @@ import { Map3DView } from '../components/Map3DView';
 import { MapControls } from '../components/MapControls';
 import { SettingsWindow } from '../components/SettingsWindow';
 import { PdfExportDialog } from '../components/PdfExportDialog';
+import { FactorialStudy } from '../components/FactorialStudy';
 import { tileUrlFor } from '../components/MapView';
 import { Legend, ResultsDock, StatusBar } from '../components/MapChrome';
 import { SidePanel, type AddMode, type Tab } from '../components/SidePanel';
@@ -209,6 +210,7 @@ export function ProjectScreen() {
   /// I15: PDF export dialog. Holds the extent captured when it opened — the
   /// export is a snapshot, so it must not follow the map if it moves behind
   /// the dialog.
+  const [showStudy, setShowStudy] = useState(false);
   const [pdfExtent, setPdfExtent] = useState<{ sw: [number, number]; ne: [number, number] } | null>(null);
 
   function openPdfExport() {
@@ -1444,6 +1446,7 @@ export function ProjectScreen() {
         showContours={showContours} setShowContours={setShowContours}
         showGridDebug={showGridDebug} setShowGridDebug={setShowGridDebug}
         onOpenPdfExport={openPdfExport}
+        onOpenStudy={() => setShowStudy(true)}
         showReceiverLimits={showReceiverLimits} setShowReceiverLimits={setShowReceiverLimits}
         contourMode={contourMode} setContourMode={setContourMode}
         contourOpacity={contourOpacity} setContourOpacity={setContourOpacity}
@@ -1561,6 +1564,10 @@ export function ProjectScreen() {
         {error && <div className="map-toast error">solver error: {error}</div>}
         </ErrorBoundary>
       </div>
+
+      {showStudy && (
+        <FactorialStudy project={project} dem={dem} onClose={() => setShowStudy(false)} />
+      )}
 
       {pdfExtent && (
         <PdfExportDialog

@@ -107,6 +107,8 @@ interface Props {
   onOpenSettings?(): void;
   /// I15: open the PDF export dialog (captures the current viewport).
   onOpenPdfExport?(): void;
+  /// I14: open the factorial configuration study.
+  onOpenStudy?(): void;
   /// Called when the user reverts to a saved version. The handler should
   /// merge the snapshot's content into the live project while preserving
   /// current ownership + privacy metadata. Wired up in ProjectScreen.
@@ -1346,6 +1348,12 @@ function ResultsTab(props: Props) {
             disabled={!props.onOpenPdfExport}
             title="Report-quality snapshot: basemap image with vector contours and receivers"
           >📄 Export PDF…</button>
+          <button
+            className="btn small block"
+            onClick={() => props.onOpenStudy?.()}
+            disabled={!props.onOpenStudy}
+            title="Compare battery × inverter configurations across your receivers"
+          >⊞ Compare configurations…</button>
           <button className="btn small" disabled={!hasGrid} onClick={() => grid && download(exportGridGeoTiff(grid), 'grid', 'tif')}>
             ↓ GeoTIFF
           </button>
