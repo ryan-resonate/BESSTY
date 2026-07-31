@@ -9,6 +9,10 @@
 // `unitOverrides` map on the group itself).
 
 import { Fragment, useCallback, useEffect, useMemo, useState, type DragEvent } from 'react';
+import { notify } from '../lib/notify';
+import {
+  describeBulk, mapAllSegments, setModeWhereSupported, swapModel,
+} from '../lib/bessBulkSwap';
 import {
   groupToSequence,
   materialiseBessGroup,
@@ -176,18 +180,62 @@ export function BessGroupWizard(props: Props) {
   // Rewrite every segment of `fromScope:fromModel` to a new model across the
   // whole sequence (nested groups included). Mode resets to the new model's
   // default, since the old mode name may not exist on it.
-  const swapModel = useCallback(
+  const swapModelTo = useCallback(
     (fromScope: CatalogScope, fromModel: string, toScope: CatalogScope, toModel: string) => {
       const defMode = catalogLookup(toScope, toModel)?.defaultMode;
+      setGroup((g) => {
+        const r = swapModel(
+          g.sequence ?? [],
+          { scope: fromScope, modelId: fromModel },
+          { scope: toScope, modelId: toModel, mode: defMode ?? undefined },
+        );
+        return { ...g, sequence: r.sequence };
+      });
+    },
+    [catalogLookup],
+  );
+
+  // I6: set the mode on one model's segments. Every segment in the row shares
+  // that model, so this can't skip anything — the skip path belongs to the
+  // group-wide control below.
+  const setModeForModel = useCallback(
+    (scope: CatalogScope, modelId: string, mode: string) => {
       setGroup((g) => ({
         ...g,
         sequence: mapAllSegments(g.sequence ?? [], (sg) =>
-          sg.catalogScope === fromScope && sg.modelId === fromModel
-            ? { ...sg, catalogScope: toScope, modelId: toModel, modeOverride: defMode ?? undefined }
+          sg.catalogScope === scope && sg.modelId === modelId
+            ? { ...sg, modeOverride: mode }
             : sg),
       }));
     },
+    [],
+  );
+
+  // Modes offered by every model currently in the group, and the union of their
+  // names — the choices for the group-wide "set every unit to…" control.
+  const modesFor = useCallback(
+    (scope: CatalogScope, modelId: string) =>
+      (catalogLookup(scope, modelId)?.modes ?? []).map((md) => md.name),
     [catalogLookup],
+  );
+  const allModeNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const g of modelGroups) for (const n of modesFor(g.scope, g.modelId)) names.add(n);
+    return [...names].sort();
+  }, [modelGroups, modesFor]);
+
+  // I6: apply one mode name across every model in the group. Models without
+  // that mode are left completely alone and reported, rather than silently
+  // dropped or forced onto a mode they don't have.
+  const setModeEverywhere = useCallback(
+    (mode: string) => {
+      setGroup((g) => {
+        const r = setModeWhereSupported(g.sequence ?? [], mode, modesFor);
+        notify.info(describeBulk(r, `set to "${mode}"`));
+        return { ...g, sequence: r.sequence };
+      });
+    },
+    [modesFor],
   );
 
   return (
@@ -262,10 +310,12 @@ export function BessGroupWizard(props: Props) {
 
             {modelGroups.length > 0 && (
               <section style={sectionStyle}>
-                <h4 style={sectionTitleStyle}>Bulk model swap</h4>
+                <h4 style={sectionTitleStyle}>Change all</h4>
                 <p style={hintStyle}>
-                  Change every unit of a model across the whole group at once — pick a replacement of the same kind.
-                  Mode resets to the new model's default.
+                  Change every unit of a model across the whole group at once — pick a
+                  replacement of the same kind, or just switch its mode. Swapping the
+                  model resets the mode to the new model's default, since the old mode
+                  name may not exist on it.
                 </p>
                 {modelGroups.map((g) => {
                   const choices = listEntriesByKind(project, g.kind)
@@ -283,18 +333,58 @@ export function BessGroupWizard(props: Props) {
                         onChange={(e) => {
                           if (!e.target.value) return;
                           const [scope, ...rest] = e.target.value.split(':');
-                          swapModel(g.scope, g.modelId, scope as CatalogScope, rest.join(':'));
+                          swapModelTo(g.scope, g.modelId, scope as CatalogScope, rest.join(':'));
                         }}
                         style={{ ...inputStyle, maxWidth: 200 }}
                       >
-                        <option value="">change to…</option>
+                        <option value="">change model…</option>
                         {choices.map((c) => (
                           <option key={`${c._scope}:${c.id}`} value={`${c._scope}:${c.id}`}>{c.displayName}</option>
+                        ))}
+                      </select>
+                      <select
+                        value=""
+                        disabled={modesFor(g.scope, g.modelId).length < 2}
+                        title={modesFor(g.scope, g.modelId).length < 2
+                          ? 'This model has only one mode'
+                          : 'Set the mode for every unit of this model'}
+                        onChange={(e) => {
+                          if (!e.target.value) return;
+                          setModeForModel(g.scope, g.modelId, e.target.value);
+                          e.currentTarget.value = '';
+                        }}
+                        style={{ ...inputStyle, maxWidth: 150 }}
+                      >
+                        <option value="">change mode…</option>
+                        {modesFor(g.scope, g.modelId).map((n) => (
+                          <option key={n} value={n}>{n}</option>
                         ))}
                       </select>
                     </div>
                   );
                 })}
+                {allModeNames.length > 0 && modelGroups.length > 1 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                    <span style={{ fontSize: 12, flex: 1, minWidth: 0 }}>
+                      <b>Every unit in the group</b>
+                    </span>
+                    <select
+                      value=""
+                      onChange={(e) => {
+                        if (!e.target.value) return;
+                        setModeEverywhere(e.target.value);
+                        e.currentTarget.value = '';
+                      }}
+                      style={{ ...inputStyle, maxWidth: 200 }}
+                      title="Apply one mode across every model; models without it are left alone"
+                    >
+                      <option value="">set mode…</option>
+                      {allModeNames.map((n) => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </section>
             )}
 
@@ -398,14 +488,8 @@ function mapItemById(items: BessSeqItem[], id: string, fn: (it: BessSeqItem) => 
   });
 }
 
-/// Map every segment of every row anywhere in the tree. Used by the bulk
-/// model swap to rewrite all units of a given model at once.
-function mapAllSegments(items: BessSeqItem[], fn: (seg: BessSegment) => BessSegment): BessSeqItem[] {
-  return items.map((it): BessSeqItem =>
-    it.kind === 'row'
-      ? { ...it, row: { ...it.row, segments: it.row.segments.map(fn) } }
-      : { ...it, items: mapAllSegments(it.items, fn) });
-}
+// `mapAllSegments` now lives in `lib/bessBulkSwap.ts` alongside the bulk
+// model/mode helpers, so the "change all" logic is unit-testable.
 
 /// Dissolve the group with `id`, lifting its children up one level in place.
 function ungroupById(items: BessSeqItem[], id: string): BessSeqItem[] {
