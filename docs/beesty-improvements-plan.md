@@ -53,6 +53,17 @@ session. Items are ordered for execution: quick wins → the notification system
   Source containers, DΩ, Cmet, Atmosphere, Barrier diffraction, Annex D WTG,
   General sources, Contour grid spacing, Propagation cutoffs, Topography
   (DEM), Drag extrapolation caps.
+- Reflections: the ENGINE has them (`iso9613/reflection.rs` — §7.5 first-order
+  image-source, `LW + 10·lg(1−α)`, Fresnel gate Eq 26/27; 2024 §7.5.3
+  higher-order to a cap of 4; §7.5.4 cylinders) and they are conformance-
+  validated (**T19 "reflecting barrier over terrain" passes ±0.05 dB**, plus
+  internal cases 12/16/17). BEESTY uses none of it: `sceneBuilder.ts` line ~91
+  types the field `reflectors: []` — an empty TUPLE TYPE, so it cannot hold
+  anything — and line ~358 hardcodes `max_reflection_order: 1`.
+  `Barrier.absorptionCoeff` exists (`types.ts` ~296, defaulted `0.2` in
+  `ProjectScreen.tsx` ~884) but has no UI and is dropped by `wallFromBarrier`.
+  `surfaceDensityKgM2` is likewise unused — correctly, since ISO 9613-2 has no
+  transmission term.
 
 ---
 
@@ -417,6 +428,78 @@ afterwards); manual run on a demo project; XLSX opens in Excel with colours.
 
 ---
 
+## I18 — Reflections: absorptive barriers + reflective BESS containers
+
+Locked shape (Ryan, 2026-07-31): barriers get an **editable absorption
+coefficient** and become **reflecting surfaces**; **BESS containers reflect
+too**; reflections default **ON up to 3rd order for point receivers** and
+**OFF for contour grids**. Both are user-overridable, mirroring the existing
+`settings.containers.{receiverCalc,grid}` split.
+
+The physics is already built and validated in the engine — this item is
+entirely BEESTY-side plumbing plus the culling strategy below.
+
+**Model + scene changes**
+- `Scene.reflectors: []` → `SceneReflector[]`; add the type
+  (`{ segment: [[e,n],[e,n]], base_z, top_z, alpha }`, optional `alpha_bands`;
+  engine validates `α ∈ [0,1]` and `top_z > base_z`). Leave `cylinders: []`
+  alone — no BEESTY object is cylindrical.
+- `settings.max_reflection_order` becomes a real setting, not the hardcoded 1.
+- New `ProjectSettings.reflections?: { receiverCalc?: boolean; grid?: boolean;
+  maxOrder?: number }` — absent ⇒ `{receiverCalc: true, grid: false,
+  maxOrder: 3}` per the locked defaults. **This changes existing projects'
+  reported levels**, so it lands with the A/B note below.
+- `wallFromBarrier` keeps emitting the screening `Wall`; a parallel
+  `reflectorsFromBarrier` emits one reflector per densified segment carrying
+  `alpha = absorptionCoeff`. A wall must appear in BOTH lists — the engine
+  keeps them separate deliberately (*"so the reflected ray isn't also
+  diffracted by the same surface"*), so listing twice is the intended usage,
+  not double-counting. Pin that with a test.
+- Containers emit their 4 facades as reflectors when the container is
+  modelled (reuse `containerFootprint` corners; `alpha` from a new
+  `CatalogEntry.facadeAbsorption`, defaulting ~0.1 for painted steel).
+
+**UI**
+- Barrier row: absorption input beside top height (0–1, step 0.05, default
+  0.2). Worth a preset hint — 0 hard/reflective, 0.2 typical, 0.6+ absorptive
+  treatment.
+- New "Reflections" settings section: the two toggles, an order selector
+  (1–3), and the reflector-budget readout from the culling note below.
+
+**The binding constraint — reflector budget.** The engine bounds higher-order
+enumeration at 100k paths (`Σ m·(m−1)^(k−1)` for k=2..order) and REJECTS the
+scene above it. At order 3 that caps the scene at **46 reflecting surfaces**
+(47 ⇒ 101,614 paths ⇒ rejected). A container contributes 4 facades, so a naive
+implementation dies at **~11 BESS units** — a real site has hundreds. Order 3
+across a whole BESS array is therefore not reachable by simply switching it on.
+
+Culling is thus part of the feature, not an optimisation:
+1. Keep only facades whose plan segment lies within a corridor around the
+   source→receiver line (plus a margin), evaluated per receiver group.
+2. Drop back-facing facades — a facade whose outward normal points away from
+   both source and receiver can never carry a specular path.
+3. Cap the surviving set (nearest-first) and **degrade the order rather than
+   fail**: if the budget still can't take order 3, drop to 2, then 1, and
+   surface that in the UI. Silent truncation is not acceptable — the readout
+   must say what was dropped.
+
+This is also why contours default OFF: a grid solves every cell, and the
+reflector set would have to be re-culled per tile.
+
+Gate:
+- Unit: a wall listed as obstacle + reflector screens AND reflects; α = 1
+  contributes nothing; α = 0 gives the full `10·lg(1−α)` = 0 dB image source.
+- Unit: the culler never drops a facade that carries a valid specular path for
+  the tested geometry, and the emitted count always satisfies the engine's
+  guard for the chosen order.
+- Integration: a level actually MOVES when reflections are enabled — the
+  containers bug (shipped inert because nothing populated the field) is the
+  precedent; assert dB, never just that the scene serialises.
+- A/B: re-run the V1/V2 SoundPLAN comparison with reflections OFF to confirm
+  the existing agreement is untouched, then record the ON deltas separately.
+
+---
+
 ## Suggested commit order
 
 | # | Item | Size |
@@ -438,6 +521,7 @@ afterwards); manual run on a demo project; XLSX opens in Excel with colours.
 | 15 | I10 settings window (after grouping approval) | M |
 | 16 | I11 help window | M |
 | 17 | I14 factorial study | L |
+| 18 | I18 reflections (barriers + containers) | L |
 
 ## Risks / watch-items
 
@@ -453,3 +537,15 @@ afterwards); manual run on a demo project; XLSX opens in Excel with colours.
 - **I14** must never mutate the project — swaps happen on the resolved-source
   clones only; the gate test asserts the project JSON is byte-identical after
   a run.
+- **I18 is the only item that changes reported levels on existing projects.**
+  Turning reflections on by default for point receivers will raise levels at
+  receivers facing a wall or a container row — that is the point, but it must
+  be announced, A/B'd against the SoundPLAN validation set, and dated, or a
+  re-opened project will look like it regressed.
+- **I18's reflector budget is a hard engine limit, not a performance knob** —
+  46 surfaces at order 3. The order must degrade automatically and say so;
+  a scene over the limit is rejected outright, which would surface to the user
+  as a failed solve rather than a slow one.
+- **I18 double-listing is correct** — a wall belongs in both `obstacles` and
+  `reflectors`. Anyone "fixing" that apparent duplication will silently delete
+  either the screening or the reflection, so the test must state the intent.
