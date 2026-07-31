@@ -498,6 +498,7 @@ function buildGridJob(
     }),
     includeContainers: containers?.grid ?? false,
     roofOffsetM: containers?.roofOffsetM ?? 0.3,
+    rotationDeg: ca.rotationDeg ?? 0,
     includeReflections: project.settings?.reflections?.grid ?? false,
     maxReflectionOrder: project.settings?.reflections?.maxOrder ?? 3,
     tiles,

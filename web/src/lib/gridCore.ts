@@ -110,6 +110,11 @@ export interface GridJob {
   /// Model source containers as screening boxes in the grid.
   includeContainers: boolean;
   roofOffsetM: number;
+  /// I7 — calculation-area rotation, clockwise from north. Cells are generated
+  /// in the BOX frame and rotated about the centre before projection, so they
+  /// stay aligned with a rotated box rather than forming an axis-aligned grid
+  /// that merely covers it.
+  rotationDeg?: number;
   /// I18 — emit reflecting facades for this grid, and the requested specular
   /// order. Degraded per tile if the reflector count would exceed the engine's
   /// path-enumeration guard.
@@ -172,7 +177,7 @@ export function runBatchedGrid(
   const {
     cols, rows, dxM, dyM, origin, nBands, cutoffM, dOmegaDb, rxHeightAboveGround,
     barriers, settings, terrain, includeContainers, roofOffsetM, bounds, tiles,
-    includeReflections, maxReflectionOrder,
+    includeReflections, maxReflectionOrder, rotationDeg,
   } = job;
   const R = 6371008.8;
   const lat0 = (origin[0] * Math.PI) / 180;
@@ -193,11 +198,22 @@ export function runBatchedGrid(
     }> = [];
     const rowEnd = Math.min(tile.row0 + tile.rows, rows);
     const colEnd = Math.min(tile.col0 + tile.cols, cols);
+    // I7: cells are generated in the BOX frame and rotated about the centre
+    // before projection, so they stay aligned with a rotated calculation area
+    // instead of forming an axis-aligned grid that merely covers it. `rot` is 0
+    // for an unrotated box, where this collapses to the original arithmetic.
+    const rot = ((rotationDeg ?? 0) * Math.PI) / 180;
+    const cosR = Math.cos(rot);
+    const sinR = Math.sin(rot);
     for (let row = tile.row0; row < rowEnd; row++) {
-      const n = (row - (rows - 1) / 2) * dyM;
-      const lat = origin[0] + (n / R) * (180 / Math.PI);
+      const nBox = (row - (rows - 1) / 2) * dyM;
       for (let col = tile.col0; col < colEnd; col++) {
-        const e = (col - (cols - 1) / 2) * dxM;
+        const eBox = (col - (cols - 1) / 2) * dxM;
+        // Box frame → world frame. Bearing is clockwise from north, and the
+        // world y axis points north, so this is the standard clockwise rotation.
+        const e = eBox * cosR + nBox * sinR;
+        const n = -eBox * sinR + nBox * cosR;
+        const lat = origin[0] + (n / R) * (180 / Math.PI);
         const lng = origin[1] + (e / (R * Math.cos(lat0))) * (180 / Math.PI);
         const groundRaw = dem ? dem.elevation(lat, lng) : 0;
         const ground = Number.isFinite(groundRaw) ? groundRaw : 0;

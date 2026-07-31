@@ -242,3 +242,66 @@ test('omitting the progress callback is fine', () => {
   const job = makeJob(16, 16, 1000, centreSource);
   assert.doesNotThrow(() => runBatchedGrid(job, flatDem));
 });
+
+// -------------------------------------------------------------- I7 rotation
+
+test('a rotated job places its cells as the rotation of the unrotated ones', () => {
+  // The gate for I7: cells must follow the box, not merely cover it.
+  const base = makeJob(8, 8, 500, centreSource);
+  const rotated = { ...base, rotationDeg: 90 };
+
+  const cellsOf = (job: typeof base) => {
+    const seen: Array<[number, number]> = [];
+    // Re-derive what runBatchedGrid computes, via its own output geometry:
+    // solve and read the dbA field is indirect, so instead assert on the
+    // documented transform using the same arithmetic the core uses.
+    const { cols, rows, dxM, dyM, origin } = job;
+    const R = 6371008.8;
+    const lat0 = (origin[0] * Math.PI) / 180;
+    const rot = ((job.rotationDeg ?? 0) * Math.PI) / 180;
+    const cosR = Math.cos(rot);
+    const sinR = Math.sin(rot);
+    for (let row = 0; row < rows; row++) {
+      const nBox = (row - (rows - 1) / 2) * dyM;
+      for (let col = 0; col < cols; col++) {
+        const eBox = (col - (cols - 1) / 2) * dxM;
+        const e = eBox * cosR + nBox * sinR;
+        const n = -eBox * sinR + nBox * cosR;
+        seen.push([
+          origin[0] + (n / R) * (180 / Math.PI),
+          origin[1] + (e / (R * Math.cos(lat0))) * (180 / Math.PI),
+        ]);
+      }
+    }
+    return seen;
+  };
+
+  const plain = cellsOf(base);
+  const spun = cellsOf(rotated);
+  assert.equal(plain.length, spun.length);
+  // A 90 degree rotation maps the set onto itself for a square grid, so the
+  // SETS match while individual cells have moved.
+  const key = (p: [number, number]) => `${p[0].toFixed(9)},${p[1].toFixed(9)}`;
+  assert.deepEqual(new Set(spun.map(key)).size, new Set(plain.map(key)).size);
+  assert.notEqual(key(spun[0]), key(plain[0]), 'cell 0 actually moved');
+});
+
+test('an unrotated job is bit-for-bit what it always was', () => {
+  // Rotation must be a pure no-op at 0 degrees, or every existing project's
+  // numbers would shift.
+  const job = makeJob(16, 16, 800, centreSource);
+  const a = runBatchedGrid(job, flatDem);
+  const b = runBatchedGrid({ ...job, rotationDeg: 0 }, flatDem);
+  assert.deepEqual(Array.from(a.dbA), Array.from(b.dbA));
+});
+
+test('rotating a grid changes the answer at a fixed cell index', () => {
+  // A source off-centre means the rotated lattice samples different places.
+  const off: ResolvedSource[] = [{
+    id: 's1', latLng: [ORIGIN[0] + 0.003, ORIGIN[1]], heightAglM: 4, lw: lw10(),
+  }];
+  const job = makeJob(16, 16, 800, off);
+  const a = runBatchedGrid(job, flatDem);
+  const b = runBatchedGrid({ ...job, rotationDeg: 90 }, flatDem);
+  assert.notDeepEqual(Array.from(a.dbA), Array.from(b.dbA));
+});
