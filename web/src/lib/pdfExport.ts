@@ -245,3 +245,21 @@ export function drawNorthArrow(doc: jsPDF, frame: MapFrame) {
   doc.setFontSize(7);
   doc.text('N', x - 1.4, y + 4.5);
 }
+
+/// Basemap credit, bottom-right inside the map frame.
+///
+/// Not optional in the export dialog: Esri and OpenStreetMap both require the
+/// credit to travel with the imagery, so a report figure needs it exactly as
+/// much as the screen does. Making it a checkbox would invite removing it.
+export function drawAttribution(doc: jsPDF, frame: MapFrame, text: string) {
+  if (!text) return;
+  doc.setFontSize(5.5);
+  const w = doc.getTextWidth(text) + 2;
+  const x = frame.x + frame.w - w - 1;
+  const y = frame.y + frame.h - 1;
+  doc.setFillColor(255, 255, 255);
+  doc.setDrawColor(255, 255, 255);
+  doc.rect(x - 0.5, y - 2.6, w + 1, 3.4, 'F');
+  doc.setTextColor(70, 70, 70);
+  doc.text(text, x + 0.5, y);
+}

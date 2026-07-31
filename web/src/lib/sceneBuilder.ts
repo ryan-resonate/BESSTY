@@ -173,7 +173,9 @@ export interface SceneInput {
   /// Requested specular order (1–4). Degraded automatically if the reflector
   /// count would blow the engine's path-enumeration guard.
   maxReflectionOrder?: number;
-  /// Absorption for container facades when the catalog doesn't pin one.
+  /// Absorption for container facades. Fixed at 0 (perfectly reflecting) and
+  /// deliberately NOT exposed to users yet — Ryan wants to understand how the
+  /// property behaves in the model before it becomes a knob people can turn.
   containerAlpha?: number;
   /** Clearance of the acoustic centre above a container roof (m). */
   roofOffsetM?: number;
@@ -318,7 +320,7 @@ export function buildScene(input: SceneInput): Scene {
     if (wantReflections) {
       const alpha = Number.isFinite(b.absorptionCoeff)
         ? Math.max(0, Math.min(1, b.absorptionCoeff))
-        : 0.2;
+        : 0.1;
       for (let i = 0; i + 1 < wall.polyline.length; i++) {
         const topA = wall.top_z?.[i] ?? wall.base_z[i];
         const topB = wall.top_z?.[i + 1] ?? wall.base_z[i + 1];
@@ -359,8 +361,11 @@ export function buildScene(input: SceneInput): Scene {
       // A hard-faced container row bouncing sound at a receiver is a real
       // effect, so its four facades are reflector candidates too.
       if (wantReflections) {
+        // α = 0: a perfectly reflecting box. Steel container walls are close to
+        // that, and holding it fixed means any reflection effect seen in the
+        // model is the GEOMETRY, not a tuned absorption number.
         candidateFacades.push(...facadesFromFootprint(
-          footprint, ground, container.heightM, input.containerAlpha ?? 0.1,
+          footprint, ground, container.heightM, input.containerAlpha ?? 0,
         ));
       }
     }

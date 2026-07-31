@@ -8,7 +8,7 @@ import { MapControls } from '../components/MapControls';
 import { SettingsWindow } from '../components/SettingsWindow';
 import { PdfExportDialog } from '../components/PdfExportDialog';
 import { FactorialStudy } from '../components/FactorialStudy';
-import { tileUrlFor } from '../components/MapView';
+import { attributionFor, tileUrlFor } from '../components/MapView';
 import { Legend, ResultsDock, StatusBar } from '../components/MapChrome';
 import { SidePanel, type AddMode, type Tab } from '../components/SidePanel';
 import { listEntriesByKind, lookupEntry } from '../lib/catalog';
@@ -1098,7 +1098,7 @@ export function ProjectScreen() {
       topHeightsM: [5],         // sensible default; user edits in the Barriers tab
       baseFromGroundM: 0,
       surfaceDensityKgM2: 20,   // reflective wall — only matters when reflections land
-      absorptionCoeff: 0.2,
+      absorptionCoeff: 0.1,
     };
     setProject({ ...project, barriers: [...project.barriers, newBarrier] });
     setActiveTab('barriers');
@@ -1580,6 +1580,7 @@ export function ProjectScreen() {
           contourStepDb={contourStepDb}
           showContours={showContours}
           tileUrl={(z, x, y) => tileUrlFor(baseMap, z, x, y)}
+          attribution={attributionFor(baseMap)}
           onClose={() => setPdfExtent(null)}
         />
       )}

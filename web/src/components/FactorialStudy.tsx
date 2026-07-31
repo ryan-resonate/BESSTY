@@ -13,8 +13,9 @@ import { evaluateProject } from '../lib/solver';
 import { limitForPeriod, type Project, type Receiver, type SourceKind } from '../lib/types';
 import { exceedsLimit, limitComparisonFor } from '../lib/limits';
 import {
-  candidateLabel, enumerateCombos, projectForCombo, worstOf,
-  type AxisSpec, type Candidate, type ComboResult,
+  axisOverlap, axisScopeOptions, candidateLabel, enumerateCombos, projectForCombo,
+  scopeKey, worstOf,
+  type AxisScopeOption, type AxisSpec, type Candidate, type ComboResult,
 } from '../lib/factorial';
 import { buildFactorialXlsx } from '../lib/factorialXlsx';
 import type { DemRaster } from '../lib/dem';
@@ -43,12 +44,31 @@ function candidatesFor(project: Project, kind: SourceKind): Candidate[] {
 }
 
 export function FactorialStudy({ project, dem, onClose }: Props) {
-  const batteryPool = useMemo(() => candidatesFor(project, 'bess'), [project]);
-  const inverterPool = useMemo(() => candidatesFor(project, 'auxiliary'), [project]);
-  const bessIds = useMemo(
-    () => project.sources.filter((s) => s.kind === 'bess').map((s) => s.id), [project]);
-  const auxIds = useMemo(
-    () => project.sources.filter((s) => s.kind === 'auxiliary').map((s) => s.id), [project]);
+
+  // Axis scopes (Ryan): a BESS group holds BOTH batteries and inverters, so
+  // "the inverters inside Row A" has to be selectable independently of "all
+  // inverters" and of another group's.
+  const scopes = useMemo(() => axisScopeOptions(project), [project]);
+  const firstOf = (k: SourceKind) => scopes.find((o) => o.scope.sourceKind === k) ?? scopes[0];
+  const [batScope, setBatScope] = useState<string>(() => {
+    const o = scopes.find((x) => x.scope.sourceKind === 'bess');
+    return o ? scopeKey(o.scope) : '';
+  });
+  const [invScope, setInvScope] = useState<string>(() => {
+    const o = scopes.find((x) => x.scope.sourceKind === 'auxiliary');
+    return o ? scopeKey(o.scope) : '';
+  });
+  const batOpt = scopes.find((o) => scopeKey(o.scope) === batScope) ?? firstOf('bess');
+  const invOpt = scopes.find((o) => scopeKey(o.scope) === invScope) ?? firstOf('auxiliary');
+  const bessIds = batOpt?.sourceIds ?? [];
+  const auxIds = invOpt?.sourceIds ?? [];
+
+  const batteryPool = useMemo(
+    () => (batOpt ? candidatesFor(project, batOpt.scope.sourceKind) : []),
+    [project, batOpt?.scope.sourceKind]);
+  const inverterPool = useMemo(
+    () => (invOpt ? candidatesFor(project, invOpt.scope.sourceKind) : []),
+    [project, invOpt?.scope.sourceKind]);
 
   const [batSel, setBatSel] = useState<Set<number>>(new Set());
   const [invSel, setInvSel] = useState<Set<number>>(new Set());
@@ -66,7 +86,12 @@ export function FactorialStudy({ project, dem, onClose }: Props) {
     candidates: [...invSel].sort((a, b) => a - b).map((i) => inverterPool[i]),
   };
   const receivers: Receiver[] = project.receivers.filter((r) => rxSel.has(r.id));
-  const combos = battery.candidates.length && inverter.candidates.length
+  // Both axes can now point at overlapping sources (e.g. "All BESS" and
+  // "Row A — BESS"). projectForCombo lets axis 1 win, so axis 2 would silently
+  // do nothing for the shared units — a study that appears to have varied
+  // something it did not. Refuse rather than produce a misleading matrix.
+  const overlap = axisOverlap(battery, inverter);
+  const combos = battery.candidates.length && inverter.candidates.length && overlap.length === 0
     ? enumerateCombos(battery, inverter) : [];
 
   async function run() {
@@ -144,10 +169,18 @@ export function FactorialStudy({ project, dem, onClose }: Props) {
         </div>
 
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-          <Pool title={`Batteries (${bessIds.length} units)`} pool={batteryPool}
-            sel={batSel} onToggle={(i) => toggle(batSel, i, setBatSel)} />
-          <Pool title={`Inverters (${auxIds.length} units)`} pool={inverterPool}
-            sel={invSel} onToggle={(i) => toggle(invSel, i, setInvSel)} />
+          <Pool
+            title="Axis 1"
+            scopes={scopes} scopeValue={batScope}
+            onScope={(v) => { setBatScope(v); setBatSel(new Set()); }}
+            pool={batteryPool} sel={batSel}
+            onToggle={(i) => toggle(batSel, i, setBatSel)} />
+          <Pool
+            title="Axis 2"
+            scopes={scopes} scopeValue={invScope}
+            onScope={(v) => { setInvScope(v); setInvSel(new Set()); }}
+            pool={inverterPool} sel={invSel}
+            onToggle={(i) => toggle(invSel, i, setInvSel)} />
           <div style={{ flex: '1 1 200px', minWidth: 180 }}>
             <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>
               Receivers ({rxSel.size}/{project.receivers.length})
@@ -190,12 +223,21 @@ export function FactorialStudy({ project, dem, onClose }: Props) {
           <button className="btn" onClick={onClose}>Close</button>
         </div>
 
+        {overlap.length > 0 && (
+          <div className="hint" style={{ color: 'var(--red)', marginTop: 8 }}>
+            The two axes both control {overlap.length} of the same
+            unit{overlap.length === 1 ? '' : 's'}. Pick scopes that don't
+            overlap — otherwise axis 2 would have no effect on those units and
+            the matrix would imply a comparison that never happened.
+          </div>
+        )}
+
         {results && (
           <div style={{ overflowX: 'auto', marginTop: 12 }}>
             <table className="catalog-table" style={{ fontSize: 11 }}>
               <thead>
                 <tr>
-                  <th>Inverter \ Battery</th>
+                  <th>{invOpt?.label ?? 'Axis 2'} \ {batOpt?.label ?? 'Axis 1'}</th>
                   {battery.candidates.map((c) => <th key={c.label}>{c.label}</th>)}
                 </tr>
               </thead>
@@ -227,12 +269,26 @@ export function FactorialStudy({ project, dem, onClose }: Props) {
   );
 }
 
-function Pool({ title, pool, sel, onToggle }: {
-  title: string; pool: Candidate[]; sel: Set<number>; onToggle(i: number): void;
+function Pool({ title, scopes, scopeValue, onScope, pool, sel, onToggle }: {
+  title: string;
+  scopes: AxisScopeOption[];
+  scopeValue: string;
+  onScope(v: string): void;
+  pool: Candidate[]; sel: Set<number>; onToggle(i: number): void;
 }) {
   return (
-    <div style={{ flex: '1 1 220px', minWidth: 200 }}>
+    <div style={{ flex: '1 1 240px', minWidth: 220 }}>
       <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>{title}</div>
+      <select
+        value={scopeValue}
+        onChange={(e) => onScope(e.target.value)}
+        style={{ width: '100%', marginBottom: 6 }}
+        title="Which sources this axis varies"
+      >
+        {scopes.map((o) => (
+          <option key={scopeKey(o.scope)} value={scopeKey(o.scope)}>{o.label}</option>
+        ))}
+      </select>
       {pool.length === 0 && <div className="hint">No catalog entries of this kind.</div>}
       <div style={{ maxHeight: 150, overflowY: 'auto' }}>
         {pool.map((c, i) => (

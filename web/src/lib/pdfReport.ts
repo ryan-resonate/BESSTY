@@ -11,7 +11,7 @@ import type { GridResult, ReceiverResult } from './solver';
 import { buildContourLines } from './contourLines';
 import { makeBandsForRange, paletteCss, type Palette } from './colormap';
 import {
-  composeBasemap, drawNorthArrow, drawScaleBar, PAGES, startPdf,
+  composeBasemap, drawAttribution, drawNorthArrow, drawScaleBar, PAGES, startPdf,
   type Extent, type MapFrame,
 } from './pdfExport';
 
@@ -43,6 +43,8 @@ export interface PdfInput {
   contourStepDb: number;
   showContours: boolean;
   tileUrl(z: number, x: number, y: number): string;
+  /// Basemap credit — REQUIRED by both providers, so it is not optional.
+  attribution: string;
   options: PdfOptions;
 }
 
@@ -101,6 +103,8 @@ export async function buildPdf(input: PdfInput): Promise<jsPDF> {
   drawCalcArea(doc, project, frame);
   drawReceivers(doc, project, results, frame, o.showReceiverLimits);
 
+  // Always drawn: the licence requires it, so it is not a dialog option.
+  drawAttribution(doc, frame, input.attribution);
   if (o.legend && input.showContours && grid) drawLegend(doc, input, frame);
   if (o.scaleBar) drawScaleBar(doc, frame);
   if (o.northArrow) drawNorthArrow(doc, frame);

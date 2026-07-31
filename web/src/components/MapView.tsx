@@ -187,7 +187,11 @@ function receiverMarker(
 export const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max: number; subdomains?: string }> = {
   satellite: {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    attribution: '© Esri',
+    // Esri's World Imagery terms require the full source credit, not just
+    // "Esri" — the imagery is licensed from several providers and they must
+    // each be named. This string is what Esri publishes for this service.
+    attribution:
+      'Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
     // Bumped back to 22 because the custom EsriCanvasTileLayer below
     // can now handle placeholders properly: it samples each loaded
     // tile, and if it detects the Esri placeholder it recursively
@@ -201,7 +205,8 @@ export const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max:
   },
   osm: {
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: '© OpenStreetMap',
+    // ODbL requires crediting the contributors, not just the project.
+    attribution: '© OpenStreetMap contributors',
     max: 19,
     subdomains: 'abc',
   },
@@ -2240,4 +2245,11 @@ export function tileUrlFor(base: BaseMap, z: number, x: number, y: number): stri
     .replace('{z}', String(z))
     .replace('{x}', String(x))
     .replace('{y}', String(y));
+}
+
+/// Attribution text for a basemap, for surfaces that aren't the Leaflet map
+/// (the PDF export). Both providers REQUIRE the credit to travel with the
+/// imagery, so a figure in a report needs it as much as the screen does.
+export function attributionFor(base: BaseMap): string {
+  return TILE_URLS[base].attribution;
 }

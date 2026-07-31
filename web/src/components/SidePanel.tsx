@@ -1728,9 +1728,9 @@ function BarriersTab(props: Props) {
               </span>
               {/* I18: absorption. Only matters when reflections are on, but
                   it's a property of the wall, so it lives with the wall. */}
-              <span className="inline-unit" title="Absorption coefficient (0 = hard/reflective, 1 = fully absorptive). Used when Reflections is on.">
+              <span className="inline-unit" title="Sound absorption coefficient α (ISO 9613-2 §7.5): fraction of energy NOT reflected. 0 = hard, 0.1 = typical barrier. This is NOT an NRC — see Help → Barrier absorption. Only used when Reflections is on.">
                 <NumericInput className="inline-edit" min={0} max={1} step={0.05}
-                  value={b.absorptionCoeff ?? 0.2} fallback={0.2}
+                  value={b.absorptionCoeff ?? 0.1} fallback={0.1}
                   onChange={(v) => updateBarrier(b.id, { absorptionCoeff: v })}
                   title="Absorption α" />
                 <span className="inline-unit-label">α</span>
@@ -1959,8 +1959,10 @@ export function SettingsTab(props: SettingsTabProps) {
         <div className="hint">
           Specular reflection off barriers and, when Source containers is on,
           off container facades. Each barrier carries its own absorption α
-          (edit it in the Barriers tab); container facades default to 0.1,
-          typical for painted steel. Off by default — switching it on WILL
+          (edit it in the Barriers tab; default 0.1, and it is <b>not</b> an NRC
+          — see Help → Barrier absorption). Container facades are fixed at
+          α = 0, a perfectly reflecting box, so any effect you see from a
+          container row is the geometry rather than a tuned number. Off by default — switching it on WILL
           raise levels at receivers facing a wall or a container row.
           <br />
           The engine caps how many reflection paths it will enumerate, so a

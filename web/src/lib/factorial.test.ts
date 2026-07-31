@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  candidateLabel, enumerateCombos, projectFingerprint, projectForCombo, worstOf,
+  axisOverlap, axisScopeOptions, candidateLabel, enumerateCombos, projectFingerprint,
+  projectForCombo, scopeKey, worstOf,
   type AxisSpec, type Candidate, type ComboResult,
 } from './factorial';
 import type { Project, Source } from './types';
@@ -99,4 +100,58 @@ test('candidate labels distinguish the same model in different modes', () => {
   assert.equal(candidateLabel('MP2', null), 'MP2');
   assert.equal(candidateLabel('MP2', 'night'), 'MP2 — night');
   assert.notEqual(candidateLabel('MP2', 'day'), candidateLabel('MP2', 'night'));
+});
+
+// ------------------------------------------------------------- axis scoping
+
+test('scopes cover all-of-a-kind and each group, skipping empty ones', () => {
+  const p = {
+    ...project(),
+    sources: [
+      { ...src('b1'), kind: 'bess', groupId: 'g1' },
+      { ...src('i1'), kind: 'auxiliary', groupId: 'g1' },
+      { ...src('b2'), kind: 'bess' },
+    ],
+    bessGroups: [
+      { id: 'g1', name: 'Row A' },
+      { id: 'g2', name: 'Empty row' },
+    ],
+  } as unknown as Project;
+
+  const labels = axisScopeOptions(p).map((o) => o.label);
+  assert.ok(labels.some((l) => l.startsWith('All BESS')));
+  assert.ok(labels.some((l) => l.startsWith('All auxiliary')));
+  // A group holding BOTH kinds appears once per kind — that's the whole point.
+  assert.ok(labels.includes('Row A — BESS (1)'));
+  assert.ok(labels.includes('Row A — auxiliary (1)'));
+  // An empty group is not offered: an axis you cannot populate is noise.
+  assert.ok(!labels.some((l) => l.startsWith('Empty row')));
+});
+
+test('a group scope selects only that group members', () => {
+  const p = {
+    ...project(),
+    sources: [
+      { ...src('b1'), kind: 'bess', groupId: 'g1' },
+      { ...src('b2'), kind: 'bess', groupId: 'g2' },
+    ],
+    bessGroups: [{ id: 'g1', name: 'A' }, { id: 'g2', name: 'B' }],
+  } as unknown as Project;
+  const a = axisScopeOptions(p).find((o) => o.label.startsWith('A —'))!;
+  assert.deepEqual(a.sourceIds, ['b1']);
+});
+
+test('overlapping axes are detected — axis 1 would otherwise silently win', () => {
+  const all: AxisSpec = { sourceIds: ['b1', 'b2'], candidates: [] };
+  const one: AxisSpec = { sourceIds: ['b1'], candidates: [] };
+  assert.deepEqual(axisOverlap(all, one), ['b1']);
+  assert.deepEqual(axisOverlap(one, { sourceIds: ['i1'], candidates: [] }), []);
+});
+
+test('scope keys are stable and distinguish kind within a group', () => {
+  assert.notEqual(
+    scopeKey({ kind: 'group', groupId: 'g1', sourceKind: 'bess' }),
+    scopeKey({ kind: 'group', groupId: 'g1', sourceKind: 'auxiliary' }),
+  );
+  assert.equal(scopeKey({ kind: 'all', sourceKind: 'bess' }), 'all:bess');
 });
