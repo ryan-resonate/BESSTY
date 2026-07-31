@@ -37,6 +37,7 @@ export {
 } from './catalogDims';
 
 import { SEED_CATALOG } from './seedCatalog';
+import { seedEntriesToUpsert } from './catalogMigration';
 import {
   deleteGlobalEntryFs,
   deletePersonalEntryFs,
@@ -71,16 +72,23 @@ function startSubscription() {
       cachedGlobal = entries;
       cacheHasData = true;
       emit();
-      // First snapshot is in. If empty, try seeding once (any signed-in
-      // user is allowed to). Per-doc-id writes are idempotent so races
-      // between users are harmless.
-      if (entries.length === 0 && !seedAttempted) {
+      // First snapshot is in. Top the global catalog up with any bundled seed
+      // entry it doesn't already have (I2). Previously this only fired when
+      // the collection was completely EMPTY, so a seed product added to the
+      // bundle after first launch never reached Firestore and existed only for
+      // users whose cache hadn't loaded yet.
+      //
+      // Matched by id, so an entry someone has since edited globally is never
+      // reverted to the bundled version. Per-doc-id writes are idempotent, so
+      // races between users are harmless.
+      if (!seedAttempted) {
         seedAttempted = true;
+        const missing = seedEntriesToUpsert(SEED_CATALOG, entries);
         const uid = firebaseAuth().currentUser?.uid;
-        if (uid) {
-          void seedGlobalCatalog(SEED_CATALOG, uid).catch((err) => {
+        if (missing.length > 0 && uid) {
+          void seedGlobalCatalog(missing, uid).catch((err) => {
             // eslint-disable-next-line no-console
-            console.warn('[BESSTY] auto-seed global catalog failed:', err);
+            console.warn('[BESSTY] global catalog top-up failed:', err);
           });
         }
       }
@@ -264,7 +272,13 @@ export function withoutLocalEntry(project: Project, id: string): Project {
 /// per-user; cross-user reads are blocked by security rules).
 export function lookupEntry(project: Project, source: Source): CatalogEntry | null {
   if (source.catalogScope === 'local') {
-    return localCatalogOf(project).find((e) => e.id === source.modelId) ?? null;
+    // I2: local catalogs are gone, but stored sources still carry
+    // `catalogScope: 'local'` until they're migrated. Resolve from whatever
+    // localCatalog the document still has, then fall through to global — an
+    // un-migrated project must keep solving, not lose its models.
+    return localCatalogOf(project).find((e) => e.id === source.modelId)
+      ?? loadGlobalCatalog().find((e) => e.id === source.modelId)
+      ?? null;
   }
   if (source.catalogScope === 'personal') {
     return loadPersonalCatalog().find((e) => e.id === source.modelId) ?? null;

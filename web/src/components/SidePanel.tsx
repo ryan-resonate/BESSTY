@@ -102,7 +102,7 @@ interface Props {
   /// Where the live project lives — 'firestore' enables the Project tab's
   /// version + privacy controls; anything else shows a "local project"
   /// note instead.
-  projectSource?: 'firestore' | 'local' | 'none';
+  projectSource?: 'firestore' | 'none';
   /// Called when the user reverts to a saved version. The handler should
   /// merge the snapshot's content into the live project while preserving
   /// current ownership + privacy metadata. Wired up in ProjectScreen.

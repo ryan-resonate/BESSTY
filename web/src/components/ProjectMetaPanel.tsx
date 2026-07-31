@@ -21,6 +21,8 @@
 
 import { useEffect, useState } from 'react';
 import { notify } from '../lib/notify';
+import { describeMigration, planLocalCatalogMigration } from '../lib/catalogMigration';
+import { loadGlobalCatalog, upsertGlobalEntry } from '../lib/catalog';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import {
@@ -39,9 +41,9 @@ interface Props {
   project: Project;
   currentUid: string;
   currentDisplayName: string;
-  /// 'firestore' = features below are usable. 'local' = legacy
-  /// localStorage project; privacy/versions don't apply yet.
-  source: 'firestore' | 'local' | 'none';
+  /// 'firestore' = features below are usable. 'none' = the project failed to
+  /// load (the localStorage fallback was removed in I2).
+  source: 'firestore' | 'none';
   /// Apply a loaded version snapshot to the live editor. Implemented in
   /// ProjectScreen so the revert goes through the same setProject path
   /// every other mutation uses -- gets undo support, correct echo
@@ -56,9 +58,9 @@ export function ProjectMetaPanel({
   if (source !== 'firestore') {
     return (
       <div style={{ padding: 12, color: 'var(--ink-soft, #475569)', fontSize: 13 }}>
-        Privacy &amp; version history are only available for cloud-saved
-        projects. This project is currently a local copy — open or create a
-        new project to access these features.
+        This project isn't loaded from the cloud, so privacy, version history
+        and catalog migration aren't available. Reload, or open a project from
+        the project list.
       </div>
     );
   }
@@ -66,6 +68,11 @@ export function ProjectMetaPanel({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18, padding: 12 }}>
       <OwnerBlock project={project} />
+      <LocalCatalogBlock
+        projectId={projectId}
+        project={project}
+        onApplyVersion={onApplyVersion}
+      />
       <PrivacyBlock
         projectId={projectId}
         project={project}
@@ -91,6 +98,63 @@ function OwnerBlock({ project }: { project: Project }) {
       <KvRow k="Owner" v={project.ownerDisplayName ?? '(unknown)'} />
       <KvRow k="Created" v={project.createdAt ? new Date(project.createdAt).toLocaleString() : '—'} />
       <KvRow k="Last edit" v={project.updatedAt ? new Date(project.updatedAt).toLocaleString() : '—'} />
+    </section>
+  );
+}
+
+// ===== Local catalog migration (I2) =====
+//
+// Project-local catalogs are gone, but documents saved before that still carry
+// one. Rather than rewrite people's projects on open, this is an explicit,
+// visible action: it only appears when there's something to migrate, it says
+// exactly what it will do, and it disappears once done.
+
+function LocalCatalogBlock({ projectId, project, onApplyVersion }: {
+  projectId: string;
+  project: Project;
+  onApplyVersion: (p: Project) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const locals = project.localCatalog ?? [];
+  if (locals.length === 0) return null;
+
+  async function run() {
+    const plan = planLocalCatalogMigration(project, loadGlobalCatalog(), projectId);
+    const ok = await notify.confirm({
+      title: `Move ${locals.length} local model${locals.length === 1 ? '' : 's'} to the global catalog?`,
+      body: `${describeMigration(plan)}\n\n`
+        + 'Project-local catalogs have been removed — these models become normal '
+        + 'global entries and this project\'s sources are repointed at them. '
+        + 'Computed levels are unchanged: a model whose id clashes with a '
+        + 'DIFFERENT global entry is kept as its own copy rather than adopting '
+        + 'the other definition.',
+      confirmLabel: 'Migrate',
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      for (const e of plan.upserts) upsertGlobalEntry(e);
+      onApplyVersion(plan.project);      // same path a version revert uses
+      notify.success(describeMigration(plan), { title: 'Catalog migrated' });
+    } catch (err) {
+      notify.error((err as Error).message, { title: 'Migration failed' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section>
+      <SectionTitle>Local catalog</SectionTitle>
+      <div style={{ fontSize: 12, color: 'var(--ink-soft, #475569)', marginBottom: 8 }}>
+        This project still carries <b>{locals.length}</b> project-local source
+        model{locals.length === 1 ? '' : 's'}. Local catalogs have been retired —
+        migrate them into the global catalog so they stay editable and shared.
+        Nothing changes until you press the button.
+      </div>
+      <button className="btn" type="button" disabled={busy} onClick={run}>
+        {busy ? 'Migrating…' : 'Migrate to global catalog'}
+      </button>
     </section>
   );
 }

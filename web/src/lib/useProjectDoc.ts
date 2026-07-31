@@ -31,10 +31,13 @@ import {
   saveProject as saveFirestoreProject,
   subscribeToProject,
 } from './firestoreProjects';
-import { loadProject as loadLocalProject, saveProject as saveLocalProject } from './storage';
+import { notify } from './notify';
 import type { Project } from './types';
 
-export type ProjectSource = 'firestore' | 'local' | 'none';
+/// Where the open project lives. `'local'` (localStorage) was removed in I2 —
+/// the union keeps the name out so any lingering comparison fails to compile
+/// rather than silently never matching.
+export type ProjectSource = 'firestore' | 'none';
 
 export type SaveStatus =
   | 'idle'      // no recent save, no pending edit
@@ -125,15 +128,10 @@ export function useProjectDoc(
             setSource('firestore');
             setProjectState(remoteProject);
           } else {
-            // Doc doesn't exist in Firestore — try localStorage.
-            const local = loadLocalProject(projectId);
-            if (local) {
-              setSource('local');
-              setProjectState(local);
-            } else {
-              setSource('none');
-              setProjectState(null);
-            }
+            // I2: projects live in Firestore only. The localStorage fallback
+            // that used to catch this case is gone.
+            setSource('none');
+            setProjectState(null);
           }
           setLoading(false);
           return;
@@ -173,20 +171,21 @@ export function useProjectDoc(
         }
       },
       (err) => {
-        // Permission denied, offline, etc. Fall back to localStorage.
+        // Permission denied, offline, etc. There is no local fallback any more
+        // (I2), so surface it instead of silently showing an empty project —
+        // "your project didn't load" must not look like "your project is
+        // empty", which is what a silent failure would read as.
         // eslint-disable-next-line no-console
-        console.warn('[BESSTY] Firestore subscribe failed; falling back to localStorage:', err);
+        console.error('[BESSTY] Firestore subscribe failed:', err);
         if (!firstSnapshotResolvedRef.current) {
           firstSnapshotResolvedRef.current = true;
-          const local = projectId ? loadLocalProject(projectId) : null;
-          if (local) {
-            setSource('local');
-            setProjectState(local);
-          } else {
-            setSource('none');
-            setProjectState(null);
-          }
+          setSource('none');
+          setProjectState(null);
           setLoading(false);
+          notify.error(
+            `Couldn't load this project: ${err.message}. Check your connection and reload.`,
+            { title: 'Project failed to load' },
+          );
         }
       },
     );
@@ -214,10 +213,8 @@ export function useProjectDoc(
     try {
       if (sourceRef.current === 'firestore') {
         await saveFirestoreProject(projectId, next, currentUid ?? '');
-      } else if (sourceRef.current === 'local') {
-        saveLocalProject(projectId, next);
       } else {
-        // source === 'none' — don't persist
+        // source === 'none' — nothing to persist to
       }
       setSaveError(null);
       // Show "Saved" briefly, then fade back to idle if no new edits.
