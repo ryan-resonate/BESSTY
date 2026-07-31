@@ -41,11 +41,9 @@ interface Props {
   onUpdateBarrier?(id: string, polyline: Array<[number, number]>): void;
   onMoveSource?(id: string, latLng: [number, number]): void;
   onMoveReceiver?(id: string, latLng: [number, number]): void;
-  /// Calc-area edit callbacks. `onResizeCalcArea` is called when a corner
-  /// handle is dragged (centre stays fixed); `onMoveCalcArea` when the
+  /// Calc-area edit callback (I7). A corner drag anchors the OPPOSITE corner,
+  /// so a resize also moves the centre — which is why centre, size and
   /// centre handle is dragged.
-  onResizeCalcArea?(widthM: number, heightM: number): void;
-  onMoveCalcArea?(centerLatLng: [number, number]): void;
   /// I7 - one commit for the calc-area box after a drag or rotate. Corner drags
   /// now move the centre (the opposite corner is anchored), so centre, size and
   /// rotation all have to land together.
@@ -215,7 +213,7 @@ export const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max:
   osm: {
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     // ODbL requires crediting the contributors, not just the project.
-    attribution: '© OpenStreetMap contributors',
+    attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors',
     max: 19,
     subdomains: 'abc',
   },
@@ -508,7 +506,7 @@ function gridToCanvas(
 export function MapView({
   project, results, grid, selectedIds, onSelect, onBoxSelect,
   onAddSource, onAddReceiver, onAddBarrierPolyline, onUpdateBarrier, onMoveSource, onMoveReceiver,
-  onResizeCalcArea, onMoveCalcArea, onEditCalcArea,
+  onEditCalcArea,
   onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
   selectedGroupId, onTranslateGroup, onRotateGroup,
   addMode, baseMap, showContours, showGridDebug, showReceiverLimits, contourMode, contourOpacity, contourStepDb,
@@ -595,14 +593,14 @@ export function MapView({
   // marker rebuilt mid-drag drops the drag interaction).
   const callbacksRef = useRef({
     onAddSource, onAddReceiver, onAddBarrierPolyline, onUpdateBarrier, onMoveSource, onMoveReceiver,
-    onResizeCalcArea, onMoveCalcArea, onEditCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
+    onEditCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
     onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
     onTranslateGroup, onRotateGroup,
   });
   useEffect(() => {
     callbacksRef.current = {
       onAddSource, onAddReceiver, onAddBarrierPolyline, onUpdateBarrier, onMoveSource, onMoveReceiver,
-      onResizeCalcArea, onMoveCalcArea, onEditCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
+      onEditCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
       onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
       onTranslateGroup, onRotateGroup,
     };
@@ -1474,17 +1472,12 @@ export function MapView({
 
     const ca = project.calculationArea;
     if (ca) {
-      const halfW = ca.widthM / 2;
-      const halfH = ca.heightM / 2;
       const R = 6371008.8;
       const lat0 = (ca.centerLatLng[0] * Math.PI) / 180;
-      const dLat = (halfH / R) * (180 / Math.PI);
-      const dLng = (halfW / (R * Math.cos(lat0))) * (180 / Math.PI);
-      const south = ca.centerLatLng[0] - dLat;
-      const north = ca.centerLatLng[0] + dLat;
-      const west = ca.centerLatLng[1] - dLng;
-      const east = ca.centerLatLng[1] + dLng;
-      void south; void north; void west; void east;
+      // Matches the minimum the Area tab's numeric inputs advertise; the two
+      // surfaces disagreeing about the legal minimum is a bug waiting to be
+      // reported.
+      const MIN_CALC_AREA_M = 500;
 
       // I7 — the calculation area is a ROTATABLE box with live drag feedback.
       //
@@ -1581,13 +1574,28 @@ export function MapView({
           const opp = boxToLatLng(-sx * live.widthM / 2, -sy * live.heightM / 2);
           const [oe, on] = toWorld(opp[0], opp[1]);
           const [de, dn] = toWorld(ll.lat, ll.lng);
-          const [bx, by] = toBox(de - oe, dn - on);
-          const ce = (oe + de) / 2;
-          const cn = (on + dn) / 2;
+          const [bxRaw, byRaw] = toBox(de - oe, dn - on);
+
+          // Clamp in the BOX frame, then rebuild the dragged corner from the
+          // clamped vector. Clamping the SIZE while deriving the centre from
+          // the unclamped pointer would move the corner we promised to anchor:
+          // each tick then re-derives the anchor from an already-shifted box
+          // and the error compounds, so at the minimum size the box slides
+          // away from the cursor instead of stopping.
+          const bx = Math.sign(bxRaw || 1) * Math.max(MIN_CALC_AREA_M, Math.abs(bxRaw));
+          const by = Math.sign(byRaw || 1) * Math.max(MIN_CALC_AREA_M, Math.abs(byRaw));
+          // Clamped corner back in world metres, relative to the same centre
+          // both readings were taken against.
+          const c = Math.cos(rotRad());
+          const sn = Math.sin(rotRad());
+          const ce2 = oe + (bx * c + by * sn);
+          const cn2 = on + (-bx * sn + by * c);
+          const ce = (oe + ce2) / 2;
+          const cn = (on + cn2) / 2;
           live = {
             ...live,
-            widthM: Math.max(200, Math.abs(bx)),
-            heightM: Math.max(200, Math.abs(by)),
+            widthM: Math.abs(bx),
+            heightM: Math.abs(by),
             centre: [
               live.centre[0] + (cn / R) * (180 / Math.PI),
               live.centre[1] + (ce / (R * cosLat)) * (180 / Math.PI),
@@ -1596,7 +1604,10 @@ export function MapView({
           redraw(m);
         };
         m.on('drag', move);
-        m.on('dragend', (ev) => { move(ev); redraw(null); commit(); });
+        // Do NOT re-apply move() here: Leaflet has already fired `drag` at
+        // this position, so `live` is current, and re-running the clamp path
+        // would shift the geometry a second time at the minimum size.
+        m.on('dragend', () => { redraw(null); commit(); });
         m.addTo(group);
         cornerMarkers.push(m);
       });
@@ -1616,7 +1627,7 @@ export function MapView({
         redraw(centreMarker);
       };
       centreMarker.on('drag', moveCentre);
-      centreMarker.on('dragend', (ev) => { moveCentre(ev); redraw(null); commit(); });
+      centreMarker.on('dragend', () => { redraw(null); commit(); });
       centreMarker.addTo(group);
 
       // ---- rotation handle ----
@@ -1640,7 +1651,7 @@ export function MapView({
         redraw(rotMarker);
       };
       rotMarker.on('drag', rotate);
-      rotMarker.on('dragend', (ev) => { rotate(ev); redraw(null); commit(); });
+      rotMarker.on('dragend', () => { redraw(null); commit(); });
       rotMarker.addTo(group);
     }
     // `onSelect` deliberately omitted — we read it from callbacksRef inside
@@ -2372,5 +2383,6 @@ export function tileUrlFor(base: BaseMap, z: number, x: number, y: number): stri
 /// (the PDF export). Both providers REQUIRE the credit to travel with the
 /// imagery, so a figure in a report needs it as much as the screen does.
 export function attributionFor(base: BaseMap): string {
-  return TILE_URLS[base].attribution;
+  // Strip the anchor markup — the Leaflet control renders HTML, a PDF does not.
+  return TILE_URLS[base].attribution.replace(/<[^>]*>/g, '');
 }

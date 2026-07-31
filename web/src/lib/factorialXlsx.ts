@@ -31,7 +31,12 @@ export async function buildFactorialXlsx(
   inverter: AxisSpec,
   results: ComboResult[],
   receivers: Receiver[],
+  /// What each axis actually varied. Axes are scoped now — axis 2 can hold a
+  /// BESS group — so hardcoding "Inverter \ Battery" would mislabel the file
+  /// and lose which group each axis covered.
+  axisLabels: { axis1: string; axis2: string } = { axis1: 'Axis 1', axis2: 'Axis 2' },
 ): Promise<Blob> {
+  const corner = `${axisLabels.axis2} \\ ${axisLabels.axis1}`;
   const wb = new ExcelJS.Workbook();
   wb.creator = 'BESSTY';
   const mode = limitComparisonFor(project);
@@ -43,6 +48,7 @@ export async function buildFactorialXlsx(
   const metaRows = (ws: ExcelJS.Worksheet, subtitle: string) => {
     ws.addRow([project.name || 'Untitled project']).font = { bold: true, size: 14 };
     ws.addRow([subtitle]);
+    ws.addRow([`Axis 1 (columns): ${axisLabels.axis1}`, `Axis 2 (rows): ${axisLabels.axis2}`]);
     ws.addRow([
       `Period: ${period}`,
       `Wind: ${project.scenario.windSpeed} m/s`,
@@ -57,7 +63,7 @@ export async function buildFactorialXlsx(
     const ws = wb.addWorksheet((rx.name || rx.id).slice(0, 28));
     metaRows(ws, `Receiver: ${rx.name || rx.id} — limit ${limit} dB(A) (${period})`);
 
-    styleHeader(ws.addRow(['Inverter \\ Battery', ...battery.candidates.map((c) => c.label)]));
+    styleHeader(ws.addRow([corner, ...battery.candidates.map((c) => c.label)]));
     inverter.candidates.forEach((inv, i) => {
       const row = ws.addRow([
         inv.label,
@@ -85,7 +91,7 @@ export async function buildFactorialXlsx(
   const ws = wb.addWorksheet('Worst case');
   metaRows(ws, 'Worst receiver level per configuration');
   const ids = receivers.map((r) => r.id);
-  styleHeader(ws.addRow(['Inverter \\ Battery', ...battery.candidates.map((c) => c.label)]));
+  styleHeader(ws.addRow([corner, ...battery.candidates.map((c) => c.label)]));
   inverter.candidates.forEach((inv, i) => {
     const row = ws.addRow([
       inv.label,

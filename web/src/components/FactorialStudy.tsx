@@ -122,7 +122,10 @@ export function FactorialStudy({ project, dem, onClose }: Props) {
   async function exportXlsx() {
     if (!results) return;
     try {
-      const blob = await buildFactorialXlsx(project, battery, inverter, results, receivers);
+      const blob = await buildFactorialXlsx(
+        project, battery, inverter, results, receivers,
+        { axis1: batOpt?.label ?? 'Axis 1', axis2: invOpt?.label ?? 'Axis 2' },
+      );
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

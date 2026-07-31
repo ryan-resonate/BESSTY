@@ -7,11 +7,16 @@ Each barrier carries a **sound absorption coefficient α**, edited in the Barrie
 
 ## What the number means
 
-ISO 9613-2 section 7.5 uses α exactly as the standard defines it: the fraction of incident sound **energy** not reflected back. A reflected ray loses
+α is the fraction of incident sound **energy** not reflected back. ISO 9613-2 section 7.5 is written in terms of the *reflection* coefficient ρ (its Table 4) and applies `10 · lg ρ`; α is simply its complement, ρ = 1 − α, so a reflected ray loses
 
 `10 · log10(1 − α)` decibels
 
-so the scale is:
+Two things to know about how BESSTY differs from the letter of the standard:
+
+- §7.5 states its reflection method applies to surfaces with **ρ > 0.2**, i.e. α below about 0.8. BESSTY does not enforce that cutoff, so the highly-absorptive end of the table below is an extrapolation — it keeps energy the standard would simply neglect, which is the conservative direction, but it is not §7.5 behaviour.
+- α here is a single broadband number, whereas real absorption varies strongly with frequency.
+
+The scale:
 
 | α | Reflection loss | In practice |
 | --- | --- | --- |
@@ -22,7 +27,9 @@ so the scale is:
 | 0.9 | −10 dB | Heavy absorptive lining |
 | 1.0 | no reflection at all | The surface is removed from the reflection calculation |
 
-Notice how forgiving the top of the scale is: going from a hard wall to α = 0.3 only removes 1.5 dB from the **reflected** path, and the reflected path is already weaker than the direct one. Absorptive treatment on a barrier buys much less than people expect, which is exactly why it is worth modelling rather than assuming.
+Notice how forgiving the scale is: going from a hard wall to α = 0.3 removes only 1.5 dB from the **reflected** path. Absorptive treatment on a barrier usually buys much less than people expect, which is exactly why it is worth modelling rather than assuming.
+
+How much that 1.5 dB matters at the receiver depends entirely on how the reflected path compares with the direct one. Where both are unobstructed the reflection is the weaker contributor and treating the wall changes little. **The case where it matters most is the one barriers are built for**: when the wall screens the direct path but a reflection reaches the receiver unscreened — off a facade, another barrier, or a container row — the reflected path can dominate the total, and absorption on the reflecting surface is then doing real work. Look at which paths are actually screened before deciding treatment is not worth it.
 
 ## This is not NRC
 

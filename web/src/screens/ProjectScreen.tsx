@@ -339,6 +339,11 @@ export function ProjectScreen() {
       ...project,
       calculationArea: { ...project.calculationArea, ...patch },
     });
+    // The calc area moved or grew, so the DEM may no longer cover it. The
+    // auto-fetcher only re-runs from 'idle', and without this reset the grid
+    // would keep solving against the OLD raster — silently, because a DEM miss
+    // substitutes ground = 0 rather than erroring.
+    setDemStatus('idle');
   }
 
   function selectOne(id: string | null) {
@@ -1324,24 +1329,7 @@ export function ProjectScreen() {
     setSelectedGroupId(null);
   }
 
-  function handleResizeCalcArea(widthM: number, heightM: number) {
-    if (!project || !project.calculationArea) return;
-    setProject({
-      ...project,
-      calculationArea: { ...project.calculationArea, widthM, heightM },
-    });
-    // Calc-area changed → DEM coverage may need to widen; reset DEM status
-    // so the fetcher re-runs against the new bounds.
-    setDemStatus('idle');
-  }
-  function handleMoveCalcArea(centerLatLng: [number, number]) {
-    if (!project || !project.calculationArea) return;
-    setProject({
-      ...project,
-      calculationArea: { ...project.calculationArea, centerLatLng },
-    });
-    setDemStatus('idle');
-  }
+
 
   // dB colormap domain. `contourBounds` (Min/Max in the Layers tab → Contours)
   // is the single source of truth for both the contour line thresholds and
@@ -1530,8 +1518,6 @@ export function ProjectScreen() {
           onUpdateBarrier={handleUpdateBarrier}
           onMoveSource={handleMoveSource}
           onMoveReceiver={handleMoveReceiver}
-          onResizeCalcArea={handleResizeCalcArea}
-          onMoveCalcArea={handleMoveCalcArea}
           onEditCalcArea={handleEditCalcArea}
           onCursorMove={setCursorLatLng}
           onReady={(m) => { mapHandleRef.current = m; }}
