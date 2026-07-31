@@ -1,8 +1,8 @@
 # BEESTY improvements plan (2026-07-30)
 
-Seventeen improvements to the BEESTY web app, scoped with Ryan (Q&A 2026-07-30 —
-every decision below is locked; the ONE open item needing approval is the
-Settings tab grouping / button placement in I10). Written for an implementing
+Twenty improvements to the BEESTY web app, scoped with Ryan (Q&A 2026-07-30 —
+every decision below is locked, including the I10 tab grouping and gear
+placement approved 2026-07-31). Written for an implementing
 session. Items are ordered for execution: quick wins → the notification system
 (a dependency of later items) → structural work → the factorial study.
 
@@ -344,33 +344,35 @@ Gate: unit test that a rotated job's cell lat/lngs are the rotation of the
 unrotated ones; manual — drag/rotate feels right, contours align with the
 rotated box, exports open correctly in QGIS.
 
-## I10 — Settings as a tabbed floating window  *(grouping needs Ryan's approval)*
+## I10 — Settings as a tabbed floating window
 
 Mechanics (locked): a **floating, draggable, non-modal** window (shared
 `components/FloatingWindow.tsx` used by I11 too) — the map stays interactive
 so setting changes are observable live; Esc closes; remembers position/size.
 Settings move OUT of the side panel entirely.
 
-**PROPOSED tab grouping (14 sections → 4 tabs) — approve or amend:**
+**Tab grouping (LOCKED — Ryan, 2026-07-31): 15 sections → 5 tabs.**
 
 | Tab | Sections |
 |---|---|
 | **1. Calculation** | Standard (1996/2024) · Band system · Solid-angle DΩ · Meteorological Cmet · Barrier diffraction (caps) |
-| **2. Environment** | Ground (G) · Atmosphere (Aatm) · Topography/DEM (despike) |
-| **3. Sources** | Source containers · General sources · Annex D wind turbines |
-| **4. Performance** | Contour grid spacing · Propagation cutoffs · Drag extrapolation caps |
+| **2. Compliance** | Limit comparison (I17) — and the natural home for default receiver limits and the I15 PDF colour rules when they land |
+| **3. Environment** | Ground (G) · Atmosphere (Aatm) · Topography/DEM (despike) |
+| **4. Sources** | Source containers · General sources · Annex D wind turbines |
+| **5. Performance** | Contour grid spacing · Propagation cutoffs · Drag extrapolation caps |
 
-Rationale: tab 1 = "which maths", 2 = "the site", 3 = "the machines",
-4 = "speed/accuracy trade-offs". Nothing user-facing renames; sections move
-verbatim.
+Rationale: 1 = "which maths", 2 = "how we judge the answer", 3 = "the site",
+4 = "the machines", 5 = "speed/accuracy trade-offs". Compliance is deliberately
+separate from Calculation — they're different decisions, often owned by
+different people, and conflating "which standard" with "how we round" is how a
+jurisdiction rule ends up buried under acoustics settings. Nothing user-facing
+renames; sections move verbatim.
 
-**PROPOSED button placement — pick one:**
-- (a) **Gear icon in the top map header (MapChrome), right-aligned near the
-  Run-grid/layers controls** ← recommended: always visible, one click from
-  anywhere, frees side-panel real estate.
-- (b) Gear pinned at the bottom of the side-panel tab strip.
-- (c) Both (header gear + a "Settings…" link where the old tab was, for
-  muscle memory during transition).
+**Button placement (LOCKED — Ryan, 2026-07-31): both.** A gear in the top map
+header (MapChrome, right-aligned near the Run-grid / layers controls) as the
+primary, plus a "Settings…" link where the old side-panel tab was. The link is
+for muscle memory during the transition — worth revisiting once the header gear
+is habitual, but it stays for now.
 
 Gate: every setting reachable in the window drives the same state as before
 (no behaviour change); side panel no longer renders the settings sections;
@@ -500,6 +502,76 @@ Gate:
 
 ---
 
+## I19 — Persist display settings on the project
+
+Every display setting is currently plain `useState` in `ProjectScreen` and
+resets on reload: `contourMode`, `contourOpacity`, `contourStepDb`,
+`contourBounds`, `palette`, `domainMode`, `fixedDomain`, `baseMap`,
+`showContours`, `showGridDebug`, `showReceiverLimits`, `gridSpacingM`. Setting
+up a view is real work and currently survives nothing.
+
+Locked (Ryan, 2026-07-31): persist **on the project**, not per user — reopening
+a project restores the view it was left in, and a colleague opening the same
+project sees the same presentation.
+
+- New `ProjectSettings.display?: { … }`, all fields optional, absent ⇒ today's
+  defaults (so old projects load unchanged, and I8's lines-only default still
+  applies to anything that never chose).
+- `gridSpacingM` is the one to be careful with: it has an auto-pick that
+  freezes once the user touches the picker (`gridSpacingTouchedRef`). Persist
+  the *touched* flag too, or reopening re-auto-picks over a deliberate choice.
+- `showGridDebug` should NOT persist — it's a diagnostic, and a project that
+  reopens covered in pink dots looks broken.
+- Writes go through the existing debounced project save; a slider drag must not
+  emit a Firestore write per frame (reuse the debounce, don't add a new one).
+
+Gate: set a distinctive view (filled contours, magma, 2 dB steps, fixed
+domain), reload → identical; a project saved before this change still opens
+with the current defaults; dragging the opacity slider produces one write, not
+fifty.
+
+## I20 — Surface every silent truncation
+
+The I13 bug existed because a cap (4000 debug dots) was applied by quietly
+thinning the data — the output looked plausible and misreported reality for
+months. The same pattern exists elsewhere, and in a compliance tool an
+invisible approximation is the dangerous kind.
+
+Locked (Ryan, 2026-07-31): don't silently truncate anywhere; make each cap
+report itself. Once the warnings show which caps actually bite in real
+projects, loosen the ones that fire too often — the reporting comes first
+precisely so that decision is evidence-based.
+
+**Known caps to instrument** (audit for more while implementing):
+
+| Cap | Where | Effect when it bites |
+|---|---|---|
+| Barnes-Hut `theta` clustering | `sourceTree.ts` / `buildGridJob` | distant sources merged into one stand-in |
+| `TERRAIN_MAX_CELLS_PER_AXIS` = 2048 | `terrainField.ts` | terrain resampled coarser than the DEM |
+| `maxContributionDistanceM` | `propagation.ts` | sources beyond it contribute nothing |
+| `−120 dB` grid floor | `gridCore.ts` | very low cells clamped |
+| `MAX_WALL_SEGMENT_M` densification | `sceneBuilder.ts` | barrier profile sampled coarsely |
+| 20 000 debug dots | `MapView.tsx` | already warns (console) — fold into the same channel |
+| reflector budget | I18, when it lands | reflection order silently degraded |
+
+**Shape**: a `lib/diagnostics.ts` collector that a solve writes notes into
+(`{ code, severity, message, detail }`), returned alongside the results rather
+than logged. Surface it as:
+- a count badge in the results dock ("3 approximations applied") opening a
+  small panel listing them, and
+- an I3 toast for anything that materially changes numbers (clustering active,
+  terrain downsampled), once per solve — not per tile.
+
+Every entry says what was capped, what the cap was, and what it cost where that
+is knowable (e.g. "terrain resampled to 24 m from the DEM's 20 m").
+
+Gate: force each cap with a deliberately hostile project (10 km² grid, 5000
+sources, huge DEM) and confirm each reports; a normal project reports nothing
+and shows no badge. Unit-test the collector's dedup (one entry per cap per
+solve, not one per tile).
+
+---
+
 ## Suggested commit order
 
 | # | Item | Size |
@@ -522,6 +594,13 @@ Gate:
 | 16 | I11 help window | M |
 | 17 | I14 factorial study | L |
 | 18 | I18 reflections (barriers + containers) | L |
+| 19 | I19 persist display settings on the project | S |
+| 20 | I20 surface every silent truncation | M |
+
+Items 1–8 are **done** (commits `5234e36` → `2319613`); see
+`beesty-improvements-testing.md`. I19 is a quick win and can jump the queue.
+I20 wants to land before or alongside I18, whose reflector budget is exactly
+the kind of cap it exists to expose.
 
 ## Risks / watch-items
 
@@ -549,3 +628,10 @@ Gate:
 - **I18 double-listing is correct** — a wall belongs in both `obstacles` and
   `reflectors`. Anyone "fixing" that apparent duplication will silently delete
   either the screening or the reflection, so the test must state the intent.
+- **I20 must not become noise.** If every solve raises three toasts, they stop
+  being read and the item has made things worse. Dock badge is the default
+  surface; a toast is only for caps that materially move numbers. The follow-up
+  loosening pass is part of the item, not optional.
+- **I19 must not write per frame.** Display settings change on slider drags;
+  route them through the existing debounced save or a project doc gets a write
+  per animation frame.
