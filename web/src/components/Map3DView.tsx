@@ -189,6 +189,12 @@ export function Map3DView({ project, grid, palette, dbDomain, baseMap, dem, cont
       style: makeStyle(baseMap),
       center: [centre[1], centre[0]],
       zoom: 12.5,
+      // I9: MapLibre's default `maxPitch` is 60, which silently clamped the
+      // 70° default below — so the "steeper default pitch" intended here never
+      // actually applied. Raising the ceiling to MapLibre's hard maximum of 85
+      // (≈5° above the horizon) both restores the intended 70° opening view and
+      // lets the user drag right down to near-horizon for a viewer's-eye check.
+      maxPitch: 85,
       pitch: 70,
       bearing: -20,
       hash: false,

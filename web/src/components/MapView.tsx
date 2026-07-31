@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { Project, Receiver, Source, ReferenceLayerStyle } from '../lib/types';
@@ -525,6 +525,10 @@ export function MapView({
   /// shows the real footprint at high zoom.
   const footprintsGroupRef = useRef<L.LayerGroup | null>(null);
   const overlayGroupRef = useRef<L.LayerGroup | null>(null);
+  /// Grid-debug cell centres. Its own group (not the contour overlay) because
+  /// it redraws on every pan — see I13 — and rebuilding the filled raster or
+  /// the contour labels that often would be needlessly slow.
+  const gridDebugGroupRef = useRef<L.LayerGroup | null>(null);
   /// Reference / annotation geometry (property boundaries etc.) — purely
   /// visual, drawn at the bottom z-order (just above the base tiles), never
   /// interactive so it can't intercept selection / drawing.
@@ -618,6 +622,7 @@ export function MapView({
     // Reference geometry sits at the bottom (just above base tiles).
     referenceGroupRef.current = L.layerGroup().addTo(map);
     overlayGroupRef.current = L.layerGroup().addTo(map);
+    gridDebugGroupRef.current = L.layerGroup().addTo(map);
     barriersGroupRef.current = L.layerGroup().addTo(map);
     measureGroupRef.current = L.layerGroup().addTo(map);
     // BESS-group overlays render UNDER the source markers (so the
@@ -907,6 +912,7 @@ export function MapView({
       markersGroupRef.current = null;
       footprintsGroupRef.current = null;
       overlayGroupRef.current = null;
+      gridDebugGroupRef.current = null;
       referenceGroupRef.current = null;
       measureGroupRef.current = null;
       barriersGroupRef.current = null;
@@ -2080,6 +2086,19 @@ export function MapView({
     });
   }, [project, selectedGroupId, selectedIds]);
 
+  // The grid-debug layer draws only the cell centres currently on screen (see
+  // I13 in the overlay effect), so it has to redraw when the view moves. Only
+  // subscribe while the layer is on — otherwise every pan would rebuild the
+  // whole contour overlay for nothing.
+  const [viewTick, setViewTick] = useState(0);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !showGridDebug) return;
+    const bump = () => setViewTick((t) => t + 1);
+    map.on('moveend zoomend', bump);
+    return () => { map.off('moveend zoomend', bump); };
+  }, [showGridDebug]);
+
   // Render contour overlay (filled raster, iso-lines, or both).
   useEffect(() => {
     const map = mapRef.current;
@@ -2145,35 +2164,63 @@ export function MapView({
       }
     }
 
-    if (showGridDebug && grid) {
-      // Paint a small dot at every cell centre — useful when diagnosing
-      // alignment issues between the raster, contour lines, and source /
-      // receiver markers. Cell-centred convention: cell (col, row)
-      // sits at (sw + (col+0.5)/cols × lngRange, sw + (row+0.5)/rows × latRange).
-      const sw = grid.bounds.sw;
-      const ne = grid.bounds.ne;
-      const lngRange = ne[1] - sw[1];
-      const latRange = ne[0] - sw[0];
-      // Cap at 4000 dots to keep Leaflet snappy on dense grids.
-      const stride = Math.max(1, Math.ceil(Math.sqrt((grid.cols * grid.rows) / 4000)));
-      for (let row = 0; row < grid.rows; row += stride) {
-        for (let col = 0; col < grid.cols; col += stride) {
-          const lat = sw[0] + (row + 0.5) / grid.rows * latRange;
-          const lng = sw[1] + (col + 0.5) / grid.cols * lngRange;
-          L.circleMarker([lat, lng], {
-            radius: 1.5,
-            color: '#ff3399',
-            weight: 1,
-            fill: true,
-            fillOpacity: 1,
-            interactive: false,
-          }).addTo(group);
-        }
-      }
-    }
-
     if (markersGroupRef.current) { markersGroupRef.current.remove(); markersGroupRef.current.addTo(map); }
   }, [grid, showContours, showGridDebug, contourMode, contourOpacity, palette, dbDomain.min, dbDomain.max]);
+
+  // Grid-debug cell centres (I13). A dot at every cell centre, for diagnosing
+  // alignment between the raster, the contour lines and the markers.
+  // Cell-centred convention: cell (col,row) sits at
+  // (sw + (col+0.5)/cols × lngRange, sw + (row+0.5)/rows × latRange).
+  //
+  // This used to bound the dot count by STRIDING the grid
+  // (`ceil(sqrt(cols·rows / 4000))`), so any grid over 4000 cells silently drew
+  // every 2nd cell: a 100 m grid over a 10 km area (100×100) rendered as 200 m
+  // and read as a spacing bug. A debug layer that misreports spacing is worse
+  // than none, so the budget is spent on the VIEWPORT instead — every cell
+  // centre actually on screen, redrawn on pan/zoom via `viewTick`. Dots are
+  // therefore always at true cell spacing.
+  useEffect(() => {
+    const map = mapRef.current;
+    const group = gridDebugGroupRef.current;
+    if (!map || !group) return;
+    group.clearLayers();
+    if (!showGridDebug || !grid) return;
+
+    const sw = grid.bounds.sw;
+    const ne = grid.bounds.ne;
+    const lngRange = ne[1] - sw[1];
+    const latRange = ne[0] - sw[0];
+    const view = map.getBounds().pad(0.15);
+    const MAX_DOTS = 20000;
+    let drawn = 0;
+    let clipped = false;
+    for (let row = 0; row < grid.rows && !clipped; row++) {
+      const lat = sw[0] + (row + 0.5) / grid.rows * latRange;
+      if (lat < view.getSouth() || lat > view.getNorth()) continue;
+      for (let col = 0; col < grid.cols; col++) {
+        const lng = sw[1] + (col + 0.5) / grid.cols * lngRange;
+        if (lng < view.getWest() || lng > view.getEast()) continue;
+        if (drawn >= MAX_DOTS) { clipped = true; break; }
+        drawn++;
+        L.circleMarker([lat, lng], {
+          radius: 1.5,
+          color: '#ff3399',
+          weight: 1,
+          fill: true,
+          fillOpacity: 1,
+          interactive: false,
+        }).addTo(group);
+      }
+    }
+    if (clipped) {
+      // Only reachable zoomed out far enough that 20k cells are on screen,
+      // where the dots are sub-pixel anyway. Say so rather than silently
+      // drawing a partial grid.
+      console.warn(
+        `[grid debug] ${MAX_DOTS} cell centres drawn, more are in view — zoom in to see the rest.`,
+      );
+    }
+  }, [grid, showGridDebug, viewTick]);
 
   useEffect(() => {
     if (!containerRef.current) return;
