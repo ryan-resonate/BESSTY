@@ -198,9 +198,81 @@ grouping is getting more valuable, not less.
 
 ---
 
+## 3b. Second tranche — I19, I4, and I2 (part)
+
+### I19 — Display settings persist on the project
+
+- Set a distinctive view: filled contours, magma palette, 2 dB steps, fixed
+  domain, OSM basemap, limits shown. **Reload.** Everything should return.
+- Open a **project saved before this change** — it should open on the current
+  defaults (lines-only contours, viridis), not blank or broken.
+- **Grid spacing is the subtle one.** Pick a spacing manually, reload, and
+  confirm it is *not* silently re-auto-picked. Then change the calculation area
+  size on a project where you have never touched the spacing picker, and
+  confirm auto-pick still follows the area.
+- Turn on *Debug: show grid cell centres*, reload — it should come back **off**.
+- Drag the opacity slider back and forth, then check the save indicator: one
+  save after you stop, not a stream.
+- **Ctrl+Z after changing the palette must undo your last real edit**, not the
+  palette. This was the trap — display changes deliberately bypass the undo
+  stack.
+
+### I4 — Selection edits stick to BESS-group members
+
+- Select 3 units **inside** a BESS group, bulk-edit their elevation offset.
+- Open the group wizard and change something structural (a gap, a count) so the
+  group re-materialises. **The 3 edits must survive.**
+- Nudge one of those units on the map, then bulk-edit its height. The position
+  nudge must survive too — overrides merge rather than replace.
+- Then use the wizard's **"change all"** to swap that model or mode. It should
+  **overwrite** the manual per-unit edits — that's the locked behaviour. If the
+  tuned units keep their old mode, the override clearing didn't fire.
+
+### I2 — Catalog migration *(engine only — nothing is wired up yet)*
+
+Nothing to test in the app: this commit adds only the planning logic and its
+tests. See §5 for what it's waiting on.
+
+---
+
 ## 4. Not started
 
-Ten items remain: **I2** (localStorage removal — the only destructive one),
-**I4**, **I5**, **I12**, **I15**, **I7**, **I10** (blocked), **I11**, **I14**,
-**I18** (reflections). The plan's commit order still applies; I3 landing first
-means I2, I5, I6 and I12 can now report outcomes through toasts as designed.
+Nine items remain: **I5**, **I12**, **I15**, **I7**, **I10** (now unblocked —
+5 tabs, gear in both places), **I11**, **I14**, **I18** (reflections) and
+**I20** (diagnostics). Three of them pull in a new dependency: `jspdf` (I15),
+`minisearch` (I11), `exceljs` (I14).
+
+---
+
+## 5. BLOCKED — I2 needs a decision before it can finish
+
+The migration engine is written and tested, but **nothing calls it and nothing
+has been deleted**. Finishing I2 means three irreversible things in production:
+
+1. Executing the local-catalog migration (writes to the Firestore global
+   catalog, rewrites project source references).
+2. Deleting `lib/storage.ts` and the `useProjectDoc` localStorage fallback.
+3. Dropping `seedCatalog.ts` from the bundle.
+
+Step 2 is the dangerous one. **A project that exists only in localStorage
+becomes permanently unreachable** the moment the fallback goes — the data stays
+in the browser but nothing can read it. `useProjectDoc` currently reaches that
+path whenever a Firestore doc is missing, so there is no way for me to tell
+from the code whether anyone still has such projects.
+
+The plan's own risk note requires **migrate → verify → delete**, so this is a
+deliberate stop, not an oversight.
+
+**What I need from you:**
+
+- Does anyone (you, or a colleague, on any browser profile) still have projects
+  that live **only** in localStorage and have never been saved to Firestore?
+  - **No** → I delete the fallback and finish I2 as specified.
+  - **Yes / not sure** → I build a one-click "rescue local projects to the
+    cloud" step first, you run it and confirm the count, and only then does the
+    fallback go.
+- Separately: the local-catalog migration runs **per project on open**. Do you
+  want it automatic, or behind a visible "Migrate this project's catalog"
+  button so you can watch the first few before trusting it? Automatic is
+  tidier; manual is safer for the first pass, and given it rewrites source
+  model references on real projects I'd lean manual for the first run.
