@@ -38,7 +38,6 @@ function commonSettings(): ProjectSettings {
     },
     barrierConvention: 'dz-minus-max-agr-0',
     general: { defaultReceiverHeight: 1.5 },
-    extrapolation: { capPerBandDb: 6, capTotalDbA: 3 },
     propagation: {
       maxContributionDistanceM: 20000,
       treeAcceptanceTheta: 0.25,

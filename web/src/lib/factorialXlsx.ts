@@ -8,7 +8,7 @@ import ExcelJS from 'exceljs';
 import type { Project, Receiver } from './types';
 import { limitForPeriod } from './types';
 import { exceedsLimit, limitComparisonFor } from './limits';
-import { worstOf, type AxisSpec, type ComboResult } from './factorial';
+import { type AxisSpec, type ComboResult } from './factorial';
 
 const GREEN = 'FFD6F5D6';
 const RED = 'FFF8D2D2';
@@ -22,7 +22,7 @@ function styleHeader(row: ExcelJS.Row) {
   });
 }
 
-/// One sheet per receiver plus a worst-case summary.
+/// One sheet per receiver — every selected receiver in the one workbook.
 ///
 /// Batteries across the top, inverters down the side — the locked orientation.
 export async function buildFactorialXlsx(
@@ -86,41 +86,6 @@ export async function buildFactorialXlsx(
     ws.getColumn(1).width = 34;
     battery.candidates.forEach((_, b) => { ws.getColumn(b + 2).width = 16; });
   }
-
-  // ---- worst-case summary ----
-  const ws = wb.addWorksheet('Worst case');
-  metaRows(ws, 'Worst receiver level per configuration');
-  const ids = receivers.map((r) => r.id);
-  styleHeader(ws.addRow([corner, ...battery.candidates.map((c) => c.label)]));
-  inverter.candidates.forEach((inv, i) => {
-    const row = ws.addRow([
-      inv.label,
-      ...battery.candidates.map((_, b) => {
-        const r = at(b, i);
-        return r ? worstOf(r, ids) : null;
-      }),
-    ]);
-    row.getCell(1).font = { bold: true };
-    battery.candidates.forEach((_, b) => {
-      const cell = row.getCell(b + 2);
-      const r = at(b, i);
-      const v = r ? worstOf(r, ids) : null;
-      if (v == null) return;
-      cell.numFmt = '0.0';
-      // The worst cell is judged against the limit of the receiver it came
-      // from, so colour it by whether ANY receiver fails this configuration.
-      const anyFail = receivers.some((rx) => {
-        const lv = r!.byReceiver.get(rx.id);
-        return exceedsLimit(lv, limitForPeriod(rx, period), mode);
-      });
-      cell.fill = {
-        type: 'pattern', pattern: 'solid',
-        fgColor: { argb: anyFail ? RED : GREEN },
-      };
-    });
-  });
-  ws.getColumn(1).width = 34;
-  battery.candidates.forEach((_, b) => { ws.getColumn(b + 2).width = 16; });
 
   const buf = await wb.xlsx.writeBuffer();
   return new Blob([buf], {

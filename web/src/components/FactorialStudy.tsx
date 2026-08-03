@@ -188,6 +188,11 @@ export function FactorialStudy({ project, dem, onClose }: Props) {
             <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>
               Receivers ({rxSel.size}/{project.receivers.length})
             </div>
+            <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+              <button className="btn small"
+                onClick={() => setRxSel(new Set(project.receivers.map((r) => r.id)))}>All</button>
+              <button className="btn small" onClick={() => setRxSel(new Set())}>None</button>
+            </div>
             <div style={{ maxHeight: 150, overflowY: 'auto' }}>
               {project.receivers.map((r) => (
                 <label key={r.id} className="row-checkbox">

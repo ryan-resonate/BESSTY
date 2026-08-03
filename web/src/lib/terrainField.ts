@@ -124,6 +124,54 @@ export function fillHoles(heights: number[], nx: number, ny: number): boolean {
  * to cover — the caller then omits terrain and the engine treats the ground as
  * flat, exactly as before.
  */
+/// Memo for `buildTerrainField`. Sampling a DEM over a project extent is up to
+/// 2048x2048 = 4.2M elevation lookups on the main thread — cheap enough once,
+/// ruinous when repeated. `evaluateProject` rebuilt it on EVERY call, so a
+/// factorial study of N combinations paid it N times and locked the UI for
+/// seconds on a 2x2 case. The raster depends only on the DEM and the covered
+/// extent, neither of which a model swap changes.
+let memo: { key: string; value: SceneHeightfield | null } | null = null;
+
+function memoKey(
+  dem: DemRaster,
+  origin: [number, number],
+  points: Array<[number, number]>,
+  opts: TerrainFieldOptions,
+): string {
+  // Bounds to ~1 m, so a sub-metre source nudge doesn't invalidate the raster.
+  let minLat = Infinity; let minLng = Infinity; let maxLat = -Infinity; let maxLng = -Infinity;
+  for (const p of points) {
+    if (!Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
+    if (p[0] < minLat) minLat = p[0];
+    if (p[1] < minLng) minLng = p[1];
+    if (p[0] > maxLat) maxLat = p[0];
+    if (p[1] > maxLng) maxLng = p[1];
+  }
+  const r = (v: number) => (Number.isFinite(v) ? v.toFixed(5) : 'x');
+  return [
+    demIdentity(dem), origin[0].toFixed(5), origin[1].toFixed(5),
+    r(minLat), r(minLng), r(maxLat), r(maxLng),
+    opts.despikeStrength ?? 'low', opts.spacingM ?? 'auto',
+  ].join('|');
+}
+
+/// A stable identity for a DemRaster. Rasters are plain objects rebuilt on
+/// load, so a WeakMap tag is attached lazily rather than relying on reference
+/// equality.
+const demTags = new WeakMap<object, string>();
+let demSeq = 0;
+function demIdentity(dem: DemRaster): string {
+  const o = dem as unknown as object;
+  let t = demTags.get(o);
+  if (!t) { t = `dem${++demSeq}`; demTags.set(o, t); }
+  return t;
+}
+
+/// Drop the cached raster. Call when the DEM itself is replaced.
+export function clearTerrainFieldCache(): void {
+  memo = null;
+}
+
 export function buildTerrainField(
   dem: DemRaster | null,
   origin: [number, number],
@@ -131,6 +179,9 @@ export function buildTerrainField(
   opts: TerrainFieldOptions = {},
 ): SceneHeightfield | null {
   if (!dem || points.length === 0) return null;
+
+  const key = memoKey(dem, origin, points, opts);
+  if (memo && memo.key === key) return memo.value;
 
   let minE = Infinity; let minN = Infinity; let maxE = -Infinity; let maxN = -Infinity;
   for (const p of points) {
@@ -141,7 +192,7 @@ export function buildTerrainField(
     if (e > maxE) maxE = e;
     if (n > maxN) maxN = n;
   }
-  if (!Number.isFinite(minE) || !Number.isFinite(minN)) return null;
+  if (!Number.isFinite(minE) || !Number.isFinite(minN)) { memo = { key, value: null }; return null; }
 
   minE -= TERRAIN_MARGIN_M; minN -= TERRAIN_MARGIN_M;
   maxE += TERRAIN_MARGIN_M; maxN += TERRAIN_MARGIN_M;
@@ -179,8 +230,12 @@ export function buildTerrainField(
     }
   }
 
-  if (!fillHoles(heights, nx, ny)) return null;   // nothing finite anywhere
+  if (!fillHoles(heights, nx, ny)) { memo = { key, value: null }; return null; }
   const cleaned = despikeGrid(heights, nx, ny, opts.despikeStrength ?? 'low');
 
-  return { type: 'heightfield', origin: [minE, minN], spacing, nx, ny, heights: cleaned };
+  const field: SceneHeightfield = {
+    type: 'heightfield', origin: [minE, minN], spacing, nx, ny, heights: cleaned,
+  };
+  memo = { key, value: field };
+  return field;
 }

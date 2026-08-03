@@ -329,7 +329,6 @@ export function settingsOf(project: Project): ProjectSettings {
       wtReceiverHeightMin: 4.0,
     },
     general: { defaultReceiverHeight: 1.5 },
-    extrapolation: { capPerBandDb: 6, capTotalDbA: 3 },
   };
 }
 
@@ -477,14 +476,10 @@ export interface ProjectSettings {
   /// `annexD.barrierAbarCapDb` (default 3 dB) and ignore this field.
   barrierDiffractionCapDb?: number | null;
   general: { defaultReceiverHeight: number };
-  /// Limits on how far first-order Taylor extrapolation is allowed to push
-  /// a per-band Lp value before forcing an exact re-snapshot. The clamp
-  /// stops false high values from showing during long drags; the stale
-  /// flag triggers a background recompute.
-  extrapolation: {
-    capPerBandDb: number;     // default 6 dB per octave band
-    capTotalDbA: number;      // default 3 dB(A) on the per-receiver total
-  };
+  /// REMOVED: `extrapolation` caps. The Taylor-extrapolation-during-drag layer
+  /// they governed no longer exists (drags simply re-solve), so the setting had
+  /// no reader — it was UI for a knob connected to nothing. Old project
+  /// documents may still carry the field; it is ignored.
   /// Distance-aware solver settings. Apply project-wide.
   propagation?: {
     /// Sources further than this from a receiver are skipped (treated as

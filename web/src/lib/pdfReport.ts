@@ -22,6 +22,8 @@ export interface PdfOptions {
   scaleBar: boolean;
   northArrow: boolean;
   showReceiverLimits: boolean;
+  /// Draw the receiver name under each marker.
+  showReceiverNames: boolean;
 }
 
 export const DEFAULT_PDF_OPTIONS: PdfOptions = {
@@ -31,6 +33,7 @@ export const DEFAULT_PDF_OPTIONS: PdfOptions = {
   scaleBar: true,
   northArrow: true,
   showReceiverLimits: false,
+  showReceiverNames: true,
 };
 
 export interface PdfInput {
@@ -76,7 +79,15 @@ export async function buildPdf(input: PdfInput): Promise<jsPDF> {
   doc.rect(frame.x, frame.y, frame.w, frame.h);
 
   // ---- contours (vector) ----
+  //
+  // Clipped to the map frame. The grid extends past the visible extent (it
+  // covers the whole calculation area), so unclipped lines ran off the basemap
+  // and onto the page margin.
   if (input.showContours && grid) {
+    doc.saveGraphicsState();
+    doc.rect(frame.x, frame.y, frame.w, frame.h);
+    doc.clip();
+    doc.discardPath();
     const bands = makeBandsForRange(input.dbDomain.min, input.dbDomain.max, input.contourStepDb);
     const thresholds = bands.map((b) => b.lo)
       .concat([bands[bands.length - 1]?.hi ?? input.dbDomain.max]);
@@ -96,12 +107,13 @@ export async function buildPdf(input: PdfInput): Promise<jsPDF> {
         );
       }
     }
+    doc.restoreGraphicsState();
   }
 
   drawBarriers(doc, project, frame);
   drawSources(doc, project, frame);
   drawCalcArea(doc, project, frame);
-  drawReceivers(doc, project, results, frame, o.showReceiverLimits);
+  drawReceivers(doc, project, results, frame, o.showReceiverLimits, o.showReceiverNames);
 
   // Always drawn: the licence requires it, so it is not a dialog option.
   drawAttribution(doc, frame, input.attribution);
@@ -201,6 +213,7 @@ function drawReceivers(
   results: ReceiverResult[] | null,
   frame: MapFrame,
   showLimits: boolean,
+  showNames: boolean,
 ) {
   const mode = limitComparisonFor(project);
   doc.setLineWidth(0.2);
@@ -234,10 +247,19 @@ function drawReceivers(
       doc.setTextColor(110, 110, 110);
       doc.text(`limit ${limit.toFixed(0)}`, x + 2.6, y - h + 4.6);
     }
-    // Name under the dot.
-    doc.setFontSize(5.5);
-    doc.setTextColor(30, 30, 30);
-    doc.text(r.name ?? r.id, x + 1.6, y + 2.6);
+    // Name under the dot, with a white halo so it stays legible over dark
+    // imagery — black-on-satellite is unreadable about half the time.
+    if (showNames) {
+      const nm = r.name ?? r.id;
+      doc.setFontSize(5.5);
+      doc.setTextColor(255, 255, 255);
+      for (const [ox, oy] of [[-0.18, 0], [0.18, 0], [0, -0.18], [0, 0.18],
+                              [-0.13, -0.13], [0.13, -0.13], [-0.13, 0.13], [0.13, 0.13]]) {
+        doc.text(nm, x + 1.6 + ox, y + 2.6 + oy);
+      }
+      doc.setTextColor(20, 20, 20);
+      doc.text(nm, x + 1.6, y + 2.6);
+    }
   }
 }
 

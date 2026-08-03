@@ -1731,7 +1731,8 @@ function BarriersTab(props: Props) {
               <span className="inline-unit" title="Sound absorption coefficient α (ISO 9613-2 §7.5): fraction of energy NOT reflected. 0 = hard, 0.1 = typical barrier. This is NOT an NRC — see Help → Barrier absorption. Only used when Reflections is on.">
                 <NumericInput className="inline-edit" min={0} max={1} step={0.05}
                   value={b.absorptionCoeff ?? 0.1} fallback={0.1}
-                  onChange={(v) => updateBarrier(b.id, { absorptionCoeff: v })}
+                  // alpha is a fraction of energy: outside [0,1] is not a value, it is a typo.
+                  onChange={(v) => updateBarrier(b.id, { absorptionCoeff: Math.min(1, Math.max(0, v)) })}
                   title="Absorption α" />
                 <span className="inline-unit-label">α</span>
               </span>
@@ -1812,7 +1813,6 @@ export function SettingsTab(props: SettingsTabProps) {
 
   const propagation = settings.propagation ?? { maxContributionDistanceM: 20000, treeAcceptanceTheta: 0.25 };
   const topography = settings.topography ?? { despikeStrength: 'low' as const };
-  const extrapolation = settings.extrapolation ?? { capPerBandDb: 6, capTotalDbA: 3 };
 
   return (
     <>
@@ -2268,33 +2268,7 @@ export function SettingsTab(props: SettingsTabProps) {
       </section>
       )}
 
-      {tab === 'performance' && (
-      <section className="sp-section">
-        <h3><span>Drag extrapolation caps</span></h3>
-        <div className="grid-2">
-          <Field label="Per-band cap (dB)">
-            <NumericInput min={1} max={20} step={0.5}
-              value={extrapolation.capPerBandDb} fallback={6}
-              onChange={(v) => update({
-                extrapolation: { ...extrapolation, capPerBandDb: v },
-              })}
-            />
-          </Field>
-          <Field label="Total dB(A) cap">
-            <NumericInput min={0.5} max={20} step={0.5}
-              value={extrapolation.capTotalDbA} fallback={3}
-              onChange={(v) => update({
-                extrapolation: { ...extrapolation, capTotalDbA: v },
-              })}
-            />
-          </Field>
-        </div>
-        <div className="hint">
-          When Taylor extrapolation predicts a change larger than these caps,
-          the displayed value is clamped and an exact re-snapshot is queued.
-        </div>
-      </section>
-      )}
+
     </>
   );
 }

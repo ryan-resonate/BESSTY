@@ -14,6 +14,12 @@ The solver implements ISO 9613-2, both the 1996 and 2024 editions, validated aga
 
 Cluster aggregation uses a Barnes-Hut treecode to fold distant source groups into a single virtual point for the contour grid. Named receivers always solve every source directly, with no clustering.
 
-## Not currently modelled
+## Reflections
 
-**Reflections.** The engine implements first-order specular reflection, and the 2024 higher-order and cylindrical cases, all conformance-validated. The app supplies no reflecting surfaces, so walls screen without reflecting and no reflected paths contribute.
+Specular reflection off barriers and source-container facades is available, and **off by default** — switch it on per project in Settings, Sources tab. Barriers carry their own absorption (see Barrier absorption); container facades are perfectly reflecting.
+
+The engine implements first-order reflection plus the 2024 higher-order and cylindrical cases, all conformance-validated against ISO/TR 17534-3 case T19. BESSTY currently supplies flat facades only, so cylindrical reflectors are unused.
+
+Higher orders are bounded: the engine refuses to enumerate more than 100 000 reflection paths, which caps a scene at 46 reflecting surfaces at order 3. BESSTY keeps the facades nearest the source-to-receiver corridor and lowers the order automatically rather than failing the solve, so a large site may silently run at a lower order than requested.
+
+Not yet A/B tested against SoundPLAN through BESSTY — treat reflected results as provisional.

@@ -70,6 +70,7 @@ export function PdfExportDialog(props: Props) {
         {check('legend', 'Contour legend')}
         {check('scaleBar', 'Scale bar')}
         {check('northArrow', 'North arrow')}
+        {check('showReceiverNames', 'Receiver names')}
         {check('showReceiverLimits', 'Show limits under receiver levels')}
 
         {!props.grid && (
