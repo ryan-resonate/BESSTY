@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { jsPDF } from 'jspdf';
+
 import {
-  chooseZoom, fitFrame, formatScale, niceScaleLength, PAGES, project, tileRange,
+  beginFrameClip, chooseZoom, clipPolylineToRect, clipSegmentToRect, endFrameClip,
+  fitFrame, formatScale, niceScaleLength, PAGES, project, tileRange,
 } from './pdfExport';
 
 const extent = { sw: [-27.01, 152.0] as [number, number], ne: [-27.0, 152.01] as [number, number] };
@@ -81,4 +84,87 @@ test('zoom selection is bounded so a huge extent cannot fire a thousand requests
 test('a small extent still picks a detailed zoom', () => {
   const z = chooseZoom(extent, 2400, 19);
   assert.ok(z >= 13, `expected a detailed zoom for a 1 km extent, got ${z}`);
+});
+
+// ---- clipping to the map frame ----
+
+const box = { x: 10, y: 10, w: 100, h: 80 };   // right edge 110, bottom edge 90
+
+test('a segment fully inside the rect is returned unchanged', () => {
+  assert.deepEqual(clipSegmentToRect([20, 20], [50, 60], box), [[20, 20], [50, 60]]);
+});
+
+test('a segment fully outside the rect is rejected', () => {
+  assert.equal(clipSegmentToRect([0, 0], [5, 200], box), null);       // left of it
+  assert.equal(clipSegmentToRect([120, 0], [200, 200], box), null);   // right of it
+  assert.equal(clipSegmentToRect([0, 95], [200, 95], box), null);     // passes below
+});
+
+test('a crossing segment is cut exactly at the boundaries', () => {
+  const seg = clipSegmentToRect([0, 50], [200, 50], box);
+  assert.ok(seg);
+  assert.ok(Math.abs(seg[0][0] - 10) < 1e-9 && Math.abs(seg[0][1] - 50) < 1e-9, `in at ${seg[0]}`);
+  assert.ok(Math.abs(seg[1][0] - 110) < 1e-9 && Math.abs(seg[1][1] - 50) < 1e-9, `out at ${seg[1]}`);
+});
+
+test('a diagonal exit lands on the rect edge, not past it', () => {
+  const seg = clipSegmentToRect([60, 50], [160, 150], box);
+  assert.ok(seg);
+  assert.ok(Math.abs(seg[1][1] - (box.y + box.h)) < 1e-9, `expected bottom-edge exit, got ${seg[1]}`);
+});
+
+test('a polyline that leaves and re-enters becomes two runs, all inside', () => {
+  const runs = clipPolylineToRect([[20, 20], [150, 20], [150, 40], [20, 40]], box);
+  assert.equal(runs.length, 2);
+  for (const run of runs) {
+    for (const [x, y] of run) {
+      assert.ok(x >= box.x - 1e-9 && x <= box.x + box.w + 1e-9, `x ${x} escaped`);
+      assert.ok(y >= box.y - 1e-9 && y <= box.y + box.h + 1e-9, `y ${y} escaped`);
+    }
+  }
+});
+
+test('an all-inside polyline is one run, identical to the input', () => {
+  const pts: Array<[number, number]> = [[20, 20], [40, 30], [60, 20], [80, 70]];
+  const runs = clipPolylineToRect(pts, box);
+  assert.equal(runs.length, 1);
+  assert.deepEqual(runs[0], pts);
+});
+
+test('a fully-outside polyline clips to nothing', () => {
+  assert.deepEqual(clipPolylineToRect([[0, 0], [5, 5], [0, 200]], box), []);
+});
+
+test('every vertex of a wild multi-crossing polyline stays inside the rect', () => {
+  // A growing spiral centred in the box, crossing all four edges repeatedly —
+  // the shape of a contour line around a source near the frame edge.
+  const pts: Array<[number, number]> = [];
+  for (let i = 0; i < 50; i++) {
+    pts.push([60 + Math.cos(i * 0.7) * (5 + i * 3), 50 + Math.sin(i * 0.7) * (5 + i * 3)]);
+  }
+  const runs = clipPolylineToRect(pts, box);
+  assert.ok(runs.length > 1, 'a spiral this size must cross the frame more than once');
+  for (const run of runs) {
+    assert.ok(run.length >= 2);
+    for (const [x, y] of run) {
+      assert.ok(x >= box.x - 1e-9 && x <= box.x + box.w + 1e-9, `x ${x} escaped`);
+      assert.ok(y >= box.y - 1e-9 && y <= box.y + box.h + 1e-9, `y ${y} escaped`);
+    }
+  }
+});
+
+test('beginFrameClip emits re→W→n — the null-style regression, pinned at the app helper', () => {
+  // jsPDF's rect() PAINTS and consumes the path unless the style argument is
+  // literally null (putStyle early-returns only for null). The report's clip
+  // once emitted `re S W n` — a stroked rectangle, then a clip with no current
+  // path, which viewers ignore — and every contour overflowed the frame.
+  // Guard the operator sequence of the helper buildPdf actually calls, so the
+  // one-argument regression cannot return silently.
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [297, 210] });
+  beginFrameClip(doc, { x: 10, y: 10, w: 100, h: 80 });
+  doc.lines([[10, 10]], 20, 20);
+  endFrameClip(doc);
+  const out = doc.output();
+  assert.match(out, / re\s+W\s+n\s/, 'rect path must flow unpainted into W n');
+  assert.doesNotMatch(out, / re\s+S\s/, 'the rect must not be painted before the clip');
 });

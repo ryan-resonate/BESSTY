@@ -11,8 +11,8 @@ import type { GridResult, ReceiverResult } from './solver';
 import { buildContourLines } from './contourLines';
 import { makeBandsForRange, paletteCss, type Palette } from './colormap';
 import {
-  composeBasemap, drawAttribution, drawNorthArrow, drawScaleBar, PAGES, startPdf,
-  type Extent, type MapFrame,
+  beginFrameClip, clipPolylineToRect, composeBasemap, drawAttribution, drawNorthArrow,
+  drawScaleBar, endFrameClip, PAGES, startPdf, type Extent, type MapFrame,
 } from './pdfExport';
 
 export interface PdfOptions {
@@ -78,16 +78,20 @@ export async function buildPdf(input: PdfInput): Promise<jsPDF> {
   doc.setLineWidth(0.3);
   doc.rect(frame.x, frame.y, frame.w, frame.h);
 
-  // ---- contours (vector) ----
+  // ---- overlays, kept inside the map frame ----
   //
-  // Clipped to the map frame. The grid extends past the visible extent (it
-  // covers the whole calculation area), so unclipped lines ran off the basemap
-  // and onto the page margin.
+  // Two independent guards stop ink running onto the page margins:
+  //   1. every contour polyline is geometrically clipped to the frame
+  //      (Liang–Barsky) before it reaches jsPDF — the grid covers the whole
+  //      calculation area, which usually extends past the visible extent;
+  //   2. a PDF clip region wraps everything drawn over the basemap, which
+  //      also catches barriers / sources / receiver labels lying outside
+  //      the exported extent.
+  // The clip region alone was tried first and silently did nothing — see
+  // `beginFrameClip` for the jsPDF trap involved. Hence both guards.
+  beginFrameClip(doc, frame);
   if (input.showContours && grid) {
-    doc.saveGraphicsState();
-    doc.rect(frame.x, frame.y, frame.w, frame.h);
-    doc.clip();
-    doc.discardPath();
+    const frameRect = { x: frame.x, y: frame.y, w: frame.w, h: frame.h };
     const bands = makeBandsForRange(input.dbDomain.min, input.dbDomain.max, input.contourStepDb);
     const thresholds = bands.map((b) => b.lo)
       .concat([bands[bands.length - 1]?.hi ?? input.dbDomain.max]);
@@ -99,21 +103,22 @@ export async function buildPdf(input: PdfInput): Promise<jsPDF> {
       doc.setDrawColor(r, g, b);
       for (const line of set.lines) {
         if (line.length < 2) continue;
-        // One path per polyline keeps the PDF vector and small.
         const pts = line.map(([lat, lng]) => frame.toPage(lat, lng));
-        doc.lines(
-          pts.slice(1).map((p, i) => [p[0] - pts[i][0], p[1] - pts[i][1]] as [number, number]),
-          pts[0][0], pts[0][1],
-        );
+        // One path per clipped run keeps the PDF vector and small.
+        for (const run of clipPolylineToRect(pts, frameRect)) {
+          doc.lines(
+            run.slice(1).map((p, i) => [p[0] - run[i][0], p[1] - run[i][1]] as [number, number]),
+            run[0][0], run[0][1],
+          );
+        }
       }
     }
-    doc.restoreGraphicsState();
   }
-
   drawBarriers(doc, project, frame);
   drawSources(doc, project, frame);
   drawCalcArea(doc, project, frame);
   drawReceivers(doc, project, results, frame, o.showReceiverLimits, o.showReceiverNames);
+  endFrameClip(doc);
 
   // Always drawn: the licence requires it, so it is not a dialog option.
   drawAttribution(doc, frame, input.attribution);

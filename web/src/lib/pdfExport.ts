@@ -263,3 +263,101 @@ export function drawAttribution(doc: jsPDF, frame: MapFrame, text: string) {
   doc.setTextColor(70, 70, 70);
   doc.text(text, x + 0.5, y);
 }
+
+// ----------------------------------------------------------------- clipping
+//
+// Geometric clipping of polylines to the map frame, in page millimetres.
+// The PDF's own clip region (`W n`) is also set, but the contour grid covers
+// the whole calculation area — usually well past the visible extent — and a
+// clip that silently fails (as jsPDF's did when `rect()` was called without
+// the `null` style argument) sprays ink across the page margins. Clipping the
+// geometry before it reaches jsPDF cannot fail silently, and is testable.
+
+export interface ClipRect { x: number; y: number; w: number; h: number }
+
+/// Begin a PDF clip region equal to the map frame; pair with [`endFrameClip`].
+///
+/// The `null` style argument to `rect` is LOAD-BEARING: any other value makes
+/// jsPDF PAINT and consume the path (`putStyle` early-returns only for a
+/// literal null), which turns the sequence into `re S W n` — a stroked
+/// rectangle followed by a clip with no current path, which viewers ignore.
+/// That one missing argument is exactly why contours originally spilled over
+/// the page. The operator-stream test in pdfExport.test.ts targets THIS
+/// helper, so the regression cannot return without a test failing.
+export function beginFrameClip(doc: jsPDF, frame: ClipRect): void {
+  doc.saveGraphicsState();
+  doc.rect(frame.x, frame.y, frame.w, frame.h, null);
+  doc.clip();
+  doc.discardPath();
+}
+
+/// End the clip region begun by [`beginFrameClip`].
+export function endFrameClip(doc: jsPDF): void {
+  doc.restoreGraphicsState();
+}
+
+/// Liang–Barsky: the portion of segment p→q inside `r`, or `null` when the
+/// segment misses the rectangle entirely.
+export function clipSegmentToRect(
+  p: [number, number],
+  q: [number, number],
+  r: ClipRect,
+): [[number, number], [number, number]] | null {
+  const dx = q[0] - p[0];
+  const dy = q[1] - p[1];
+  // Each edge as the constraint den·t ≤ num over t ∈ [0,1].
+  const edges: Array<[number, number]> = [
+    [-dx, p[0] - r.x],          // x ≥ left
+    [dx, r.x + r.w - p[0]],     // x ≤ right
+    [-dy, p[1] - r.y],          // y ≥ top (page y grows downward)
+    [dy, r.y + r.h - p[1]],     // y ≤ bottom
+  ];
+  let t0 = 0;
+  let t1 = 1;
+  for (const [den, num] of edges) {
+    if (den === 0) {
+      if (num < 0) return null;                       // parallel and outside
+      continue;
+    }
+    const t = num / den;
+    if (den < 0) {
+      if (t > t1) return null;
+      if (t > t0) t0 = t;
+    } else {
+      if (t < t0) return null;
+      if (t < t1) t1 = t;
+    }
+  }
+  return [
+    [p[0] + t0 * dx, p[1] + t0 * dy],
+    [p[0] + t1 * dx, p[1] + t1 * dy],
+  ];
+}
+
+function sameVertex(a: [number, number], b: [number, number]): boolean {
+  return Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9;
+}
+
+/// Split a polyline into the runs that lie inside `r`. Consecutive in-rect
+/// segments stitch into one run; where the line exits and re-enters, a new
+/// run starts at the re-entry point. Purely-degenerate runs (a segment that
+/// only grazes a corner) are dropped.
+export function clipPolylineToRect(
+  pts: Array<[number, number]>,
+  r: ClipRect,
+): Array<Array<[number, number]>> {
+  const runs: Array<Array<[number, number]>> = [];
+  let run: Array<[number, number]> | null = null;
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const seg = clipSegmentToRect(pts[i], pts[i + 1], r);
+    if (!seg) { run = null; continue; }
+    const [a, b] = seg;
+    if (run && sameVertex(run[run.length - 1], a)) {
+      run.push(b);
+    } else {
+      run = [a, b];
+      runs.push(run);
+    }
+  }
+  return runs.filter((rn) => rn.length > 2 || !sameVertex(rn[0], rn[1]));
+}

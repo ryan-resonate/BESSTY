@@ -69,6 +69,13 @@ export interface UseProjectDocResult {
   /// Set when a remote collaborator's write lands while we have unsaved
   /// local changes. Cleared by `dismissRemoteUpdate` or `reloadFromRemote`.
   remoteUpdate: RemoteUpdateNotice | null;
+  /// Bumped ONLY when a project from the SERVER is applied to `project` —
+  /// the initial load and silent remote-collaborator applies. `project`
+  /// itself changes identity on every local `setProject` too (the editor
+  /// reads its own writes back), so consumers that must react to *loads*
+  /// (e.g. resetting undo history) key on this, not on `project` identity —
+  /// keying on identity fires on every keystroke.
+  remoteRevision: number;
   /// Update the project. Local in-memory state changes immediately; the
   /// write to Firestore (or localStorage) is debounced.
   setProject: (next: Project) => void;
@@ -94,6 +101,7 @@ export function useProjectDoc(
   const [remoteUpdate, setRemoteUpdate] = useState<RemoteUpdateNotice | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [remoteRevision, setRemoteRevision] = useState(0);
 
   // Refs for the debounce + echo-suppression machinery. Kept in refs (not
   // state) because writes shouldn't trigger re-renders.
@@ -127,6 +135,7 @@ export function useProjectDoc(
           if (remoteProject) {
             setSource('firestore');
             setProjectState(remoteProject);
+            setRemoteRevision((r) => r + 1);
           } else {
             // I2: projects live in Firestore only. The localStorage fallback
             // that used to catch this case is gone.
@@ -168,6 +177,7 @@ export function useProjectDoc(
           // overwrite the remote.
         } else {
           setProjectState(remoteProject);
+          setRemoteRevision((r) => r + 1);
         }
       },
       (err) => {
@@ -305,6 +315,7 @@ export function useProjectDoc(
     saveStatus,
     saveError,
     remoteUpdate,
+    remoteRevision,
     setProject,
     flushPendingSave,
     dismissRemoteUpdate,

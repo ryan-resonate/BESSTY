@@ -321,3 +321,82 @@ deliberate stop, not an oversight.
   button so you can watch the first few before trusting it? Automatic is
   tidier; manual is safer for the first pass, and given it rewrites source
   model references on real projects I'd lean manual for the first run.
+
+---
+
+# Addendum (2026-08-03) — Ctrl+Z, PDF frame clipping, export feedback, front-end smoothness
+
+Fixes for the re-reported defects: undo never worked, PDF contours still ran
+over the page, dead-looking export buttons, and a generally slower interface.
+
+## Ctrl+Z / Ctrl+Shift+Z *(root cause found: the undo stack was erased on every edit)*
+
+Every local edit round-tripped through the persistence hook and came back with
+a new object identity, which the load effect mistook for a fresh project load —
+so it wiped the undo history immediately after every push. Loads are now
+detected by a server-revision counter instead of object identity.
+
+- Move a source, then Ctrl+Z — it must jump back. Ctrl+Shift+Z (or Ctrl+Y)
+  re-applies.
+- Chain ~10 edits (moves, renames, a barrier vertex, a delete), then undo all
+  the way back and redo all the way forward.
+- Undo must NOT fire while typing in a text field (browser text undo wins).
+- Display tweaks (opacity slider, palette, layer toggles) are deliberately NOT
+  undo steps: change opacity between two moves, and two Ctrl+Z presses should
+  undo the two moves, skipping the slider.
+- Display prefs are also excluded from what undo RESTORES, not just from what
+  it records: move a source, change contour opacity, Ctrl+Z the move, then
+  reload the project — the opacity must survive the reload (previously the
+  undo silently wrote the OLD opacity back to the saved project).
+- Paste is its own undo step: move a source, Ctrl+V a copied set, then Ctrl+Z
+  must remove only the pasted objects and a second Ctrl+Z the move.
+- Two windows signed in as DIFFERENT users: an edit arriving from the other
+  user still resets history (intentional — you can't undo their change). Two
+  tabs of the SAME account don't live-sync at all (your own writes are
+  echo-suppressed); that's pre-existing behaviour, unchanged here.
+
+## PDF export — contours clipped to the map frame *(second attempt; different mechanism)*
+
+The jsPDF clip call was silently a no-op (its `rect()` needs a literal `null`
+style argument to leave the path unpainted — now fixed AND covered by a test
+that inspects the PDF operator stream). Contours are additionally clipped
+geometrically before they reach jsPDF, so ink cannot cross the frame even if
+the library misbehaves again. Barriers, sources, the calc area and receiver
+labels now sit inside the same clip.
+
+- Export with the map zoomed IN so the grid extends past the view on all
+  sides: no contour, barrier line or label may cross the neat frame border.
+- A receiver just outside the view must not leak its label onto the margin.
+- Zoomed OUT (whole grid visible) the figure must look unchanged.
+- Legend, scale bar, north arrow, attribution and title must all still draw
+  (they live outside the clip).
+
+## KML / Shapefile / GeoTIFF buttons explain themselves
+
+- Before any grid solve: the three buttons render dimmed but clickable; a
+  click pops "No contour grid yet — run a grid solve first" instead of doing
+  nothing. Hover shows the same hint as a tooltip.
+- After a grid solve: they export exactly as before.
+
+## Front-end smoothness (three separate costs removed)
+
+1. **Per-edit double work** — every edit re-sanitised the project,
+   re-materialised every BESS group and re-rendered the map layers a second
+   time (same mechanism as the Ctrl+Z bug). Gone: edits now render once.
+2. **Mouse-move re-renders** — the cursor coordinate readout was screen-level
+   state, so merely moving the mouse across the map re-rendered the whole
+   screen (side panel included) at frame rate. The readout now updates alone.
+3. **Needless DEM reloads** — every calc-area handle release tore down and
+   re-assembled the terrain raster even when the area hadn't moved or resized
+   (tiles are memory-cached, so the cost was reload churn and 'loading'
+   flicker rather than fresh downloads). Now only a real move/resize (> 0.5 m)
+   triggers a reload — except after a FAILED load, where any nudge still
+   retries. Failed tiles are also no longer cached as failures, so a retry
+   after a network hiccup can actually succeed (previously only a full page
+   reload recovered).
+
+To test: drag sources around a project with a few BESS groups and judge the
+feel; sweep the mouse over the map while watching for jank; rotate the calc
+area repeatedly (no "loading DEM" flicker), then drag it 100 m (DEM must
+reload, and the next solve must use the new raster — check a hillside
+receiver's level changes accordingly).

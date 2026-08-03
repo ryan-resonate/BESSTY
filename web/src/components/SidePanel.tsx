@@ -1242,6 +1242,19 @@ function ResultsTab(props: Props) {
   const hasResults = (results?.length ?? 0) > 0;
   const hasGrid = grid != null;
 
+  /// Grid-gated exports stay clickable with no grid — a `disabled` button
+  /// gives zero feedback and reads as broken. Clicking explains instead.
+  function requireGrid(): boolean {
+    if (hasGrid) return true;
+    notify.info(
+      'These exports package the computed contour grid. Run a grid solve first, then export.',
+      { title: 'No contour grid yet' },
+    );
+    return false;
+  }
+  const mutedWhenNoGrid = hasGrid ? undefined : { opacity: 0.55 };
+  const gridHint = hasGrid ? undefined : 'Needs a computed contour grid — click for details';
+
   function download(blob: Blob, suffix: string, ext: string) {
     triggerDownload(`${defaultFilenameStem(project, suffix)}.${ext}`, blob);
   }
@@ -1336,8 +1349,8 @@ function ResultsTab(props: Props) {
 
         <div className="meta-line" style={{ marginTop: 8 }}><b>Contour lines</b></div>
         <div className="add-row">
-          <button className="btn small" disabled={!hasGrid} onClick={() => exportContours('kml')}>↓ KML</button>
-          <button className="btn small" disabled={!hasGrid} onClick={() => exportContours('shp')}>↓ Shapefile</button>
+          <button className="btn small" style={mutedWhenNoGrid} title={gridHint} onClick={() => { if (requireGrid()) exportContours('kml'); }}>↓ KML</button>
+          <button className="btn small" style={mutedWhenNoGrid} title={gridHint} onClick={() => { if (requireGrid()) exportContours('shp'); }}>↓ Shapefile</button>
         </div>
 
         <div className="meta-line" style={{ marginTop: 8 }}><b>Grid raster</b></div>
@@ -1354,7 +1367,7 @@ function ResultsTab(props: Props) {
             disabled={!props.onOpenStudy}
             title="Compare battery × inverter configurations across your receivers"
           >⊞ Compare configurations…</button>
-          <button className="btn small" disabled={!hasGrid} onClick={() => grid && download(exportGridGeoTiff(grid), 'grid', 'tif')}>
+          <button className="btn small" style={mutedWhenNoGrid} title={gridHint} onClick={() => { if (requireGrid() && grid) download(exportGridGeoTiff(grid), 'grid', 'tif'); }}>
             ↓ GeoTIFF
           </button>
         </div>

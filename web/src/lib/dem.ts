@@ -83,6 +83,11 @@ async function loadTile(t: Tile): Promise<DemTile> {
   })();
 
   tileCache.set(key, promise);
+  // A rejected promise must not stay cached: one transient tile failure would
+  // otherwise poison that tile for the whole session, so every DEM retry
+  // (nudging the calc area, reopening the project) re-failed instantly from
+  // cache and only a full page reload recovered.
+  promise.catch(() => { if (tileCache.get(key) === promise) tileCache.delete(key); });
   return promise;
 }
 

@@ -184,6 +184,7 @@ export function ProjectScreen() {
     saveStatus,
     saveError,
     remoteUpdate,
+    remoteRevision,
     dismissRemoteUpdate,
   } = useProjectDoc(projectId, currentUid);
   const [project, setProjectState] = useState<Project | null>(null);
@@ -222,7 +223,6 @@ export function ProjectScreen() {
       ne: [b.getNorth(), b.getEast()],
     });
   }
-  const [cursorLatLng, setCursorLatLng] = useState<[number, number] | null>(null);
   /// Active tab — lifted into ProjectScreen so placing a new object can
   /// auto-switch the panel to Sources / Receivers.
   const [activeTab, setActiveTab] = useState<Tab>('sources');
@@ -259,8 +259,28 @@ export function ProjectScreen() {
   // re-subscribing on every selection or mouse move.
   const selectedIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => { selectedIdsRef.current = selectedIds; }, [selectedIds]);
+  // The cursor position updates at rAF rate on every map mousemove. As
+  // ProjectScreen state it re-rendered the WHOLE tree — side panel included —
+  // for a six-character coordinate label, which is why merely moving the mouse
+  // across the map cost frames. It lives in a ref now; StatusBar subscribes
+  // and re-renders alone.
   const cursorLatLngRef = useRef<[number, number] | null>(null);
-  useEffect(() => { cursorLatLngRef.current = cursorLatLng; }, [cursorLatLng]);
+  const cursorListenerRef = useRef<((ll: [number, number] | null) => void) | null>(null);
+  const handleCursorMove = useCallback((ll: [number, number] | null) => {
+    cursorLatLngRef.current = ll;
+    cursorListenerRef.current?.(ll);
+  }, []);
+  const subscribeCursor = useCallback((cb: (ll: [number, number] | null) => void) => {
+    cursorListenerRef.current = cb;
+    cb(cursorLatLngRef.current);
+    return () => { if (cursorListenerRef.current === cb) cursorListenerRef.current = null; };
+  }, []);
+  /// Latest-closure mirror of `setProject` for the `[]`-deps clipboard effect
+  /// below. That effect captured the FIRST render's `setProject`, whose
+  /// closure still saw `project === null` — so a paste applied its content
+  /// (the state setter is stable) but never pushed an undo step, and one
+  /// Ctrl+Z after a paste jumped back two conceptual edits.
+  const setProjectRef = useRef<(p: Project) => void>(() => {});
   useEffect(() => {
     async function onKey(ev: KeyboardEvent) {
       if (!(ev.ctrlKey || ev.metaKey)) return;
@@ -315,7 +335,7 @@ export function ProjectScreen() {
         ?? p.calculationArea?.centerLatLng
         ?? env.origin;
       const out = materialisePaste(env, anchor, newId);
-      setProject({
+      setProjectRef.current({
         ...p,
         sources: [...p.sources, ...out.sources],
         receivers: [...p.receivers, ...out.receivers],
@@ -335,15 +355,29 @@ export function ProjectScreen() {
     centerLatLng: [number, number]; widthM: number; heightM: number; rotationDeg: number;
   }) {
     if (!project?.calculationArea) return;
+    const before = project.calculationArea;
     setProject({
       ...project,
-      calculationArea: { ...project.calculationArea, ...patch },
+      calculationArea: { ...before, ...patch },
     });
-    // The calc area moved or grew, so the DEM may no longer cover it. The
-    // auto-fetcher only re-runs from 'idle', and without this reset the grid
-    // would keep solving against the OLD raster — silently, because a DEM miss
-    // substitutes ground = 0 rather than erroring.
-    setDemStatus('idle');
+    // If the area MOVED or RESIZED the DEM may no longer cover it, so reset to
+    // 'idle' and let the auto-fetcher re-run — without this the grid keeps
+    // solving against the OLD raster, silently, because a DEM miss substitutes
+    // ground = 0 rather than erroring. A pure ROTATION is exempt: the fetch
+    // bounds come from centre + width/height only, so a refetch would download
+    // the identical raster — and since this fires on every handle release, the
+    // needless refetch made adjusting the rectangle feel sluggish.
+    const movedM = 111_320 * Math.hypot(
+      patch.centerLatLng[0] - before.centerLatLng[0],
+      (patch.centerLatLng[1] - before.centerLatLng[1])
+        * Math.cos((before.centerLatLng[0] * Math.PI) / 180),
+    );
+    const resized = Math.abs(patch.widthM - before.widthM) > 0.5
+      || Math.abs(patch.heightM - before.heightM) > 0.5;
+    // demStatus 'error' always retries: after a failed load, nudging the
+    // rectangle is the natural "kick it" gesture, and failed tiles are no
+    // longer negatively cached (dem.ts), so the retry can actually succeed.
+    if (movedM > 0.5 || resized || demStatus === 'error') setDemStatus('idle');
   }
 
   function selectOne(id: string | null) {
@@ -697,8 +731,18 @@ export function ProjectScreen() {
   // arrived while we had no unsaved local changes (the hook's banner
   // path catches the conflict case). Resets undo history on every load
   // so the user can't undo their way back to "the previous user's edit".
+  const hydratedRevRef = useRef(-1);
   useEffect(() => {
     if (persistedProject) {
+      // `persistedProject` changes identity on EVERY local edit — the hook
+      // mirrors our own `persistProject` writes straight back out — not just
+      // on loads. Hydrating on each edit re-sanitised the project, re-
+      // materialised every BESS group, re-rendered the map layers a second
+      // time, and (the Ctrl+Z killer) wiped the undo stacks immediately after
+      // every push onto them. Only a genuine load — initial open or a remote
+      // collaborator's write — bumps `remoteRevision`, so that gates it.
+      if (hydratedRevRef.current === remoteRevision) return;
+      hydratedRevRef.current = remoteRevision;
       // Sanitize on load: any NaN that was previously saved (from a botched
       // import in an older build) gets repaired before it hits the UI.
       const sanitised = sanitizeProject(persistedProject);
@@ -736,7 +780,7 @@ export function ProjectScreen() {
       undoStackRef.current = [];
       redoStackRef.current = [];
     }
-  }, [persistedProject]);
+  }, [persistedProject, remoteRevision]);
 
   // Redirect away if there's no project to load — either the id is
   // garbage or (for a Firestore project) the current user doesn't have
@@ -780,6 +824,19 @@ export function ProjectScreen() {
     persistProject(p);
   }
 
+  // Keep the clipboard effect's mirror pointing at THIS render's closure.
+  useEffect(() => { setProjectRef.current = setProject; });
+
+  /// Undo/redo restore helper. Display prefs (opacity, palette, layer
+  /// toggles) are deliberately not undo steps, but every snapshot embeds the
+  /// display it was taken with — restoring one verbatim would silently revert
+  /// the SAVED display while the screen keeps showing the live value, and the
+  /// project would reopen with stale prefs. Graft the live display on top of
+  /// whatever is restored.
+  function withCurrentDisplay(p: Project): Project {
+    return { ...p, settings: { ...settingsOf(p), display: displayRef.current } };
+  }
+
   useEffect(() => {
     function onKey(ev: KeyboardEvent) {
       // Skip if focus is in an editable element — let the field handle Z/Y itself.
@@ -795,20 +852,20 @@ export function ProjectScreen() {
           const next = redoStackRef.current.pop();
           if (!next || !project) return;
           undoStackRef.current.push(project);
-          setProjectQuiet(next);
+          setProjectQuiet(withCurrentDisplay(next));
         } else {
           // Undo
           const prev = undoStackRef.current.pop();
           if (!prev || !project) return;
           redoStackRef.current.push(project);
-          setProjectQuiet(prev);
+          setProjectQuiet(withCurrentDisplay(prev));
         }
       } else if (cmd && (ev.key === 'y' || ev.key === 'Y')) {
         ev.preventDefault();
         const next = redoStackRef.current.pop();
         if (!next || !project) return;
         undoStackRef.current.push(project);
-        setProjectQuiet(next);
+        setProjectQuiet(withCurrentDisplay(next));
       } else if (ev.key === 'Delete' || ev.key === 'Backspace') {
         if (selectedIds.size === 0) return;
         ev.preventDefault();
@@ -1519,7 +1576,7 @@ export function ProjectScreen() {
           onMoveSource={handleMoveSource}
           onMoveReceiver={handleMoveReceiver}
           onEditCalcArea={handleEditCalcArea}
-          onCursorMove={setCursorLatLng}
+          onCursorMove={handleCursorMove}
           onReady={(m) => { mapHandleRef.current = m; }}
           onOpenBessGroupWizard={openBessGroupWizard}
           onMoveBessGroup={moveBessGroup}
@@ -1544,7 +1601,7 @@ export function ProjectScreen() {
           <Link to="/projects">← All projects</Link>
         </div>
 
-        <StatusBar project={project} selectedIds={selectedIds} cursorLatLng={cursorLatLng} />
+        <StatusBar project={project} selectedIds={selectedIds} subscribeCursor={subscribeCursor} />
 
         <div className="map-chrome-stack right">
           <ResultsDock

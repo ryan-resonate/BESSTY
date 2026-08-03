@@ -2,7 +2,7 @@
 // DEM controls have moved to the side panel's Layers tab; what stays on the
 // map is the legend, results dock, and status bar.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Project } from '../lib/types';
 import { summariseDiagnostics, type Diagnostic } from '../lib/diagnostics';
 import { limitForPeriod } from '../lib/types';
@@ -197,10 +197,15 @@ export function ResultsDock(props: ResultsDockProps) {
 interface StatusBarProps {
   project: Project;
   selectedIds: Set<string>;
-  cursorLatLng: [number, number] | null;
+  /// Push-subscription rather than a plain prop: the cursor updates at rAF
+  /// rate on every map mousemove, and as parent state it re-rendered the
+  /// whole screen for this one label. Returns an unsubscribe.
+  subscribeCursor(cb: (ll: [number, number] | null) => void): () => void;
 }
 
-export function StatusBar({ project, selectedIds, cursorLatLng }: StatusBarProps) {
+export function StatusBar({ project, selectedIds, subscribeCursor }: StatusBarProps) {
+  const [cursorLatLng, setCursorLatLng] = useState<[number, number] | null>(null);
+  useEffect(() => subscribeCursor(setCursorLatLng), [subscribeCursor]);
   // For the status bar we just highlight the first selected item by name
   // (or the count when multi-selected).
   const ids = Array.from(selectedIds);
