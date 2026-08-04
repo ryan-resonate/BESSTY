@@ -400,3 +400,24 @@ feel; sweep the mouse over the map while watching for jank; rotate the calc
 area repeatedly (no "loading DEM" flicker), then drag it 100 m (DEM must
 reload, and the next solve must use the new raster — check a hillside
 receiver's level changes accordingly).
+
+4. **Stacked background regrids** *(added 2026-08-04)* — with contours on
+   screen, every settled drag queued ANOTHER full grid solve behind the one
+   already running on the single worker, silently: a burst of edits left the
+   worker crunching stale geometry for minutes, and the newest contours
+   arrived only after every stale solve finished. A new regrid now TERMINATES
+   the stale job (newest geometry wins), background regrids drive the normal
+   computing status + progress bar instead of running invisibly, and the
+   regrid debounce is 600 ms (was 150 ms) so a burst of nudges coalesces.
+
+To test: show a grid, then drag a source three times in quick succession.
+The progress bar should restart with each drag and complete ONCE; the final
+contours must match the final geometry; the total wait should be roughly one
+solve, not three. Confirm a plain "Run grid" still works, that ✕ still
+cancels (both manual and background runs), and that the point-receiver
+labels still update after every drag.
+
+Known remaining solve-pipeline work (planned, not in this commit): the
+point-receiver solve still runs on the MAIN thread — with hundreds of
+sources it blocks input for the whole solve right after each edit. That
+worker move is P1 in the plan addendum.

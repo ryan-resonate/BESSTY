@@ -635,3 +635,217 @@ the kind of cap it exists to expose.
 - **I19 must not write per frame.** Display settings change on slider drags;
   route them through the existing debounced save or a project doc gets a write
   per animation frame.
+
+---
+
+# Addendum (2026-08-04) — decisions, the solve-pipeline audit, Barnes-Hut in full
+
+## Decisions recorded (Ryan)
+
+- **Settings**: gear button moves into the side panel (top-right); the side
+  panel's Settings tab goes away; inline settings text gets trimmed with the
+  detail moved to help pages.
+- **Factorial study**: becomes a draggable background FloatingWindow. Editing
+  stays enabled while it runs; results are labelled with the snapshot time
+  they were computed against.
+- **Barrier attenuation / reflections**: no external reference case exists —
+  build first-principles validation cases (V-items below) plus an adversarial
+  code review of the reflection path.
+- **BESS groups**: per-group "Reset overrides" button that discards ALL
+  per-unit manual changes (position deltas, modes, elevations) and
+  re-materialises the group from its wizard settings.
+- **Reflection order cap** stays at ≤ 3 with the existing path budget.
+
+## Solve-pipeline audit — why the app janked on anything that re-solves
+
+Ryan's report: jank when moving barriers, moving objects right after another
+move, moving things while a grid solves, zooming after a move — "things that
+trigger an update of the solve". All four mechanisms found:
+
+1. **Point solve runs on the MAIN thread.** `evaluateProject`
+   (`web/src/lib/solver.ts:218`) is synchronous wasm per receiver, fired 80 ms
+   after every structural edit or settled drag (ProjectScreen point effect).
+   With hundreds of sources it blocks all input for the full solve — the
+   "can't move a second thing right after the first" feel. → **P1** below.
+2. **Background regrids queued instead of superseding.** The single grid
+   worker queues posted jobs and nothing ever terminated a stale one (the ✕
+   button was the only caller of `cancelGridRun`). Each settled drag posted
+   another full solve; with 5–8 s solves a burst of edits kept the worker
+   busy on dead geometry for minutes. **FIXED (this commit):** the worker
+   layer now terminates the in-flight job when a new one posts — newest
+   geometry wins — and stale promises settle immediately with
+   `GRID_CANCELLED` instead of hanging into the 60 s dead-man timeout.
+3. **Background regrids were invisible.** The auto path set no status and no
+   progress, so the app "got slow for no reason". **FIXED (this commit):**
+   auto-regrids drive the same computing status + progress bar as a manual
+   run (and are cancellable); debounce raised 150 → 600 ms so nudge bursts
+   coalesce.
+4. **Contour rebuild lands on the main thread.** When a grid completes,
+   contour polylines are extracted and the Leaflet layers rebuilt on the main
+   thread — the hitch felt when "zooming after moving an object" is the
+   background regrid completing mid-gesture. → **P3**.
+
+Planned (P-items), in order of impact:
+
+- **P1 — point solve to a worker.** Same job/region pattern as the grid
+  (resolve catalog + geometry on the main thread, solve in the worker). This
+  removes the last main-thread wasm and is the single biggest smoothness win.
+- **P2 — grid worker pool.** Tiles are already independent jobs; run K
+  workers (≈ `hardwareConcurrency − 2`) round-robin over tiles. The 5–8 s /
+  800-source grid is single-core today, so this is a ~4–8× wall-clock cut —
+  and it, not θ, is the honest answer to grid speed (see Barnes-Hut below).
+- **P3 — contour extraction in the worker.** Return the line sets with the
+  grid so `setGrid` only swaps layers.
+- **P4 — incremental regrid** (later): re-solve only tiles whose effective
+  source list changed. Requires per-tile result caching; after P2.
+
+## Barnes-Hut source aggregation — the method, comprehensively
+
+Implementation: `web/src/lib/sourceTree.ts` (tree + walks), consumed per
+named receiver via `propagation.ts` and per grid tile in
+`solver.ts::buildGridJob`.
+
+**Build.** All finite-position sources go into an adaptive quadtree: the
+bounding box splits at its geometric midpoint into four quadrants,
+recursively, until a node holds ≤ 4 sources (`LEAF_CAP`). Each node stores:
+
+- the **energy sum** of its members' Lw spectra per band (not dB averaging —
+  the spectra are converted to linear energy, summed, and back);
+- the **energy-weighted centroid** (lat/lng) and energy-weighted mean source
+  height — so the aggregate sits where the acoustic power actually is, not at
+  the geometric middle;
+- its bounding-box **diagonal `s`** (metres) — the "size" in the acceptance
+  test;
+- a `containsWtg` flag (see the turbine rule).
+
+Build cost is O(N log N) once per solve snapshot; spectra resolve through a
+per-(model, mode, wind) cache so rebuilds aren't catalog-bound.
+
+**Walk (per receiver).** Depth-first from the root. At each node, with `d` =
+distance from the receiver to the node centroid, the **multipole acceptance
+criterion** is `s / d < θ`:
+
+- **Accepted** → the whole subtree collapses to ONE virtual source at the
+  centroid carrying the summed spectrum and mean height. The engine then
+  evaluates a single ISO 9613-2 path for it (divergence, air absorption,
+  ground, screening) instead of one per member.
+- **Rejected** → recurse into the children; leaves emit their real sources
+  individually (full treatment, exact positions).
+
+`θ = 0` disables clustering entirely (every real source, always). A hard
+distance cutoff (`maxContributionDistanceM`) prunes whole subtrees whose
+nearest face lies beyond it.
+
+**Per-tile walk for grids.** Grid cells are processed in 16×16-cell tiles,
+and each tile does its own walk (`walkSourceTreeForRegion`) with `d` measured
+from the node centroid to the NEAREST point of the tile rectangle. A cluster
+is therefore only accepted when it is far from the *entire* tile — cells near
+a source never see it collapsed, cells far away share one aggregate. One tree
+serves every tile.
+
+**The turbine rule.** A multi-source node containing a WTG is never accepted:
+the walk recurses until each turbine is an individual source. Folding a WTG
+into a cluster would silently drop its Annex D treatment (G ≤ 0.5 cap, 4 m
+receiver convention, 3 dB screening cap), which changes certified numbers.
+BESS/auxiliary sources cluster freely.
+
+**Error argument.** Representing a cluster by its centroid displaces each
+member by at most s/2, so the worst single-member distance error is a factor
+(1 ± s/2d), i.e. `s/d < θ` bounds the worst-member divergence error to about
+`20·log10(1/(1−θ/2))` dB — ~1.2 dB at θ = 0.25 for the very worst member.
+Because the centroid is energy-weighted, first-order errors cancel across the
+ensemble and the aggregate error is second-order, O((s/d)²) — in practice
+≪ 0.5 dB at the default θ = 0.25. Two caveats the bound does NOT cover:
+
+- **Screening is evaluated on the centroid ray only.** A cluster straddling a
+  barrier edge or ridge line uses one representative path; members that are
+  actually screened differently get smeared. This *raises* levels when the
+  centroid ray is unscreened but members aren't (and vice versa). Relevant to
+  the "barrier attenuation looks low" investigation: the V-cases below run at
+  θ = 0 as well as the default, to separate engine correctness from
+  clustering artefacts.
+- **θ ≥ 1 has no error guarantee at all** (at s/d = 1 a member can sit at
+  distance ~0 from the receiver). θ = 2 is a stress-test setting, not a
+  results setting.
+
+**Why θ = 0.1 vs 2.0 was only 8 s vs 5 s at 800 sources.** The criterion can
+only fire where `d > s/θ`, and a contour grid drawn over the site itself is
+near-field almost everywhere. Take a ~500 m-diagonal yard: at θ = 0.25 the
+whole yard collapses only for receivers beyond ~2 km; quarter-nodes (~250 m)
+beyond ~1 km. Cells inside or beside the array bottom out at the leaves and
+see essentially all 800 sources individually — *correctly*, because their
+nearest sources dominate and must not be smeared. So the grid's workload is
+near-field-dominated and θ-insensitive; only the outer ring of tiles ever
+clusters, which is exactly the 8 → 5 s you measured. The treecode is doing
+what it should — named receivers a kilometre out collapse the whole site to a
+handful of aggregates — but grid speed is governed by near-field volume on a
+single core. The fix for that is **P2 (worker pool)**, not a bigger θ.
+
+### D-item — Barnes-Hut debug layer (new)
+
+Layers tab → Debug → **"Barnes-Hut clustering"**. Pure TS + Leaflet overlay;
+no engine change; walks re-use the existing tree functions with the current θ
+and cutoff.
+
+- **Tile view** (grid mode): draw the 16×16-cell tile boundaries, each tile
+  labelled with its effective-source count (`walkSourceTreeForRegion` per
+  tile — the same call `buildGridJob` makes, so the display IS the truth).
+  Expectation with 800 sources: tiles over the array read ≈ 800, the far ring
+  collapses to dozens. If a far tile still reads ≈ 800, something is wrong —
+  this view is the instrument that would show it.
+- **Inspect one target**: click a tile (or a named receiver) → overlay that
+  walk's result: accepted cluster nodes as translucent rectangles (their
+  actual bboxes) with centroid dot + member count + combined dB(A), real
+  pass-through sources as dots. WTG-forced expansion is visible here too.
+- **Header readout**: `N real → M effective (K clusters)` for the inspected
+  target, plus the active θ / cutoff.
+
+## V-items — reflection & barrier validation cases (from Ryan's spec)
+
+All implemented as wasm-path tests (`web/src/lib/*.wasm.test.ts` style) so
+they validate the app's actual wiring — catalog → sceneBuilder → engine —
+not just the engine. Each runs at θ = 0 (no clustering) and default θ.
+
+- **V-R1 — direct path.** One omni point source, flat hard ground, no
+  obstacles: assert `Lp = Lw − (20·log10 d + 11) − Aatm − Agr` against a hand
+  calculation per band, within 0.1 dB, at 100 / 500 / 1000 m.
+- **V-R2 — same-side wall (Ryan's case 1).** Long reflective barrier BESIDE
+  the source; receiver on the SAME side, in the specular zone. With
+  reflections ON, the image source at the mirrored distance adds
+  `ΔL = 10·log10(1 + (1−α)·(d/d')²·10^(−ΔAatm/10))` over the no-barrier
+  level. Sweep α ∈ {0, 0.3, 0.7, 1.0}: α = 1 must equal no-barrier exactly;
+  the gain must fall monotonically with α; α = 0 must match the hand value.
+- **V-R3a — canyon ladder (calculable multi-order).** Two parallel α = 0
+  walls with the source between; receiver beyond the OPEN END with sight down
+  the axis, so every image of every order is unscreened at a known distance.
+  The image ladder sums in closed form — assert against it for order 1, 2, 3,
+  and check the order-3 total exceeds order-1 by the hand-computed margin.
+- **V-R3b — enclosure (Ryan's case 2, bounded).** Source ringed by four
+  reflective walls, receiver outside. No clean closed form once diffraction
+  mixes with reflection, so assert the calculable structure instead: level
+  with α = 1 equals the barrier-only (reflections-off) level; level rises
+  monotonically as α → 0; and the α = 0 vs α = 1 delta stays within
+  hand-derived bounds from the escaping image paths.
+- **V-B1 — insertion loss sanity.** Same geometry as V-R2 but receiver on the
+  FAR side: assert Dz against the ISO §7.4 single-edge formula by hand for
+  two or three path differences (the "barrier attenuation looks low" check),
+  plus the 20/25 dB caps.
+- Alongside: adversarial Fable review of `reflectors.ts`, the sceneBuilder
+  reflection emission, and the engine's image-source path (read-only).
+
+## Work queue (updated 2026-08-04)
+
+| # | Item | Size | Status |
+|---|---|---|---|
+| A | Settings gear → side panel top-right; tab removed; verbosity trim | S | next |
+| D | BESS "Reset overrides" button | S | queued |
+| E | BESS wizard Esc layering (segment editor first) | S | queued |
+| F | Wall drawing: right-click finishes; click-near-start closes loop | S–M | queued |
+| B | Factorial study as background FloatingWindow (+ snapshot label) | M | queued |
+| V | V-R1…V-B1 validation cases + reflection review | M | queued |
+| P1 | Point solve to a worker | M | queued |
+| P2 | Grid worker pool | M | queued |
+| I | Barnes-Hut debug layer | M | queued |
+| P3 | Contour extraction in worker | S | queued |
+| H | DEM fetch box ignores calc-area rotation (corner under-coverage) | S | queued |
+| P4 | Incremental regrid | L | later |

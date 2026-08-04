@@ -535,6 +535,13 @@ export async function evaluateGrid(
 ///
 /// `onProgress` receives (tilesDone, tilesTotal), throttled to ~10 Hz by the
 /// worker.
+///
+/// CONTRACT for callers: posting a job TERMINATES any in-flight grid job
+/// (newest wins), and the loser's promise rejects with [`GRID_CANCELLED`].
+/// Both existing callers bump their generation counter before calling and
+/// gen-guard their `.catch` — that is what keeps the cancellation silent. A
+/// new caller must do the same, or expect its run to be killed by the next
+/// background regrid and to see the cancellation surface as an error.
 export async function evaluateGridViaWorker(
   project: Project,
   dem: DemRaster | null,
@@ -610,6 +617,16 @@ function sourcePaddedBounds(job: GridJob): [[number, number], [number, number], 
 let gridWorker: Worker | null = null;
 let gridWorkerSeq = 0;
 
+/// The one in-flight job, if any. Tracked so a superseding run (or an explicit
+/// cancel) can settle the stale promise IMMEDIATELY instead of leaving it to
+/// hang until the dead-man timeout — and, more importantly, so a new run can
+/// terminate the stale job before posting. The worker QUEUES posted messages:
+/// without this, a burst of auto-regrids (one per settled drag) stacked
+/// multi-second solves back to back, the newest geometry's grid arrived after
+/// every stale one finished, and the machine chewed a core on results nobody
+/// would ever see.
+let activeGridJob: { id: number; cleanup(): void; reject(e: Error): void } | null = null;
+
 function getGridWorker(): Worker {
   if (!gridWorker) {
     gridWorker = new Worker(new URL('./grid.worker.ts', import.meta.url), { type: 'module' });
@@ -628,11 +645,21 @@ function getGridWorker(): Worker {
 export const GRID_CANCELLED = 'grid cancelled';
 
 export function cancelGridRun(): void {
-  if (!gridWorker) return;
-  gridWorker.terminate();
-  gridWorker = null;
+  if (gridWorker) {
+    gridWorker.terminate();
+    gridWorker = null;
+  }
   // Bump the sequence so any late message from the dead worker is ignored.
   gridWorkerSeq++;
+  // Settle the stale promise now rather than letting it hang for the 60 s
+  // dead-man timeout. Null the slot BEFORE settling so the job's own cleanup
+  // (guarded on identity) cannot clobber a newer job registered meanwhile.
+  if (activeGridJob) {
+    const stale = activeGridJob;
+    activeGridJob = null;
+    stale.cleanup();
+    stale.reject(new Error(GRID_CANCELLED));
+  }
 }
 
 function runGridJobOnWorker(
@@ -640,6 +667,12 @@ function runGridJobOnWorker(
   region: DemRegion | null,
   onProgress?: (tilesDone: number, tilesTotal: number) => void,
 ): Promise<GridResult> {
+  // Newest-wins: every caller that reaches here has already superseded the
+  // previous run's generation, so a still-running job's result could only be
+  // discarded — letting it finish first would just delay this one by its full
+  // runtime. Terminate it (the tight wasm loop has no yield point to observe
+  // a cooperative flag) and rebuild the worker lazily.
+  if (activeGridJob) cancelGridRun();
   const worker = getGridWorker();
   const id = ++gridWorkerSeq;
   return new Promise<GridResult>((resolve, reject) => {
@@ -656,6 +689,9 @@ function runGridJobOnWorker(
       }, IDLE_TIMEOUT_MS);
     };
     const cleanup = () => {
+      // Identity-guarded: a stale job's late cleanup (dead-man timeout) must
+      // not free a slot that a newer job now owns.
+      if (activeGridJob?.id === id) activeGridJob = null;
       clearTimeout(timeout);
       worker.removeEventListener('message', onMessage);
       worker.removeEventListener('error', onError);
@@ -685,6 +721,7 @@ function runGridJobOnWorker(
     };
     worker.addEventListener('message', onMessage);
     worker.addEventListener('error', onError);
+    activeGridJob = { id, cleanup, reject };
     arm();
     worker.postMessage({ id, job, region });
   });

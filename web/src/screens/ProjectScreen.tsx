@@ -1042,21 +1042,41 @@ export function ProjectScreen() {
 
   // Contour-grid recompute on any grid-relevant change OR a settled source
   // drag — but only when a grid is already on screen. Always the primal
-  // per-tile worker path. Longer debounce than the point solve so a continuous
-  // drag coalesces into a single regrid on settle (the grid is the heavier
-  // solve). Receivers never trigger this.
+  // per-tile worker path. 600 ms debounce (vs 80 ms for points) so a burst of
+  // nudges coalesces into one regrid — the grid is the heavy solve. Receivers
+  // never trigger this.
+  //
+  // This used to run SILENTLY (no status, no progress) and never superseded
+  // the worker: the single grid worker queues jobs, so consecutive settled
+  // drags stacked multi-second solves back to back while the UI chewed a core
+  // with no explanation — the reported "moving things while solving a grid"
+  // jank. The worker layer now terminates the stale job when a new one posts
+  // (newest geometry wins), and this path drives the same status + progress
+  // surface as a manual run so the recompute is visible and cancellable.
   useEffect(() => {
     if (!project || !gridShownRef.current) return;
     const handle = setTimeout(() => {
       const gen = ++gridGenRef.current;
       const height = project.settings?.general.defaultReceiverHeight ?? 1.5;
-      evaluateGridViaWorker(project, dem, gridSpacingM, height)
+      setGridStatus('computing');
+      setGridProgress(null);
+      evaluateGridViaWorker(project, dem, gridSpacingM, height, (done, total) => {
+        if (gen === gridGenRef.current) setGridProgress({ done, total });
+      })
         .then((g) => {
           if (gen !== gridGenRef.current) return;        // superseded
           setGrid(g);
+          setGridStatus('ready');
+          setGridProgress(null);
         })
-        .catch((e) => console.warn('grid recompute failed:', e));
-    }, 150);
+        .catch((e) => {
+          if (gen !== gridGenRef.current) return;        // superseded / cancelled
+          console.warn('grid recompute failed:', e);
+          // Keep the stale grid on screen rather than wedging in 'computing'.
+          setGridStatus('ready');
+          setGridProgress(null);
+        });
+    }, 600);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gridStructuralKey, sourcePosKey]);
