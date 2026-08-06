@@ -344,3 +344,128 @@ export function runBatchedGrid(
   }
   return { cols, rows, bounds, dbA, computedMs: performance.now() - t0 };
 }
+
+// ============== P4: incremental regrid ==============
+//
+// A regrid usually changes only part of the model. Tiles whose effective source
+// list is byte-for-byte what it was last time must produce the same cells, so
+// they can be copied from the previous result instead of re-solved.
+//
+// The whole feature rests on the fingerprint being COMPLETE: a missed input
+// means stale cells, and stale contours look exactly like fresh ones. So the
+// job-level digest covers every field of `GridJob` except `tiles`, and any
+// change to it forces a full regrid; only then are per-tile digests consulted.
+//
+// Exact bit-level mixing of doubles, not rounded strings — a source nudged by a
+// millimetre must register.
+
+const _f64 = new Float64Array(1);
+const _u32 = new Uint32Array(_f64.buffer);
+
+function mixNumber(h: number, v: number): number {
+  _f64[0] = v;
+  let x = h ^ _u32[0];
+  x = Math.imul(x, 16777619);
+  x ^= _u32[1];
+  x = Math.imul(x, 16777619);
+  return x >>> 0;
+}
+
+function mixString(h: number, s: string): number {
+  let x = h;
+  for (let i = 0; i < s.length; i++) {
+    x ^= s.charCodeAt(i);
+    x = Math.imul(x, 16777619);
+  }
+  return x >>> 0;
+}
+
+/// Fold an arbitrary JSON-shaped value into the digest. Object keys are sorted
+/// so property order can never change the result.
+function mixValue(h: number, v: unknown): number {
+  let x = h;
+  if (v === null || v === undefined) return mixString(x, v === null ? '\u0000null' : '\u0000undef');
+  if (typeof v === 'number') return mixNumber(x, v);
+  if (typeof v === 'boolean') return mixNumber(x, v ? 1 : 0);
+  if (typeof v === 'string') return mixString(x, v);
+  if (Array.isArray(v)) {
+    x = mixNumber(x, v.length);
+    for (const el of v) x = mixValue(x, el);
+    return x;
+  }
+  if (ArrayBuffer.isView(v)) {
+    const arr = v as unknown as ArrayLike<number>;
+    x = mixNumber(x, arr.length);
+    for (let i = 0; i < arr.length; i++) x = mixNumber(x, arr[i]);
+    return x;
+  }
+  const obj = v as Record<string, unknown>;
+  for (const k of Object.keys(obj).sort()) {
+    x = mixString(x, k);
+    x = mixValue(x, obj[k]);
+  }
+  return x;
+}
+
+/// Two independently-seeded 32-bit digests, so a collision needs both to
+/// coincide. Returned as a string for easy comparison and logging.
+function digest(v: unknown): string {
+  const a = mixValue(2166136261, v);
+  const b = mixValue(0x9e3779b9, v);
+  return `${a.toString(36)}.${b.toString(36)}`;
+}
+
+/// Digest of everything in a job EXCEPT its tiles. Any change here invalidates
+/// the whole cached grid — geometry, obstacles, terrain, settings and the
+/// output raster's own dimensions all move every cell.
+export function gridJobFingerprint(job: GridJob): string {
+  const { tiles: _tiles, ...rest } = job;
+  return digest(rest);
+}
+
+/// Digest of one tile: its cell block and its fully-resolved source list.
+export function gridTileFingerprint(t: GridTile): string {
+  return digest([t.col0, t.row0, t.cols, t.rows, t.sources]);
+}
+
+export interface GridCacheEntry {
+  jobKey: string;
+  tileKeys: string[];
+  dbA: Float32Array;
+  cols: number;
+  rows: number;
+}
+
+export interface IncrementalPlan {
+  /// Tiles that must actually be solved.
+  dirty: GridTile[];
+  /// Cells to seed the new grid with, or null for a full solve.
+  reuse: { from: Float32Array; tiles: GridTile[] } | null;
+  /// Fingerprints for the entry this run will store.
+  jobKey: string;
+  tileKeys: string[];
+}
+
+/// Decide which tiles a run has to solve, given the previous run's cache.
+///
+/// Conservative by construction: any mismatch in the job digest, the tile
+/// count or the raster dimensions falls back to solving everything.
+export function planIncrementalGrid(job: GridJob, cache: GridCacheEntry | null): IncrementalPlan {
+  const jobKey = gridJobFingerprint(job);
+  const tileKeys = job.tiles.map(gridTileFingerprint);
+  const usable = cache !== null
+    && cache.jobKey === jobKey
+    && cache.cols === job.cols
+    && cache.rows === job.rows
+    && cache.tileKeys.length === tileKeys.length
+    && cache.dbA.length === job.cols * job.rows;
+  if (!usable) return { dirty: job.tiles, reuse: null, jobKey, tileKeys };
+
+  const dirty: GridTile[] = [];
+  const clean: GridTile[] = [];
+  for (let i = 0; i < job.tiles.length; i++) {
+    if (cache!.tileKeys[i] === tileKeys[i]) clean.push(job.tiles[i]);
+    else dirty.push(job.tiles[i]);
+  }
+  return { dirty, reuse: { from: cache!.dbA, tiles: clean }, jobKey, tileKeys };
+}

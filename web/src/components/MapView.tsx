@@ -7,7 +7,7 @@ import { exceedsLimit, limitComparisonFor, type LimitComparison } from '../lib/l
 import type { ReceiverResult, GridResult } from '../lib/solver';
 import { describeBarnesHut } from '../lib/solver';
 import { paletteRgb, paletteCss, type Palette, tForDb, makeBandsForRange } from '../lib/colormap';
-import { buildContourLines } from '../lib/contourLines';
+import { buildContourLinesAsync, type ContourLineSet } from '../lib/contourLines';
 import { footprintFor, lookupEntry, resolveContainer } from '../lib/catalog';
 
 export type ContourMode = 'filled' | 'lines' | 'both';
@@ -2297,11 +2297,13 @@ export function MapView({
   }, [showGridDebug]);
 
   // Render contour overlay (filled raster, iso-lines, or both).
+  const contourGenRef = useRef(0);
   useEffect(() => {
     const map = mapRef.current;
     const group = overlayGroupRef.current;
     if (!map || !group) return;
     group.clearLayers();
+    const gen = ++contourGenRef.current;
     if (!showContours || !grid) return;
 
     if (contourMode === 'filled' || contourMode === 'both') {
@@ -2324,7 +2326,13 @@ export function MapView({
       // pushed contours half-a-cell SW. d3-contour's built-in `.smooth(true)`
       // is sufficient for visual quality on grids of ~5k+ cells (typical),
       // and keeps the contour geometry spatially exact.
-      const sets = buildContourLines(grid, thresholds);
+      //
+      // P3: traced on a worker. On a large raster this is tens of thousands of
+      // vertices, and it ran on the main thread every time a grid finished OR
+      // any display control moved — the hitch felt when a background regrid
+      // completed mid-gesture. `gen` discards a trace whose inputs have already
+      // been superseded, since the group it would draw into has been cleared.
+      const drawSets = (sets: ContourLineSet[], into: L.LayerGroup) => {
       for (const s of sets) {
         const t = Math.max(0, Math.min(1, (s.threshold - dbDomain.min) / (dbDomain.max - dbDomain.min || 1)));
         const colour = paletteCss(palette, t);
@@ -2332,13 +2340,13 @@ export function MapView({
         for (const line of s.lines) {
           L.polyline(line, {
             color: '#ffffff', weight: 4, opacity: 0.6, interactive: false,
-          }).addTo(group);
+          }).addTo(into);
           const main = L.polyline(line, {
             color: colour, weight: 1.5,
             opacity: contourMode === 'lines' ? 1 : 0.95,
             interactive: false,
           });
-          main.addTo(group);
+          main.addTo(into);
           // One label per line, placed at the midpoint and rotated to follow
           // the line's tangent.
           if (line.length >= 4) {
@@ -2355,14 +2363,37 @@ export function MapView({
                 iconAnchor: [11, 6],
               }),
               interactive: false,
-            }).addTo(group);
+            }).addTo(into);
           }
         }
       }
+      };
+
+      void buildContourLinesAsync(grid, thresholds)
+        .then((sets) => {
+          if (gen !== contourGenRef.current) return;      // superseded
+          const g = overlayGroupRef.current;
+          if (!g) return;
+          drawSets(sets, g);
+          // Keep markers above the freshly-added lines.
+          const m = mapRef.current;
+          if (markersGroupRef.current && m) {
+            markersGroupRef.current.remove();
+            markersGroupRef.current.addTo(m);
+          }
+        })
+        .catch((e) => {
+          if (gen !== contourGenRef.current) return;
+          // eslint-disable-next-line no-console
+          console.warn('contour trace failed:', e);
+        });
     }
 
     if (markersGroupRef.current) { markersGroupRef.current.remove(); markersGroupRef.current.addTo(map); }
-  }, [grid, showContours, showGridDebug, contourMode, contourOpacity, palette, dbDomain.min, dbDomain.max]);
+    // `contourStepDb` was missing here: it is read above (via makeBandsForRange)
+    // but changing the dB step did not redraw the lines until some other
+    // dependency happened to change.
+  }, [grid, showContours, showGridDebug, contourMode, contourOpacity, contourStepDb, palette, dbDomain.min, dbDomain.max]);
 
   // Grid-debug cell centres (I13). A dot at every cell centre, for diagnosing
   // alignment between the raster, the contour lines and the markers.

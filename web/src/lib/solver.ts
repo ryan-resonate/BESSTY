@@ -49,8 +49,10 @@ import { approxDistanceM } from './geo';
 import {
   concaveCorrectionMet,
   mergeShard,
+  planIncrementalGrid,
   runBatchedGrid,
   shardTiles,
+  type GridCacheEntry,
   type GridJob,
   type GridTile,
   type GridResult,
@@ -830,8 +832,18 @@ export async function evaluateGridViaWorker(
     // re-run of the same area) reuses the sampled terrain instead of
     // re-sampling ~10⁶ DEM points on the main thread each time.
     const cached = dem ? captureDemRegionCached(dem, sourcePaddedBounds(job)) : null;
-    return await runGridJobOnPool(job, cached, onProgress);
+    return await runGridJobOnPool(job, cached, onProgress, diagnostics);
   }
+}
+
+/// P4 — the previous grid, for incremental regrids. One entry: the useful case
+/// is "the thing I just computed, minus the bit I changed".
+let gridCache: GridCacheEntry | null = null;
+
+/// Drop the incremental-regrid cache. Not needed for correctness — the job
+/// fingerprint covers every input — but useful to force a clean solve.
+export function clearGridCache(): void {
+  gridCache = null;
 }
 
 /// One-entry DEM-region cache. The region is structure-cloned (not transferred)
@@ -893,9 +905,19 @@ function sourcePaddedBounds(job: GridJob): [[number, number], [number, number], 
 /// Leave headroom for the main thread and the point-solve lanes: saturating
 /// every core makes the UI worse, not better, which is the opposite of the
 /// point. Capped at 8 — beyond that, message and merge overhead dominates.
-const GRID_POOL_SIZE = Math.max(
-  1,
-  Math.min(8, (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency ?? 4 : 4) - 2),
+/// Reserve grows with core count (Ryan): 2 cores held back up to 8, 3 up to 16,
+/// 4 beyond. A bigger machine has more going on — the main thread, the two
+/// point-solve lanes, the browser's own compositor — and the marginal tile
+/// worker is worth less than the responsiveness it costs. The result is still
+/// monotonic in core count, so more cores never means fewer workers.
+export function gridPoolSize(cores: number): number {
+  const c = Number.isFinite(cores) && cores > 0 ? Math.floor(cores) : 4;
+  const reserve = c > 16 ? 4 : c > 8 ? 3 : 2;
+  return Math.max(1, c - reserve);
+}
+
+const GRID_POOL_SIZE = gridPoolSize(
+  typeof navigator !== 'undefined' ? navigator.hardwareConcurrency ?? 4 : 4,
 );
 
 interface PoolWorker {
@@ -960,6 +982,7 @@ function runGridJobOnPool(
   job: GridJob,
   cachedRegion: { key: string; region: DemRegion } | null,
   onProgress?: (tilesDone: number, tilesTotal: number) => void,
+  diagnostics?: Diagnostics,
 ): Promise<GridResult> {
   // Newest-wins: every caller that reaches here has already superseded the
   // previous run's generation, so a still-running job's result could only be
@@ -967,16 +990,48 @@ function runGridJobOnPool(
   // runtime.
   if (activeGridRun) cancelGridRun();
 
-  const shards = shardTiles(job.tiles, GRID_POOL_SIZE);
+  // P4: solve only the tiles whose resolved source list actually changed, and
+  // seed the rest from the previous grid. The plan falls back to "everything"
+  // on any job-level change, so a stale cell is not reachable without the
+  // fingerprint itself being incomplete.
+  const plan = planIncrementalGrid(job, gridCache);
+  const reusedTiles = job.tiles.length - plan.dirty.length;
+  if (reusedTiles > 0 && diagnostics) {
+    diagnostics.note(
+      'grid.incremental', 'info',
+      `${reusedTiles} of ${job.tiles.length} grid tiles were unchanged and were reused `
+      + 'from the previous solve rather than recomputed.',
+      reusedTiles,
+    );
+  }
+
+  const shards = shardTiles(plan.dirty, GRID_POOL_SIZE);
   const runId = ++gridWorkerSeq;
   const t0 = performance.now();
 
   return new Promise<GridResult>((resolve, reject) => {
     const dbA = new Float32Array(job.cols * job.rows).fill(-120);
+    // Seed the untouched tiles before any shard lands. Disjoint from every
+    // dirty tile, so nothing can be overwritten in either direction.
+    if (plan.reuse) mergeShard(dbA, plan.reuse.from, plan.reuse.tiles, job.cols, job.rows);
+
     const doneByShard = new Array<number>(shards.length).fill(0);
     let outstanding = shards.length;
     let settled = false;
 
+    const finish = () => {
+      settled = true;
+      gridCache = {
+        jobKey: plan.jobKey, tileKeys: plan.tileKeys, dbA, cols: job.cols, rows: job.rows,
+      };
+      resolve({
+        cols: job.cols, rows: job.rows, bounds: job.bounds, dbA,
+        computedMs: performance.now() - t0,
+      });
+    };
+    // Nothing changed at all — hand back the reconstructed grid without
+    // starting a single worker.
+    if (shards.length === 0) { finish(); return; }
     // The timeout is a DEAD-MAN switch, not a total budget: rearmed by every
     // progress message, so a genuinely long grid that is visibly advancing is
     // never killed, while a wedged pool still fails in 60 s.
@@ -994,6 +1049,8 @@ function runGridJobOnPool(
       if (settled) return;
       settled = true;
       cleanup();
+      // The partially-filled buffer must never become the incremental baseline.
+      gridCache = null;
       // Tear the pool down. The other shards are still grinding through work
       // whose result is now unusable; left alive they burn cores and, worse,
       // the NEXT run finds no active run to supersede and queues its messages
@@ -1021,20 +1078,16 @@ function runGridJobOnPool(
         if (data.progress) {
           arm();
           doneByShard[si] = data.progress.tilesDone;
-          onProgress?.(doneByShard.reduce((a, b) => a + b, 0), job.tiles.length);
+          onProgress?.(doneByShard.reduce((a, b) => a + b, 0), plan.dirty.length);
           return;
         }
         if (!data.ok || !data.result) { fail(new Error(data.error ?? 'grid worker failed')); return; }
         mergeShard(dbA, data.result.dbA, shardTilesList, job.cols, job.rows);
         doneByShard[si] = shardTilesList.length;
-        onProgress?.(doneByShard.reduce((a, b) => a + b, 0), job.tiles.length);
+        onProgress?.(doneByShard.reduce((a, b) => a + b, 0), plan.dirty.length);
         if (--outstanding === 0) {
-          settled = true;
           cleanup();
-          resolve({
-            cols: job.cols, rows: job.rows, bounds: job.bounds, dbA,
-            computedMs: performance.now() - t0,
-          });
+          finish();
         }
       };
       const onError = (e: ErrorEvent) => {

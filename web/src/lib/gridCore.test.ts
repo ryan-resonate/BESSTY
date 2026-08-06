@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs';
 
 import init, { solve_scene } from '../wasm/iso9613_wasm.js';
 import {
-  mergeShard, runBatchedGrid, shardTiles, type GridJob, type GridTile,
+  gridTileFingerprint, mergeShard, planIncrementalGrid, runBatchedGrid, shardTiles,
+  type GridJob, type GridTile,
 } from './gridCore';
 import { buildScene } from './sceneBuilder';
 import { buildTerrainField } from './terrainField';
@@ -382,4 +383,130 @@ test('a tile running past the grid edge is clipped, not wrapped', () => {
   assert.deepEqual(Array.from(into.slice(0, 4)), [-120, -120, -120, -120]);
   assert.equal(into[2 * cols + 2], 7);
   assert.equal(into[3 * cols + 3], 7);
+});
+
+// ============== P4: incremental regrid ==============
+
+const srcAt = (id: string, e: number, n: number): ResolvedSource => {
+  const R = 6371008.8;
+  return {
+    id,
+    latLng: [
+      ORIGIN[0] + (n / R) * (180 / Math.PI),
+      ORIGIN[1] + (e / (R * Math.cos((ORIGIN[0] * Math.PI) / 180))) * (180 / Math.PI),
+    ],
+    heightAglM: 4,
+    lw: lw10(),
+  };
+};
+
+test('an unchanged job reuses every tile', () => {
+  const job = makeJob(48, 32, 1600, [srcAt('s1', 0, 0)]);
+  const first = planIncrementalGrid(job, null);
+  assert.equal(first.dirty.length, job.tiles.length, 'no cache ⇒ solve everything');
+  assert.equal(first.reuse, null);
+
+  const cache = {
+    jobKey: first.jobKey, tileKeys: first.tileKeys,
+    dbA: new Float32Array(job.cols * job.rows), cols: job.cols, rows: job.rows,
+  };
+  const second = planIncrementalGrid(job, cache);
+  assert.equal(second.dirty.length, 0, 'identical job ⇒ nothing to solve');
+  assert.equal(second.reuse?.tiles.length, job.tiles.length);
+});
+
+test('changing one tile marks only that tile dirty', () => {
+  const job = makeJob(48, 32, 1600, [srcAt('s1', 0, 0)]);
+  const base = planIncrementalGrid(job, null);
+  const cache = {
+    jobKey: base.jobKey, tileKeys: base.tileKeys,
+    dbA: new Float32Array(job.cols * job.rows), cols: job.cols, rows: job.rows,
+  };
+  // Nudge one source in ONE tile.
+  const next = {
+    ...job,
+    tiles: job.tiles.map((t, i) => (i === 2 ? { ...t, sources: [srcAt('s1', 1, 0)] } : t)),
+  };
+  const plan = planIncrementalGrid(next, cache);
+  assert.equal(plan.dirty.length, 1);
+  assert.equal(plan.reuse?.tiles.length, job.tiles.length - 1);
+});
+
+test('a job-level change invalidates everything, even with identical tiles', () => {
+  const job = makeJob(48, 32, 1600, [srcAt('s1', 0, 0)]);
+  const base = planIncrementalGrid(job, null);
+  const cache = {
+    jobKey: base.jobKey, tileKeys: base.tileKeys,
+    dbA: new Float32Array(job.cols * job.rows), cols: job.cols, rows: job.rows,
+  };
+  for (const changed of [
+    { ...job, dOmegaDb: 3 },
+    { ...job, rxHeightAboveGround: 4 },
+    { ...job, rotationDeg: 15 },
+    { ...job, settings: { ...job.settings, defaultG: 0.9 } },
+    { ...job, barriers: [{
+      id: 'b', name: 'b', type: 'wall' as const, polylineLatLng: [ORIGIN, [ORIGIN[0] + 0.001, ORIGIN[1]] as [number, number]],
+      topHeightsM: [5, 5], baseFromGroundM: 0, surfaceDensityKgM2: 20, absorptionCoeff: 0.1,
+    }] },
+    { ...job, includeReflections: true },
+  ]) {
+    const plan = planIncrementalGrid(changed, cache);
+    assert.equal(plan.dirty.length, job.tiles.length, 'a job-level change must force a full solve');
+    assert.equal(plan.reuse, null);
+  }
+});
+
+test('the fingerprint notices a source moved by a millimetre', () => {
+  // Rounded keys would miss this, and a missed change means stale cells that
+  // look exactly like fresh ones.
+  const a = gridTileFingerprint({ col0: 0, row0: 0, cols: 16, rows: 16, sources: [srcAt('s', 0, 0)] });
+  const b = gridTileFingerprint({ col0: 0, row0: 0, cols: 16, rows: 16, sources: [srcAt('s', 0.001, 0)] });
+  assert.notEqual(a, b);
+  // …and a changed sound power, and a changed id.
+  const c = srcAt('s', 0, 0);
+  const d = { ...c, lw: c.lw.map((v, i) => (i === 5 ? v + 0.01 : v)) };
+  assert.notEqual(
+    gridTileFingerprint({ col0: 0, row0: 0, cols: 16, rows: 16, sources: [c] }),
+    gridTileFingerprint({ col0: 0, row0: 0, cols: 16, rows: 16, sources: [d] }),
+  );
+  assert.notEqual(
+    gridTileFingerprint({ col0: 0, row0: 0, cols: 16, rows: 16, sources: [c] }),
+    gridTileFingerprint({ col0: 0, row0: 0, cols: 16, rows: 16, sources: [{ ...c, id: 's2' }] }),
+  );
+});
+
+test('an incrementally-solved grid is IDENTICAL to a full re-solve', () => {
+  // The whole justification for P4: reusing cells must not change one of them.
+  const before = makeJob(48, 32, 1600, [srcAt('s1', 100, 60)]);
+  const full0 = runBatchedGrid(before, flatDem);
+  const plan0 = planIncrementalGrid(before, null);
+  let cache = {
+    jobKey: plan0.jobKey, tileKeys: plan0.tileKeys,
+    dbA: full0.dbA, cols: before.cols, rows: before.rows,
+  };
+
+  // Now change the sources of a couple of tiles only, exactly as a localised
+  // edit would.
+  const after: GridJob = {
+    ...before,
+    tiles: before.tiles.map((t, i) => (
+      i % 5 === 0 ? { ...t, sources: [srcAt('s1', 120, 60), srcAt('s2', -80, -40)] } : t
+    )),
+  };
+
+  const plan = planIncrementalGrid(after, cache);
+  assert.ok(plan.dirty.length > 0 && plan.dirty.length < after.tiles.length, 'a partial rebuild');
+
+  const incremental = new Float32Array(after.cols * after.rows).fill(-120);
+  mergeShard(incremental, plan.reuse!.from, plan.reuse!.tiles, after.cols, after.rows);
+  const solved = runBatchedGrid({ ...after, tiles: plan.dirty }, flatDem);
+  mergeShard(incremental, solved.dbA, plan.dirty, after.cols, after.rows);
+
+  const full = runBatchedGrid(after, flatDem);
+  assert.deepEqual(
+    Array.from(incremental), Array.from(full.dbA),
+    'the incremental grid must match a full solve exactly',
+  );
+  cache = { jobKey: plan.jobKey, tileKeys: plan.tileKeys, dbA: incremental, cols: after.cols, rows: after.rows };
+  assert.equal(planIncrementalGrid(after, cache).dirty.length, 0, 'and the new cache is reusable');
 });

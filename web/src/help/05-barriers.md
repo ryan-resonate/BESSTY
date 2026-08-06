@@ -11,14 +11,12 @@ While drawing: **Backspace** removes the last vertex, **Esc** cancels. After pla
 
 ## Closing a wall into a ring
 
-Clicking the first vertex closes a wall into a loop. Be aware of one modelling
-consequence: the solver treats a closed ring as a single continuous screen with
-no free ends, so it models no path around the ends — because there aren't any.
-Drawing the same enclosure as four separate walls instead leaves eight free ends
-that sound can diffract around, and can read several decibels louder at
-receivers off a corner.
+Clicking the first vertex closes a wall into a loop, and that is the right way
+to model a continuous enclosure. The solver then treats it as one unbroken
+screen with no free ends, so there is no path around the ends — because there
+are none. Every edge still screens, including the closing one.
 
-Neither is wrong; they describe different things. A genuinely continuous
-enclosure is the ring. Four walls with gaps at the corners are four walls.
-Choose the one that matches the site, and don't mix the two conventions within a
-project you intend to compare against itself.
+Drawing the same enclosure as four separate walls is a different model: it
+leaves eight free ends for sound to diffract around, and reads several decibels
+louder at receivers off a corner (about 7 dB in a 30 m square test case). Use
+separate walls only when the gaps are real.
