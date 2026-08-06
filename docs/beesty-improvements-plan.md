@@ -837,15 +837,56 @@ not just the engine. Each runs at θ = 0 (no clustering) and default θ.
 
 | # | Item | Size | Status |
 |---|---|---|---|
-| A | Settings gear → side panel top-right; tab removed; verbosity trim | S | next |
-| D | BESS "Reset overrides" button | S | queued |
-| E | BESS wizard Esc layering (segment editor first) | S | queued |
-| F | Wall drawing: right-click finishes; click-near-start closes loop | S–M | queued |
-| B | Factorial study as background FloatingWindow (+ snapshot label) | M | queued |
-| V | V-R1…V-B1 validation cases + reflection review | M | queued |
-| P1 | Point solve to a worker | M | queued |
-| P2 | Grid worker pool | M | queued |
-| I | Barnes-Hut debug layer | M | queued |
+| A | Settings gear → side panel top-right; tab removed; verbosity trim | S | **DONE** `e8b05e3` |
+| D | BESS "Reset overrides" button | S | **DONE** `e8b05e3` |
+| E | BESS wizard Esc layering (segment editor first) | S | **DONE** `e8b05e3` |
+| F | Wall drawing: right-click finishes; click-near-start closes loop | S–M | **DONE** `e8b05e3` |
+| B | Factorial study as background FloatingWindow (+ snapshot label) | M | **DONE** `da76317` |
+| P1 | Point solve to a worker | M | **DONE** `da76317` |
+| P2 | Grid worker pool | M | **DONE** `da76317` |
+| V | V-R1…V-B1 validation cases + reflection review | M | **DONE** `f90f6b6` |
+| I | Barnes-Hut debug layer | M | **DONE** |
+| H | DEM fetch box ignores calc-area rotation (corner under-coverage) | S | **DONE** |
 | P3 | Contour extraction in worker | S | queued |
-| H | DEM fetch box ignores calc-area rotation (corner under-coverage) | S | queued |
 | P4 | Incremental regrid | L | later |
+
+## Findings from the V-item validation (2026-08-06)
+
+The validation suite (`web/src/lib/reflection.wasm.test.ts`, 13 cases) checks
+the app's own wiring — `buildScene` → `solve_scene` — against hand-derivable
+quantities, using three devices: comparing two scenes so Adiv/Aatm/Agr cancel,
+the exact `(1 − α)` reflected-energy identity, and image-source equivalence.
+
+**Confirmed correct.** The direct path is exact: with G = 0 the absolute level
+reproduces `Lw − (20·log10 d + 11) + 3` to within 0.1 dB, the doubling law to
+6.02 dB, and Lw is perfectly linear. **Barrier `Dz` matches an independent
+implementation of §7.4 for BOTH editions** (1996 `3 + X`, 2024 `1 + (2 + X)`,
+each with its own `Kmet`) — so barrier attenuation is right, and a barrier that
+looks weak is either the Dz cap setting or the geometry. Absorption is exact:
+reflected energy scales as `(1 − α)` to better than 1%, and α = 1 is
+bit-identical to reflections off.
+
+**Defect found and FIXED — reflector facades inherited the screening
+densification.** Barrier polylines are densified to ≤ 10 m so each vertex
+samples its own DEM elevation, which screening needs. Reflection was reusing
+that polyline, so a 320 m wall became 32 facades. Two consequences, both
+silent: the ISO Eq 26/27 size gate judged 10 m surfaces and rejected the
+reflection in every band but the highest, and one wall consumed 32 of the
+46-surface order-3 budget. Facades now come from the drawn edges
+(`facadesFromBarrier`), ground still sampled at the screening pitch.
+
+**Defect found, NOT fixed — a reflected path is screened by the wall it
+reflects off.** BESSTY lists a barrier in both `obstacles` and `reflectors`,
+which the engine is documented as keeping apart so a reflected ray is not
+re-diffracted by its own surface. Measurement says otherwise: the image-source
+path crosses the facade at exactly the reflection point and is screened there.
+The loss grows with wall height, saturates at exactly the 20 dB single-edge cap,
+and is nearly independent of the wall's offset — the signature of screening, not
+of a longer path. **Reflected contributions off barriers are therefore a lower
+bound, under-estimated by up to 20 dB for a tall wall.** Reflections are off by
+default and documented provisional, so no default result is affected. The fix
+belongs in the engine (exclude a reflector's own surface from the screening test
+for the path that reflected off it) and is outside this plan's scope — it needs
+Ryan's go-ahead to touch the Rust crate. Pinned by a test that asserts the
+defect so it cannot regress silently, and documented in Help → Barrier
+absorption.

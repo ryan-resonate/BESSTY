@@ -134,6 +134,10 @@ interface Props {
   showReceiverLimits?: boolean;
   setShowReceiverLimits?(v: boolean): void;
   setShowGridDebug?(v: boolean): void;
+  /// I: Barnes-Hut clustering overlay — tile boundaries labelled with the
+  /// effective source count the solver actually used for each.
+  showBhDebug?: boolean;
+  setShowBhDebug?(v: boolean): void;
   contourMode: ContourMode;
   setContourMode(m: ContourMode): void;
   contourOpacity: number;
@@ -1433,6 +1437,25 @@ function LayersTab(props: Props) {
               />
               <span>Debug: show grid cell centres</span>
             </label>
+          </Field>
+        )}
+        {props.setShowBhDebug && (
+          <Field label="">
+            <label className="row-checkbox">
+              <input
+                type="checkbox"
+                checked={!!props.showBhDebug}
+                onChange={(e) => props.setShowBhDebug?.(e.target.checked)}
+              />
+              <span>Debug: Barnes-Hut clustering</span>
+            </label>
+            <div className="hint" style={{ marginTop: 4 }}>
+              One box per grid tile, labelled with the number of sources the
+              solver used for it: <b>n</b> where every source is kept, or
+              <b> n (c)</b> where c of them are cluster stand-ins. Tiles over
+              the array should show nearly every source; distant tiles should
+              collapse. Click a tile to outline the clusters it used.
+            </div>
           </Field>
         )}
         <Field label="Style">

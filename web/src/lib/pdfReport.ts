@@ -6,6 +6,7 @@
 import type { jsPDF } from 'jspdf';
 import type { Project } from './types';
 import { limitForPeriod } from './types';
+import { calcAreaCorners } from './geo';
 import { exceedsLimit, limitComparisonFor } from './limits';
 import type { GridResult, ReceiverResult } from './solver';
 import { buildContourLines } from './contourLines';
@@ -159,26 +160,6 @@ function drawCalcArea(doc: jsPDF, project: Project, frame: MapFrame) {
     doc.line(a[0], a[1], b[0], b[1]);
   }
   doc.setLineDashPattern([], 0);
-}
-
-/// Corners of the (possibly rotated) calc-area rectangle, in lat/lng.
-export function calcAreaCorners(ca: NonNullable<Project['calculationArea']>): Array<[number, number]> {
-  const R = 6371008.8;
-  const [lat0, lng0] = ca.centerLatLng;
-  const cosLat = Math.cos((lat0 * Math.PI) / 180);
-  const th = ((ca.rotationDeg ?? 0) * Math.PI) / 180;
-  const hw = ca.widthM / 2;
-  const hh = ca.heightM / 2;
-  return ([[-1, -1], [1, -1], [1, 1], [-1, 1]] as Array<[number, number]>).map(([sx, sy]) => {
-    const x = sx * hw;
-    const y = sy * hh;
-    const wx = x * Math.cos(th) - y * Math.sin(th);
-    const wy = x * Math.sin(th) + y * Math.cos(th);
-    return [
-      lat0 + (-wy / R) * (180 / Math.PI),
-      lng0 + (wx / (R * cosLat)) * (180 / Math.PI),
-    ] as [number, number];
-  });
 }
 
 function drawBarriers(doc: jsPDF, project: Project, frame: MapFrame) {

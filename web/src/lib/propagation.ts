@@ -58,6 +58,10 @@ export interface EffectiveSource {
   /// Number of underlying real sources folded into this entry. Used for
   /// reporting / debugging. Always 1 for real, ≥1 for clusters.
   memberCount: number;
+  /// Cluster only: the accepted tree node's lat/lng extent. Carried purely so
+  /// the debug layer can draw the region a cluster actually stands for — a
+  /// centroid dot alone can't show whether the collapse was reasonable.
+  bbox?: { minLat: number; maxLat: number; minLng: number; maxLng: number };
 }
 
 export interface PropagationSettings {

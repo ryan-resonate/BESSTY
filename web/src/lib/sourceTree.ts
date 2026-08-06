@@ -263,6 +263,10 @@ export function walkSourceTree(
           lwOverride: node.combinedLw,
           zAboveGround: node.zAboveGround,
           memberCount: node.memberCount,
+          bbox: {
+            minLat: node.bounds.minLat, maxLat: node.bounds.maxLat,
+            minLng: node.bounds.minLng, maxLng: node.bounds.maxLng,
+          },
         });
       }
       return;
@@ -329,6 +333,10 @@ export function walkSourceTreeForRegion(
           lwOverride: node.combinedLw,
           zAboveGround: node.zAboveGround,
           memberCount: node.memberCount,
+          bbox: {
+            minLat: node.bounds.minLat, maxLat: node.bounds.maxLat,
+            minLng: node.bounds.minLng, maxLng: node.bounds.maxLng,
+          },
         });
       }
       return;

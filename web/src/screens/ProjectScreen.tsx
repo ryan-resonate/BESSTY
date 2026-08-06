@@ -36,6 +36,7 @@ import {
 import type { BessGroup } from '../lib/types';
 import type { Barrier, Project, Receiver, Source, SourceKind } from '../lib/types';
 import { settingsOf } from '../lib/types';
+import { calcAreaCorners } from '../lib/geo';
 import { Diagnostics, type Diagnostic } from '../lib/diagnostics';
 import {
   buildEnvelope, describePaste as describeObjectPaste, materialisePaste, parseEnvelope,
@@ -478,6 +479,9 @@ export function ProjectScreen() {
   // Diagnostic only — never persisted (a project reopening covered in pink
   // dots looks broken).
   const [showGridDebug, setShowGridDebug] = useState(false);
+  /// Item I — Barnes-Hut clustering overlay. Session-only, like the grid-cell
+  /// debug layer: a diagnostic, not a view preference worth persisting.
+  const [showBhDebug, setShowBhDebug] = useState(false);
 
   // Grid spacing — auto-picked from the calc area on first appearance,
   // then frozen against the user's choice once they touch the picker.
@@ -905,12 +909,17 @@ export function ProjectScreen() {
     const ca = project.calculationArea;
     if (!ca) return;
     setDemStatus('loading');
-    const R = 6371008.8;
-    const lat0 = (ca.centerLatLng[0] * Math.PI) / 180;
-    const dLat = (ca.heightM / 2 / R) * (180 / Math.PI);
-    const dLng = (ca.widthM / 2 / (R * Math.cos(lat0))) * (180 / Math.PI);
-    const sw: [number, number] = [ca.centerLatLng[0] - dLat, ca.centerLatLng[1] - dLng];
-    const ne: [number, number] = [ca.centerLatLng[0] + dLat, ca.centerLatLng[1] + dLng];
+    // The fetch box has to be the AXIS-ALIGNED bounds of the (possibly rotated)
+    // rectangle. Deriving it from width/height alone described the unrotated
+    // box, so a rotated calculation area had corners outside the downloaded
+    // tiles — and a DEM miss returns 0 m rather than erroring, so those corners
+    // silently solved against sea level. `calcAreaCorners` already computes the
+    // rotated corners for the PDF; reuse it rather than repeat the maths.
+    const corners = calcAreaCorners(ca);
+    const lats = corners.map((c) => c[0]);
+    const lngs = corners.map((c) => c[1]);
+    const sw: [number, number] = [Math.min(...lats), Math.min(...lngs)];
+    const ne: [number, number] = [Math.max(...lats), Math.max(...lngs)];
     loadDemForBounds(sw, ne)
       .then((r) => { setDem(r); setDemStatus('ready'); })
       .catch((e) => { console.warn('DEM load failed (continuing flat-ground):', e); setDemStatus('error'); });
@@ -1530,6 +1539,7 @@ export function ProjectScreen() {
         baseMap={baseMap} setBaseMap={setBaseMap}
         showContours={showContours} setShowContours={setShowContours}
         showGridDebug={showGridDebug} setShowGridDebug={setShowGridDebug}
+        showBhDebug={showBhDebug} setShowBhDebug={setShowBhDebug}
         onOpenPdfExport={openPdfExport}
         onOpenStudy={() => setShowStudy(true)}
         showReceiverLimits={showReceiverLimits} setShowReceiverLimits={setShowReceiverLimits}
@@ -1591,6 +1601,8 @@ export function ProjectScreen() {
           baseMap={baseMap}
           showContours={showContours}
           showGridDebug={showGridDebug}
+          showBhDebug={showBhDebug}
+          gridSpacingM={gridSpacingM}
           showReceiverLimits={showReceiverLimits}
           contourMode={contourMode}
           contourOpacity={contourOpacity}

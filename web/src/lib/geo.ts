@@ -36,3 +36,31 @@ export function approxDistanceM(a: [number, number], b: [number, number]): numbe
   const [e, n] = latLngToLocalMetres(b, a);
   return Math.hypot(e, n);
 }
+
+/// Corners of a (possibly rotated) calculation-area rectangle, in lat/lng,
+/// ordered anticlockwise from the south-west of the UNROTATED box.
+///
+/// Lives here rather than beside its first caller because three unrelated
+/// places need it — the PDF figure, the grid's cell generation, and the DEM
+/// fetch bounds — and the third of those was quietly using width/height alone.
+/// That describes the unrotated box, so a rotated area had corners outside the
+/// downloaded tiles, where a DEM miss returns 0 m instead of erroring.
+export function calcAreaCorners(
+  ca: { centerLatLng: [number, number]; widthM: number; heightM: number; rotationDeg?: number },
+): Array<[number, number]> {
+  const [lat0, lng0] = ca.centerLatLng;
+  const cosLat = Math.cos((lat0 * Math.PI) / 180);
+  const th = ((ca.rotationDeg ?? 0) * Math.PI) / 180;
+  const hw = ca.widthM / 2;
+  const hh = ca.heightM / 2;
+  return ([[-1, -1], [1, -1], [1, 1], [-1, 1]] as Array<[number, number]>).map(([sx, sy]) => {
+    const x = sx * hw;
+    const y = sy * hh;
+    const wx = x * Math.cos(th) - y * Math.sin(th);
+    const wy = x * Math.sin(th) + y * Math.cos(th);
+    return [
+      lat0 + (-wy / EARTH_R_M) * (180 / Math.PI),
+      lng0 + (wx / (EARTH_R_M * cosLat)) * (180 / Math.PI),
+    ] as [number, number];
+  });
+}

@@ -417,7 +417,97 @@ solve, not three. Confirm a plain "Run grid" still works, that ✕ still
 cancels (both manual and background runs), and that the point-receiver
 labels still update after every drag.
 
-Known remaining solve-pipeline work (planned, not in this commit): the
-point-receiver solve still runs on the MAIN thread — with hundreds of
-sources it blocks input for the whole solve right after each edit. That
-worker move is P1 in the plan addendum.
+---
+
+# Addendum (2026-08-06) — the rest of the queue
+
+## Settings gear, and less text (A)
+
+- The ⚙ is now in the **top-right of the side panel's tab row**; the Settings
+  tab is gone. Confirm the map's zoom/pan cluster no longer has a gear.
+- Settings hints are much shorter. The detail moved to Help → Settings,
+  Methodology and Barrier absorption — spot-check that nothing you relied on
+  reading at the control has vanished entirely rather than moved.
+
+## BESS groups (D, E)
+
+- Drag one unit out of a group, change one unit's mode, then reopen the group:
+  a bar appears reading "**n** units have manual edits" with a **Reset
+  overrides** button. It asks first, and takes effect on save.
+- The bar must NOT appear for a group with no per-unit edits.
+- **Esc** in the group window: with a segment editor open, the first press
+  closes just the editor and the second closes the window. Esc while typing in
+  a number field reverts that field only and closes nothing.
+
+## Wall drawing (F)
+
+- **Right-click** finishes a wall (no stray vertex, no browser menu). Right-
+  click when NOT drawing should behave normally.
+- Draw three or more vertices, then hover the first: it turns **green** and the
+  rubber-band snaps to it. Click to close the ring.
+- Double-click and Enter still finish; Backspace still removes a vertex.
+
+## Compare configurations in the background (B)
+
+- The window is now draggable and non-modal — **the map stays live while it
+  runs**. Move a source mid-sweep and confirm the sweep continues.
+- Results are labelled "Solved against the project at HH:MM:SS". After editing
+  the project the label turns red and warns the numbers describe the earlier
+  model.
+- Change a receiver checkbox or an axis selection AFTER a run: the table must
+  not change — it belongs to the run, not to the current selections.
+- Closing the window mid-run cancels it.
+
+## Speed (P1, P2)
+
+- **P1** moved the point solve to a worker, so editing no longer blocks on it.
+  Drag a source repeatedly on a large project: the interface should stay
+  responsive throughout, with receiver labels catching up after each settle.
+- **P2** runs grid tiles across several workers. A grid that took 5–8 s should
+  now take roughly a third to an eighth of that, depending on the machine.
+  **The numbers must not change** — that is pinned by a test asserting a
+  sharded grid is identical to a single-pass one, but a real-project
+  before/after on one receiver is worth one check.
+- Cancel (✕) must still stop a run promptly.
+
+## Barnes-Hut debug layer (I)
+
+Layers → **Debug: Barnes-Hut clustering**.
+
+- Each box is one grid tile, labelled with the effective source count the
+  solver used: `n` where every source is kept, `n (Nc)` where N of them are
+  cluster stand-ins. Green = heavily clustered, red = barely.
+- **Expected on an 800-source site:** tiles over the array read close to 800
+  (correct — their nearest sources dominate and must not be smeared), and the
+  outer ring collapses to dozens. A far tile still reading ~800 is the bug this
+  view exists to reveal.
+- **Click a tile** to outline the cluster nodes it accepted: a dashed purple
+  box over the region each cluster stands for, its centroid, member count and
+  combined dB(A).
+- Raise θ in Settings → Performance and confirm more tiles turn green; set
+  θ = 0.1 and confirm almost none do.
+
+## Validation cases (V)
+
+Automated (`npm test`), so nothing to do by hand — but the findings matter:
+
+- **Barrier attenuation is correct.** `Dz` matches an independent
+  implementation of §7.4 for both the 1996 and 2024 editions. If a barrier
+  looks weak, check **Settings → Calculation → Barrier diffraction** for a
+  `Dz` cap first.
+- **A wall must be big enough to reflect at all** (ISO Eq 26/27). An 8 m wall
+  beside a 200 m path reflects nothing below ~550 Hz; a 20 m wall reflects from
+  ~125 Hz. And the size that counts is each straight run **as drawn** — so
+  drawing one long wall as many short segments weakens its reflection.
+- **Reflected levels are currently under-estimated** (up to 20 dB for a tall
+  wall) because a reflected path is screened by the wall it bounces off. Off by
+  default, flagged provisional; treat reflection magnitudes as a lower bound
+  until the engine fix lands.
+
+## Rotated calculation areas (H)
+
+- Rotate the calculation area 45°, then run a grid over hilly ground. The DEM
+  now covers the rotated corners; before, those corners silently solved against
+  0 m (sea level) because a DEM miss reads as zero rather than an error.
+- Worth one check on a sloping site: rotate, regrid, and confirm the contours
+  near the corners look like the terrain rather than flat.

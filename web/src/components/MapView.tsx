@@ -5,6 +5,7 @@ import type { Project, Receiver, Source, ReferenceLayerStyle } from '../lib/type
 import { limitForPeriod } from '../lib/types';
 import { exceedsLimit, limitComparisonFor, type LimitComparison } from '../lib/limits';
 import type { ReceiverResult, GridResult } from '../lib/solver';
+import { describeBarnesHut } from '../lib/solver';
 import { paletteRgb, paletteCss, type Palette, tForDb, makeBandsForRange } from '../lib/colormap';
 import { buildContourLines } from '../lib/contourLines';
 import { footprintFor, lookupEntry, resolveContainer } from '../lib/catalog';
@@ -75,6 +76,13 @@ interface Props {
   /// user can eyeball alignment between the raster, contour lines, and
   /// the actual sampled cells. Off by default.
   showGridDebug?: boolean;
+  /// I: Barnes-Hut clustering overlay. Draws the grid TILES (the unit of
+  /// adaptive clustering) with the effective source count the solver used for
+  /// each, so over-clustering is visible rather than inferred.
+  showBhDebug?: boolean;
+  /// Grid spacing the tiles are derived from — the clustering partition
+  /// depends on it, so the overlay must use the same value the solve will.
+  gridSpacingM?: number;
   /// I1: draw the active period's limit as a second line on receiver markers.
   showReceiverLimits?: boolean;
   contourMode: ContourMode;
@@ -509,7 +517,7 @@ export function MapView({
   onEditCalcArea,
   onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
   selectedGroupId, onTranslateGroup, onRotateGroup,
-  addMode, baseMap, showContours, showGridDebug, showReceiverLimits, contourMode, contourOpacity, contourStepDb,
+  addMode, baseMap, showContours, showGridDebug, showBhDebug, gridSpacingM, showReceiverLimits, contourMode, contourOpacity, contourStepDb,
   palette, dbDomain, onCursorMove, onReady,
 }: Props) {
   // Map: object id → group color (for the small ring around the marker).
@@ -541,6 +549,9 @@ export function MapView({
   /// it redraws on every pan — see I13 — and rebuilding the filled raster or
   /// the contour labels that often would be needlessly slow.
   const gridDebugGroupRef = useRef<L.LayerGroup | null>(null);
+  /// Barnes-Hut clustering overlay (item I) — its own group so toggling it
+  /// never disturbs the contour or grid-debug layers.
+  const bhDebugGroupRef = useRef<L.LayerGroup | null>(null);
   /// Reference / annotation geometry (property boundaries etc.) — purely
   /// visual, drawn at the bottom z-order (just above the base tiles), never
   /// interactive so it can't intercept selection / drawing.
@@ -635,6 +646,7 @@ export function MapView({
     referenceGroupRef.current = L.layerGroup().addTo(map);
     overlayGroupRef.current = L.layerGroup().addTo(map);
     gridDebugGroupRef.current = L.layerGroup().addTo(map);
+    bhDebugGroupRef.current = L.layerGroup().addTo(map);
     barriersGroupRef.current = L.layerGroup().addTo(map);
     measureGroupRef.current = L.layerGroup().addTo(map);
     // BESS-group overlays render UNDER the source markers (so the
@@ -972,6 +984,7 @@ export function MapView({
       footprintsGroupRef.current = null;
       overlayGroupRef.current = null;
       gridDebugGroupRef.current = null;
+      bhDebugGroupRef.current = null;
       referenceGroupRef.current = null;
       measureGroupRef.current = null;
       barriersGroupRef.current = null;
@@ -2405,6 +2418,85 @@ export function MapView({
       );
     }
   }, [grid, showGridDebug, viewTick]);
+
+  // Barnes-Hut clustering overlay (item I).
+  //
+  // Answers "is the treecode actually clustering, and where?" — a question that
+  // was previously only answerable by reading the code. Each grid TILE is the
+  // unit of adaptive clustering, so the overlay draws tiles, labelled with the
+  // effective source count the solver used. Expect tiles over the array to show
+  // nearly the full source count (correct: their nearest sources dominate and
+  // must not be smeared) and distant tiles to collapse to a handful. A far tile
+  // still showing every source would be the bug this exists to reveal.
+  //
+  // Clicking a tile outlines the cluster nodes it accepted, so the collapse can
+  // be judged rather than trusted.
+  const [bhSelectedTile, setBhSelectedTile] = useState<number | null>(null);
+  useEffect(() => { if (!showBhDebug) setBhSelectedTile(null); }, [showBhDebug]);
+  useEffect(() => {
+    const map = mapRef.current;
+    const group = bhDebugGroupRef.current;
+    if (!map || !group) return;
+    group.clearLayers();
+    if (!showBhDebug) return;
+
+    const info = describeBarnesHut(project, gridSpacingM ?? 100);
+    if (!info) return;
+
+    info.tiles.forEach((t, idx) => {
+      const total = t.real + t.clustered;
+      // Colour by how much of the tile's work the tree removed.
+      const saved = total > 0 ? 1 - (t.real + t.clusters) / total : 0;
+      const colour = saved > 0.66 ? '#16a34a' : saved > 0.25 ? '#f59e0b' : '#ef4444';
+      const selected = bhSelectedTile === idx;
+      const rect = L.rectangle(
+        [[t.region.minLat, t.region.minLng], [t.region.maxLat, t.region.maxLng]],
+        {
+          color: colour, weight: selected ? 2.5 : 1, fillOpacity: selected ? 0.12 : 0.04,
+          fillColor: colour, interactive: true,
+        },
+      ).addTo(group);
+      rect.on('click', (ev: L.LeafletMouseEvent) => {
+        L.DomEvent.stopPropagation(ev);
+        setBhSelectedTile((cur) => (cur === idx ? null : idx));
+      });
+      const label = t.clusters > 0 ? `${t.real + t.clusters} (${t.clusters}c)` : `${t.real}`;
+      L.marker([(t.region.minLat + t.region.maxLat) / 2, (t.region.minLng + t.region.maxLng) / 2], {
+        interactive: false,
+        icon: L.divIcon({
+          className: 'bh-tile-label',
+          html: `<div style="background:rgba(255,255,255,.85);border:1px solid ${colour};`
+            + 'border-radius:3px;padding:0 3px;font-family:\'JetBrains Mono\',monospace;'
+            + `font-size:9px;font-weight:600;color:#1f2937;white-space:nowrap">${label}</div>`,
+          iconSize: [46, 14],
+          iconAnchor: [23, 7],
+        }),
+      }).addTo(group);
+
+      // Selected tile: show what each accepted cluster actually stood for.
+      if (!selected) return;
+      for (const cb of t.clusterBoxes) {
+        L.rectangle(
+          [[cb.bbox.minLat, cb.bbox.minLng], [cb.bbox.maxLat, cb.bbox.maxLng]],
+          { color: '#7c3aed', weight: 1.5, dashArray: '4 3', fillOpacity: 0.1, fillColor: '#7c3aed', interactive: false },
+        ).addTo(group);
+        L.circleMarker(cb.centre, {
+          radius: 4, color: '#7c3aed', fillColor: '#7c3aed', fillOpacity: 1, weight: 1, interactive: false,
+        }).addTo(group);
+        L.marker(cb.centre, {
+          interactive: false,
+          icon: L.divIcon({
+            className: 'bh-cluster-label',
+            html: `<div style="background:#7c3aed;color:#fff;border-radius:3px;padding:0 4px;`
+              + 'font-family:\'JetBrains Mono\',monospace;font-size:9px;font-weight:600;'
+              + `white-space:nowrap">${cb.members}× · ${Number.isFinite(cb.dbA) ? cb.dbA.toFixed(0) : '—'} dB(A)</div>`,
+            iconSize: [90, 14],
+            iconAnchor: [-6, 7],
+          }),
+        }).addTo(group);
+      }
+    });
+  }, [project, showBhDebug, gridSpacingM, bhSelectedTile]);
 
   useEffect(() => {
     if (!containerRef.current) return;

@@ -33,7 +33,7 @@ import {
   propagationSettings,
   type EffectiveSource,
 } from './propagation';
-import { buildSourceTree, walkSourceTreeForRegion } from './sourceTree';
+import { buildSourceTree, walkSourceTreeForRegion, type LatLngBbox } from './sourceTree';
 import {
   buildScene,
   groupReceiversByConcave,
@@ -547,6 +547,133 @@ function resolveTileSources(
   return out;
 }
 
+/// Cells per tile edge. A tile is the unit of adaptive clustering: every cell
+/// in it shares one effective-source list.
+const TILE_CELLS = 16;
+
+/// A grid tile's cell block and the lat/lng footprint the Barnes-Hut walk uses
+/// for it.
+export interface GridTileRegion {
+  col0: number; row0: number; cols: number; rows: number;
+  region: LatLngBbox;
+}
+
+/// Partition a calculation area into tiles, with each tile's lat/lng footprint.
+///
+/// Shared by the grid builder and the Barnes-Hut debug layer, so what the
+/// debug view draws is by construction the same partition the solver clusters
+/// against — a debug view derived independently would eventually drift and then
+/// lie, which is worse than having none.
+///
+/// Note the footprints are AXIS-ALIGNED and ignore `rotationDeg`: the clustering
+/// walk itself works in that frame (rotation is applied later, per cell, inside
+/// `runBatchedGrid`), so these are the true regions used.
+export function gridTileLayout(
+  ca: NonNullable<Project['calculationArea']>,
+  spacingM: number,
+): GridTileRegion[] {
+  const origin = ca.centerLatLng;
+  const cols = Math.max(2, Math.round(ca.widthM / spacingM));
+  const rows = Math.max(2, Math.round(ca.heightM / spacingM));
+  const dxM = ca.widthM / cols;
+  const dyM = ca.heightM / rows;
+  const R = 6371008.8;
+  const lat0 = (origin[0] * Math.PI) / 180;
+  const cellLat = (row: number) =>
+    origin[0] + (((row - (rows - 1) / 2) * dyM) / R) * (180 / Math.PI);
+  const cellLng = (col: number) =>
+    origin[1] + (((col - (cols - 1) / 2) * dxM) / (R * Math.cos(lat0))) * (180 / Math.PI);
+  const marginLat = ((dyM / 2) / R) * (180 / Math.PI);
+  const marginLng = ((dxM / 2) / (R * Math.cos(lat0))) * (180 / Math.PI);
+
+  const out: GridTileRegion[] = [];
+  for (let row0 = 0; row0 < rows; row0 += TILE_CELLS) {
+    const trows = Math.min(TILE_CELLS, rows - row0);
+    const latLo = cellLat(row0);
+    const latHi = cellLat(row0 + trows - 1);
+    for (let col0 = 0; col0 < cols; col0 += TILE_CELLS) {
+      const tcols = Math.min(TILE_CELLS, cols - col0);
+      const lngLo = cellLng(col0);
+      const lngHi = cellLng(col0 + tcols - 1);
+      out.push({
+        col0, row0, cols: tcols, rows: trows,
+        region: {
+          minLat: Math.min(latLo, latHi) - marginLat,
+          maxLat: Math.max(latLo, latHi) + marginLat,
+          minLng: Math.min(lngLo, lngHi) - marginLng,
+          maxLng: Math.max(lngLo, lngHi) + marginLng,
+        },
+      });
+    }
+  }
+  return out;
+}
+
+/// What the Barnes-Hut walk did for one tile.
+export interface BhTileDebug extends GridTileRegion {
+  /// Real sources passed through individually.
+  real: number;
+  /// Cluster stand-ins, each replacing `memberCount` real sources.
+  clusters: number;
+  /// Real sources represented by those clusters.
+  clustered: number;
+  /// Plan-view rectangles of the accepted cluster nodes, for drawing.
+  clusterBoxes: Array<{
+    bbox: LatLngBbox; centre: [number, number]; members: number; dbA: number;
+  }>;
+}
+
+export interface BhDebug {
+  tiles: BhTileDebug[];
+  /// Total real sources with usable positions.
+  totalSources: number;
+  theta: number;
+  cutoffM: number;
+}
+
+/// I — describe what the Barnes-Hut clustering is doing, for the debug layer.
+///
+/// Runs the SAME tree and the SAME per-tile walk the grid uses, so the numbers
+/// drawn on the map are the ones the solver acted on. Returns null when there
+/// is no calculation area or no usable source.
+export function describeBarnesHut(project: Project, spacingM: number): BhDebug | null {
+  const ca = project.calculationArea;
+  if (!ca) return null;
+  const cfg = propagationSettings(project);
+  const tree = buildSourceTree(project, project.scenario.bandSystem, project.scenario.windSpeed);
+  if (!tree) return null;
+
+  const aw = aWeights(project.scenario.bandSystem);
+  const tiles: BhTileDebug[] = [];
+  for (const t of gridTileLayout(ca, spacingM)) {
+    const eff = walkSourceTreeForRegion(tree, t.region, cfg.treeAcceptanceTheta, cfg.maxContributionDistanceM);
+    let real = 0; let clusters = 0; let clustered = 0;
+    const clusterBoxes: BhTileDebug['clusterBoxes'] = [];
+    for (const es of eff) {
+      if (es.kind === 'real') { real++; continue; }
+      clusters++;
+      clustered += es.memberCount;
+      clusterBoxes.push({
+        // The walk returns the centroid; the node's own extent is recovered
+        // from the member spread it stands for, which is what makes the drawn
+        // rectangle meaningful rather than a dot.
+        bbox: es.bbox ?? {
+          minLat: es.latLng[0], maxLat: es.latLng[0],
+          minLng: es.latLng[1], maxLng: es.latLng[1],
+        },
+        centre: es.latLng,
+        members: es.memberCount,
+        dbA: es.lwOverride ? aWeightedTotal(es.lwOverride, aw, 0) : NaN,
+      });
+    }
+    tiles.push({ ...t, real, clusters, clustered, clusterBoxes });
+  }
+  const totalSources = project.sources.filter(
+    (s) => Number.isFinite(s.latLng[0]) && Number.isFinite(s.latLng[1]),
+  ).length;
+  return { tiles, totalSources, theta: cfg.treeAcceptanceTheta, cutoffM: cfg.maxContributionDistanceM };
+}
+
 /// Resolve a project into a serializable `GridJob` (catalog + per-source
 /// geometry done here, on the main thread). The DEM is consumed for source
 /// absolute-z only; cell-by-cell terrain is sampled later in `runBatchedGrid`.
@@ -584,30 +711,11 @@ function buildGridJob(
   // cell, so far cells never got to cluster — `θ` had no effect when the grid
   // sat on top of the sources.)
   const tree = buildSourceTree(project, project.scenario.bandSystem, project.scenario.windSpeed);
-  const TILE = 16; // cells per tile edge
-  const cellLat = (row: number) =>
-    origin[0] + (((row - (rows - 1) / 2) * dyM) / R) * (180 / Math.PI);
-  const cellLng = (col: number) =>
-    origin[1] + (((col - (cols - 1) / 2) * dxM) / (R * Math.cos(lat0))) * (180 / Math.PI);
-  const marginLat = ((dyM / 2) / R) * (180 / Math.PI);
-  const marginLng = ((dxM / 2) / (R * Math.cos(lat0))) * (180 / Math.PI);
 
   const tiles: GridTile[] = [];
-  for (let row0 = 0; row0 < rows; row0 += TILE) {
-    const trows = Math.min(TILE, rows - row0);
-    const latLo = cellLat(row0);
-    const latHi = cellLat(row0 + trows - 1);
-    for (let col0 = 0; col0 < cols; col0 += TILE) {
-      const tcols = Math.min(TILE, cols - col0);
-      const lngLo = cellLng(col0);
-      const lngHi = cellLng(col0 + tcols - 1);
-      const region = {
-        minLat: Math.min(latLo, latHi) - marginLat,
-        maxLat: Math.max(latLo, latHi) + marginLat,
-        minLng: Math.min(lngLo, lngHi) - marginLng,
-        maxLng: Math.max(lngLo, lngHi) + marginLng,
-      };
-      const tileEff = tree ? walkSourceTreeForRegion(tree, region, theta, cutoffM) : [];
+  for (const t of gridTileLayout(ca, spacingM)) {
+    const { col0, row0, cols: tcols, rows: trows, region } = t;
+    const tileEff = tree ? walkSourceTreeForRegion(tree, region, theta, cutoffM) : [];
       // I20: a cluster stands in for several real sources. Cheap and usually
       // harmless, but it IS an approximation and it was invisible.
       if (diagnostics) {
@@ -622,11 +730,10 @@ function buildGridJob(
           );
         }
       }
-      tiles.push({
-        col0, row0, cols: tcols, rows: trows,
-        sources: resolveTileSources(project, tileEff),
-      });
-    }
+    tiles.push({
+      col0, row0, cols: tcols, rows: trows,
+      sources: resolveTileSources(project, tileEff),
+    });
   }
 
   // One elevation raster for the whole job: it must cover every cell AND every
