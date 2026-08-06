@@ -843,48 +843,96 @@ impl Scene {
     }
 }
 
-/// All ordered reflector sequences of length 2..=`max_order` from `m` reflectors,
-/// with no immediate repeat (a ray can't bounce off the same facade twice in a
-/// row). Drives the higher-order reflection search (§7.5.3).
-/// The obstacle set for scoring a REFLECTED ray: every wall segment except
-/// those containing a bounce point.
+/// The obstacle set for scoring a REFLECTED ray: only the wall segments that
+/// cross the image→receiver line **strictly after the last bounce**, and not
+/// at a bounce point.
 ///
 /// §7.5.2 prescribes the attenuation of reflected sound "according to the
 /// propagation path of the reflected sound" — the bent ray S→P→R, which
 /// touches each reflecting surface at its bounce point and never crosses it.
-/// The evaluator scores the straight image→receiver segment instead, and that
-/// segment pierces the reflecting surface at P by construction. A surface
-/// listed both as an obstacle and as a reflector (the normal case: a noise
-/// wall screens some paths and reflects others) therefore had its own
-/// reflection diffracted over itself — up to the full 20 dB single-edge cap of
-/// spurious Abar, growing with wall height and independent of offset. ISO/TR
-/// 17534-3 T19's reflected-ray tables (66–67) carry no Abar at all: the
-/// reflector contributes its `10·lg(1−α)` loss and nothing else to its own ray.
+/// The evaluator scores the straight image→receiver segment instead. Two
+/// classes of crossing on that segment are fictions of the unfolding and must
+/// not screen:
 ///
-/// Obstacles and reflectors arrive as separate lists with no identity link, so
-/// the shared surface is recognised geometrically: a bounce point lies ON it.
-/// Only the segment(s) containing a bounce are excused — a different wall, or
-/// a different PART of the same wall (an L-shape whose other arm blocks the
-/// reflected leg), still screens. The 1 cm tolerance absorbs floating-point
-/// noise; the bounce is computed from the same line–line intersection the
-/// crossing test performs, so the true distance is ~1e-9 m.
-fn walls_excluding_bounces(walls: &[WallBarrier], bounces: &[[f64; 2]]) -> Vec<WallBarrier> {
+///  - **The bounce itself.** The segment pierces the reflecting surface at P
+///    by construction; a surface listed both as obstacle and reflector (the
+///    normal case — a noise wall screens some paths and reflects others) had
+///    its own reflection diffracted over itself, up to the full 20 dB
+///    single-edge cap, growing with wall height and independent of offset.
+///    ISO/TR 17534-3 T19's reflected-ray tables (66–67) carry no Abar at all.
+///  - **Anything before the last bounce.** The segment portion from the image
+///    to the final bounce is the MIRRORED version of the earlier legs — it
+///    does not exist in real space, so a real wall crossing it is not on the
+///    reflected path. The concrete case: a container's rear wall. The image
+///    of a source standing farther from the facade than the box is deep lies
+///    behind the box, so the segment crossed the rear wall metres from the
+///    bounce and the body screened its own facade's reflection.
+///
+/// Crossings after the last bounce lie on the genuine P→R leg and screen
+/// normally — a different wall, or a different part of the same wall (an
+/// L-shape whose other arm stands across the reflected leg), still counts.
+/// Screening of the earlier legs (S→P by other obstacles) is not modelled
+/// here — that is the documented deferral, unchanged.
+///
+/// Obstacles and reflectors arrive as separate lists with no identity link,
+/// so the shared surface is recognised geometrically. The 1 cm tolerance
+/// absorbs floating-point noise; bounce and crossing come from the same
+/// line–line intersection, so the true coincidence is ~1e-9 m.
+fn walls_for_reflected_ray(
+    walls: &[WallBarrier],
+    bounces: &[[f64; 2]],
+    image: Vec3,
+    receiver: Vec3,
+) -> Vec<WallBarrier> {
     const EPS_M: f64 = 0.01;
-    let dist_sq = |p: &[f64; 2], w: &WallBarrier| -> f64 {
-        let (vx, vy) = (w.b_e - w.a_e, w.b_n - w.a_n);
-        let (wx, wy) = (p[0] - w.a_e, p[1] - w.a_n);
-        let len2 = vx * vx + vy * vy;
-        let t = if len2 > 0.0 { (wx * vx + wy * vy).clamp(0.0, len2) / len2 } else { 0.0 };
-        let (dx, dy) = (p[0] - (w.a_e + t * vx), p[1] - (w.a_n + t * vy));
-        dx * dx + dy * dy
-    };
+    let (dx, dy) = (receiver.e - image.e, receiver.n - image.n);
+    let len2 = dx * dx + dy * dy;
+    if len2 < 1e-12 {
+        return Vec::new();
+    }
+    // Parameter of the LAST bounce along image→receiver (it lies on the
+    // segment; earlier bounces of a chain generally do not).
+    let t_last = bounces
+        .last()
+        .map(|p| ((p[0] - image.e) * dx + (p[1] - image.n) * dy) / len2)
+        .unwrap_or(0.0);
+    let eps_t = EPS_M / len2.sqrt();
+
     walls
         .iter()
-        .filter(|w| !bounces.iter().any(|p| dist_sq(p, w) <= EPS_M * EPS_M))
+        .filter(|w| {
+            let (wbx, wby) = (w.b_e - w.a_e, w.b_n - w.a_n);
+            let det = dx * (-wby) - (-wbx) * dy;
+            if det.abs() < 1e-12 {
+                // Parallel — never crosses, so it can't screen; dropping it is
+                // free (project_walls would find no crossing either).
+                return false;
+            }
+            let (ax, ay) = (w.a_e - image.e, w.a_n - image.n);
+            let t = (ax * (-wby) - (-wbx) * ay) / det;
+            let s = (dx * ay - dy * ax) / det;
+            if !(0.0..=1.0).contains(&t) || !(0.0..=1.0).contains(&s) {
+                return false; // no crossing — cannot screen
+            }
+            // Fictitious (unfolded) half, bounce included.
+            if t <= t_last + eps_t {
+                return false;
+            }
+            // Belt-and-braces: a crossing coincident with ANY bounce point is
+            // the reflection, wherever its parameter landed numerically.
+            let (cx, cn) = (image.e + t * dx, image.n + t * dy);
+            !bounces.iter().any(|p| {
+                let (ex, ey) = (p[0] - cx, p[1] - cn);
+                ex * ex + ey * ey <= EPS_M * EPS_M
+            })
+        })
         .copied()
         .collect()
 }
 
+/// All ordered reflector sequences of length 2..=`max_order` from `m` reflectors,
+/// with no immediate repeat (a ray can't bounce off the same facade twice in a
+/// row). Drives the higher-order reflection search (§7.5.3).
 fn reflection_sequences(m: usize, max_order: usize) -> Vec<Vec<usize>> {
     fn rec(m: usize, max_order: usize, cur: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
         if cur.len() >= 2 {
@@ -1249,9 +1297,11 @@ fn solve_cached(
                                 x + 10.0 * (1.0 - alpha).max(1e-12).log10()
                             }),
                         );
-                        let refl_walls = walls_excluding_bounces(
+                        let refl_walls = walls_for_reflected_ray(
                             &walls,
                             &[[refl.refl_point.e, refl.refl_point.n]],
+                            refl.image_source,
+                            r,
                         );
                         let refl_lp = model.evaluate_general(&GeneralEval {
                             lw: &img_lw, source: refl.image_source, receiver: r,
@@ -1300,9 +1350,10 @@ fn solve_cached(
                         else {
                             continue;
                         };
-                        // Same §7.5.2 rule as first order: no facade in the
-                        // chain screens its own ray at a bounce point.
-                        let refl_walls = walls_excluding_bounces(&walls, &chain.bounces);
+                        // Same §7.5.2 rule as first order: only crossings on
+                        // the real final leg (after the LAST bounce) screen.
+                        let refl_walls =
+                            walls_for_reflected_ray(&walls, &chain.bounces, chain.image_source, r);
                         // Image LW = LW + Σ per-band reflection losses of the chain.
                         let img_lw = BandSpectrum::from_iter(
                             system,
@@ -1364,10 +1415,13 @@ fn solve_cached(
                             }),
                         );
                         // Same §7.5.2 rule: a wall coinciding with the tangent
-                        // point must not screen the ray it reflects.
-                        let refl_walls = walls_excluding_bounces(
+                        // point must not screen the ray it reflects, nor may
+                        // anything crossing the fictitious image-side half.
+                        let refl_walls = walls_for_reflected_ray(
                             &walls,
                             &[[cr.refl_point.e, cr.refl_point.n]],
+                            cr.image_source,
+                            r,
                         );
                         let refl_lp = model.evaluate_general(&GeneralEval {
                             lw: &img_lw, source: cr.image_source, receiver: r,

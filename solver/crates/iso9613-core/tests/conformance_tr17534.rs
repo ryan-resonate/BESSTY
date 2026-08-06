@@ -307,10 +307,11 @@ fn t19_reflector_double_listed_as_obstacle() {
     // §7.5.2 scores the reflected ray along the bent path, which touches the
     // reflector and never crosses it; the TR's reflected-ray tables carry no
     // Abar. So double-listing must NOT change the answer. Before the
-    // bounce-point exclusion in `walls_excluding_bounces`, this scene lost the
-    // reflection to diffraction over its own reflector (the total collapsed to
-    // roughly the direct-only 40.6 rather than 42.0) — the defect BESSTY's
-    // first-principles validation caught in the field.
+    // bounce exclusion in `walls_for_reflected_ray`, this scene lost the
+    // reflection to diffraction over its own reflector: the total read 40.88
+    // rather than 42.00 (direct-only T06 is 40.59; the residual 0.29 dB was
+    // leakage around the reflector's own lateral end edges) — the defect
+    // BESSTY's first-principles validation caught in the field.
     let mut scene = tr_scene(t08_ground(), GroundMethod::General, vec![]);
     scene.terrain = Some(t07_terrain(true));
     scene.sources[0].position = [10.0, 10.0, 1.0];
@@ -332,6 +333,63 @@ fn t19_reflector_double_listed_as_obstacle() {
     }];
     let (_bands, total) = run(&scene);
     assert_relative_eq!(total, 42.00, epsilon = 0.05);
+}
+
+#[test]
+fn container_body_does_not_screen_its_own_facades_reflection() {
+    // The same defect family as `t19_reflector_double_listed_as_obstacle`, but
+    // for a BODY rather than a thin wall — the case bounce-point exclusion
+    // alone could not fix. A container is a `building` obstacle (four
+    // `WallBarrier` edges) whose front facade is also a reflector. The image
+    // of a source standing farther from the facade than the box is deep lies
+    // BEHIND the box, so the straight image→receiver segment crossed the
+    // box's REAR wall metres from the bounce and the body diffracted its own
+    // facade's reflection. Per §7.5.2 that crossing lies on the MIRRORED leg —
+    // it does not exist in real space — which is exactly what the
+    // before-the-last-bounce rule in `walls_for_reflected_ray` removes.
+    //
+    // Geometry (flat hard ground, G = 0): box x ∈ [20, 22.44], y ∈ [−3, 3],
+    // 2.9 m tall. Source (0, 0, 1.5) — BELOW the roof, 20 m in front, so the
+    // image sits at (40, 0, 1.5), behind the box. Receiver (−160, 0, 1.5).
+    // The image segment crosses the rear wall (x = 22.44) at z = 1.5 — 1.4 m
+    // below the crest — before reaching the bounce on the facade (x = 20).
+    // The direct path never touches the box.
+    // Compared per band at 4 kHz: the Fresnel size gate (Eq 26/27) is part of
+    // the standard, and a 2.9 m facade over a ~200 m path only passes it from
+    // about 2 kHz up — so the A-weighted TOTAL legitimately falls short of a
+    // full-spectrum image, and only a band above the gate isolates the
+    // screening defect from the gate.
+    let ground = Ground { default_g: 0.0, regions: vec![] };
+    let footprint = vec![[20.0, -3.0], [22.44, -3.0], [22.44, 3.0], [20.0, 3.0]];
+    let mk = |obstacles: Vec<Obstacle>, reflect: bool, src_x: f64| {
+        let mut scene = tr_scene(ground.clone(), GroundMethod::General, obstacles);
+        scene.sources[0].position = [src_x, 0.0, 1.5];
+        scene.sources[0].height_agl = 1.5;
+        scene.receivers[0].position = [-160.0, 0.0, 1.5];
+        scene.receivers[0].height_agl = 1.5;
+        if reflect {
+            scene.reflectors = vec![Reflector {
+                segment: [[20.0, -3.0], [20.0, 3.0]],
+                base_z: 0.0,
+                top_z: 2.9,
+                alpha: 0.0,
+                alpha_bands: None,
+            }];
+        }
+        run(&scene).0[6]   // 4 kHz band
+    };
+    let boxed = building(footprint, 2.9);
+    let direct_only = mk(vec![boxed.clone()], false, 0.0);
+    let with_reflection = mk(vec![boxed], true, 0.0);
+    // The ideal reflected term is the mirrored source in FREE FIELD (both real
+    // legs are unobstructed): a real source at the image position with no box.
+    let image_alone = mk(vec![], false, 40.0);
+    let expected =
+        10.0 * (10f64.powf(0.1 * direct_only) + 10f64.powf(0.1 * image_alone)).log10();
+    // Broken engine: the rear-wall crossing (1.4 m below the crest) cost the
+    // reflected term ~8 dB of spurious Dz at 4 kHz, pulling the sum ~2 dB
+    // under `expected`. Fixed: the sum matches to numerical noise.
+    assert_relative_eq!(with_reflection, expected, epsilon = 0.1);
 }
 
 #[test]

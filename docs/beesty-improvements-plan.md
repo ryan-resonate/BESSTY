@@ -903,21 +903,33 @@ reflector and never crosses it — and ISO/TR 17534-3 T19's reflected-ray tables
 (66–67) carry **no Abar term at all** (LW with the α loss, Aatm, and Agr along
 the bent path). SoundPLAN and CadnaA certify against those tables.
 
-Fix: `walls_excluding_bounces` in `scene/mod.rs` — when scoring a reflected
-ray, the wall segment(s) containing a bounce point are excused from screening;
-every other crossing (another wall, another part of the same wall) still
-screens. Applied to first-order, higher-order chains (bounce points now
-exported from `ReflectionChain`), and cylinder reflections. Regression-locked
-three ways: `t19_reflector_double_listed_as_obstacle` (the TR's own 42.00
-reference with the barrier double-listed), `reflected_ray_is_still_screened_by_
-other_walls` (only the bounce is excused), and web-side V-R2d (the reflected
-contribution matches a mirrored source to <1.5 dB, is height-independent once
-the Fresnel gate passes, and weakens with wall offset by exactly the image
-path's divergence). 21/21 conformance, clippy clean, wasm rebuilt.
+Fix: `walls_for_reflected_ray` in `scene/mod.rs` — when scoring a reflected
+ray, only wall crossings of the image→receiver segment that fall **strictly
+after the last bounce** count. Everything at or before it lies in the unfolded
+(fictitious) half of the image construction: the bounce itself, and — the case
+a bounce-point-only excusal missed, caught by adversarial review — a reflecting
+BODY's other faces. A container's image source sits behind the box whenever the
+source stands farther from the facade than the box is deep, so the segment
+crossed the REAR wall metres from the bounce and the body screened its own
+facade's reflection by ~8–10 dB. Crossings after the bounce (another wall, or
+another part of the same wall standing across the reflected leg) still screen.
+Applied to first order, higher-order chains (`ReflectionChain` now exports its
+bounce points), and cylinder tangent points.
 
-Known residual (documented, second-order): the reflected ray's ground regions
-are still taken along the straight image line's plan route rather than the bent
-route (T19 passes within tolerance regardless), and exotic order-≥2 geometries
-(corner reflectors) can still see a spurious crossing of an EARLIER facade in
-the chain where the straight line happens to cross its real segment away from
-the bounce.
+Regression-locked four ways: `t19_reflector_double_listed_as_obstacle` (the
+TR's own 42.00 reference with the barrier double-listed; broken read 40.88),
+`container_body_does_not_screen_its_own_facades_reflection` (per-band at 4 kHz
+against a free-field mirrored source, since the Fresnel gate legitimately
+silences a 2.9 m facade below ~2 kHz at that range),
+`reflected_ray_is_still_screened_by_other_walls`, and web-side V-R2d (mirrored-
+source equivalence <1.5 dB, height-independence, offset falloff = image-path
+divergence). 22/22 conformance, clippy clean, wasm rebuilt, 218/218 web.
+
+Known residuals (documented, second-order, none reachable from BEESTY today):
+ground-region factors for a reflected ray reuse the DIRECT S→R route's values
+(BEESTY sends no ground regions; core/JSON callers with region polygons get
+direct-route G on reflected paths); screening of the EARLIER legs (source →
+first bounce) by other obstacles is not modelled — the deferral that predates
+this fix; and a cylinder paired with a polygonal screening footprint still
+self-screens (inscribed-polygon sagitta exceeds the 1 cm tolerance; BEESTY
+sends no cylinders).
