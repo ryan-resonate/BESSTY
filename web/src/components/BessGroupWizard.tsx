@@ -10,6 +10,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState, type DragEvent } from 'react';
 import { notify } from '../lib/notify';
+import { pushEscHandler } from '../lib/escStack';
 import {
   describeBulk, mapAllSegments, setModeWhereSupported, swapModel,
 } from '../lib/bessBulkSwap';
@@ -255,17 +256,10 @@ export function BessGroupWizard(props: Props) {
   // Esc inside a numeric field is handled by NumberDraft, which stops
   // propagation so reverting a field never also closes a panel.
   const { onCancel } = props;
-  useEffect(() => {
-    function onKey(ev: KeyboardEvent) {
-      if (ev.key !== 'Escape') return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      if (editingChipKey !== null) setEditingChipKey(null);
-      else onCancel();
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [editingChipKey, onCancel]);
+  useEffect(() => pushEscHandler(() => {
+    if (editingChipKey !== null) setEditingChipKey(null);
+    else onCancel();
+  }), [editingChipKey, onCancel]);
 
   /// I11 — per-unit manual edits (drag a single unit, change one unit's mode
   /// or elevation) are stored as `unitOverrides` and deliberately SURVIVE a

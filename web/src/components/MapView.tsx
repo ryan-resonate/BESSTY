@@ -2489,7 +2489,7 @@ export function MapView({
             className: 'bh-cluster-label',
             html: `<div style="background:#7c3aed;color:#fff;border-radius:3px;padding:0 4px;`
               + 'font-family:\'JetBrains Mono\',monospace;font-size:9px;font-weight:600;'
-              + `white-space:nowrap">${cb.members}× · ${Number.isFinite(cb.dbA) ? cb.dbA.toFixed(0) : '—'} dB(A)</div>`,
+              + `white-space:nowrap">${cb.members}× · Lw ${Number.isFinite(cb.dbA) ? cb.dbA.toFixed(0) : '—'} dB(A)</div>`,
             iconSize: [90, 14],
             iconAnchor: [-6, 7],
           }),

@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   cullFacades, enumeratedPaths, facadesFromFootprint, maxReflectorsFor,
-  MAX_ENUMERATED_PATHS, type Facade,
-} from './reflectors';
+  MAX_ENUMERATED_PATHS, type Facade, segmentDistance,} from './reflectors';
 
 const facade = (x: number, alpha = 0.2): Facade => ({
   segment: [[x, 0], [x, 10]], base_z: 0, top_z: 5, alpha,
@@ -96,4 +95,38 @@ test('a container footprint yields four closed facades', () => {
   assert.equal(f[0].base_z, 10);
   assert.equal(f[0].top_z, 12.6);
   assert.ok(f.every((x) => x.alpha === 0.1));
+});
+
+// ---- corridor culling measures SEGMENT to SEGMENT ----
+
+test('a long wall running beside the path is kept, however far its midpoint is', () => {
+  // The regression this guards: facades are now one per DRAWN wall edge, so a
+  // single long wall has a midpoint far from a short path. Scoring by midpoint
+  // dropped the whole wall even though its closest approach was metres away.
+  const longWall: Facade = {
+    // 2 km of wall, 20 m north of the path, centred 1 km east of it.
+    segment: [[-200, 20], [1800, 20]],
+    base_z: 0, top_z: 8, alpha: 0,
+  };
+  const r = cullFacades([longWall], [[0, 0]], [[200, 0]], { order: 1, corridorM: 250 });
+  assert.equal(r.facades.length, 1, 'the wall passes 20 m from the path and must be kept');
+});
+
+test('a wall genuinely far from every path is still culled', () => {
+  const remote: Facade = {
+    segment: [[0, 5000], [400, 5000]], base_z: 0, top_z: 8, alpha: 0,
+  };
+  const r = cullFacades([remote], [[0, 0]], [[200, 0]], { order: 1, corridorM: 250 });
+  assert.equal(r.facades.length, 0, '5 km off the path is outside any corridor');
+});
+
+test('segment distance: crossing is zero, parallel is the perpendicular gap', () => {
+  // Crossing.
+  assert.equal(segmentDistance([0, -10], [0, 10], [-10, 0], [10, 0]), 0);
+  // Parallel, overlapping in x.
+  assert.ok(Math.abs(segmentDistance([0, 0], [100, 0], [20, 30], [80, 30]) - 30) < 1e-9);
+  // Disjoint, nearest ends.
+  assert.ok(Math.abs(segmentDistance([0, 0], [10, 0], [20, 0], [30, 0]) - 10) < 1e-9);
+  // Touching at a point.
+  assert.equal(segmentDistance([0, 0], [10, 0], [10, 0], [10, 10]), 0);
 });

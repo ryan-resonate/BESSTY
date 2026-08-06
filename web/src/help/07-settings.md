@@ -7,7 +7,7 @@ Settings open in a floating window from the **gear button in the top-right of th
 
 ## Calculation
 
-- **Band system** — octave (10 bands) is faster; one-third octave (31 bands) catches narrowband content.
+- **Band system** — octave (10 bands) is faster; one-third octave (31 bands) catches narrowband content. Source data held in the other band system is folded automatically: third-octave to octave by energy sum, octave to third-octave by distributing equally across the three children.
 - **Standard** — ISO 9613-2:1996 or :2024. They differ in the ground-effect geometry factor, the barrier `Dz` bracket and `Kmet`, plus the 2024-only annexes.
 - **Solid-angle correction** — 0 dB is the default (strict ISO 9613-2, matching SoundPLAN); +3 dB matches common practice that folds in the ground-reflection boost.
 - **Cmet** — meteorological correction per section 8.
@@ -15,7 +15,7 @@ Settings open in a floating window from the **gear button in the top-right of th
 
 ## Compliance
 
-- **Limit comparison** — by default the level rounds to the nearest integer before being compared, so 40.4 dB does not exceed a 40 dB limit. Switch to **Exact** for jurisdictions that compare unrounded. Only the level rounds; the limit is taken as entered. Displayed numbers never change, so this affects the pass/fail colour only.
+- **Limit comparison** — by default the level rounds to the nearest integer before being compared, so 40.4 dB does not exceed a 40 dB limit. Switch to **Exact** for jurisdictions that compare unrounded. Only the level rounds; the limit is taken as entered. Landing exactly on the limit passes either way. Displayed numbers never change, so this affects the pass/fail colour only.
 
 ## Environment
 
@@ -37,6 +37,6 @@ Settings open in a floating window from the **gear button in the top-right of th
 
 ## Performance
 
-- **Contour grid spacing** — cell size for the raster.
-- **Propagation cutoffs** — distance cutoff, and Barnes-Hut theta for source clustering. Lower theta is more accurate and slower.
-- **Drag extrapolation caps** — when extrapolation during a drag exceeds these, the display clamps and a re-snapshot is queued.
+- **Contour grid spacing** — auto-picked from the calculation area when it is first created; choose a value to override and your choice sticks.
+- **Max contribution distance** — sources further than this from a receiver are skipped entirely. Default 20 km; set 0 to disable.
+- **Tree acceptance θ** — the Barnes-Hut clustering tolerance, default 0.25. Lower is more literal and slower. See Methodology for what it does, and why values at or above 1 carry no error guarantee at all.

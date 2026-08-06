@@ -11,6 +11,7 @@
 import {
   useCallback, useEffect, useRef, useState, type ReactNode,
 } from 'react';
+import { pushEscHandler } from '../lib/escStack';
 
 interface Rect { x: number; y: number; w: number; h: number }
 
@@ -82,18 +83,11 @@ export function FloatingWindow({
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  // Esc closes — but only when focus isn't inside a field, where Esc means
-  // "abandon this edit" (same rule the map uses).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  // Esc closes — but only when this is the TOP overlay. Registered through the
+  // shared stack rather than its own window listener: as a plain listener, an
+  // Esc meant for a dialog opened above this window also closed the window
+  // underneath (and, for the factorial study, cancelled a running sweep).
+  useEffect(() => pushEscHandler(onClose), [onClose]);
 
   const onPointerMove = useCallback((e: PointerEvent) => {
     const d = dragRef.current;

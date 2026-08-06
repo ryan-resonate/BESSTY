@@ -59,6 +59,36 @@ function distSqToSegment(p: [number, number], a: [number, number], b: [number, n
   return dx * dx + dy * dy;
 }
 
+/// Do segments `ab` and `cd` cross? Used so an intersecting pair scores 0
+/// rather than the (positive) endpoint distance.
+function segmentsIntersect(
+  a: [number, number], b: [number, number], c: [number, number], d: [number, number],
+): boolean {
+  const cross = (p: [number, number], q: [number, number], r: [number, number]) =>
+    (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const d1 = cross(c, d, a);
+  const d2 = cross(c, d, b);
+  const d3 = cross(a, b, c);
+  const d4 = cross(a, b, d);
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0))
+    && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+}
+
+/// Closest approach between two plan segments (m).
+export function segmentDistance(
+  a: [number, number], b: [number, number], c: [number, number], d: [number, number],
+): number {
+  if (segmentsIntersect(a, b, c, d)) return 0;
+  // Non-crossing segments: the minimum is attained at one of the four
+  // endpoint-to-other-segment distances.
+  return Math.sqrt(Math.min(
+    distSqToSegment(a, c, d),
+    distSqToSegment(b, c, d),
+    distSqToSegment(c, a, b),
+    distSqToSegment(d, a, b),
+  ));
+}
+
 export interface CullOptions {
   /// Half-width of the corridor around each source→receiver line (m).
   corridorM?: number;
@@ -107,26 +137,32 @@ export function cullFacades(
     return f.alpha < 1;
   });
 
-  // Score each facade by how close it sits to the nearest source→receiver line;
-  // anything outside the corridor is dropped.
+  // Score each facade by how close it comes to the nearest source→receiver
+  // line; anything outside the corridor is dropped.
   const scored: Array<{ f: Facade; d: number }> = [];
   for (const f of usable) {
-    const mid: [number, number] = [
-      (f.segment[0][0] + f.segment[1][0]) / 2,
-      (f.segment[0][1] + f.segment[1][1]) / 2,
-    ];
     let best = Infinity;
     for (const s of sources) {
       for (const r of receivers) {
-        // Distance to the SEGMENT, not the infinite line: a specular reflection
-        // point lies between source and receiver, so a facade far beyond either
-        // endpoint is irrelevant however collinear it happens to be. (Using the
-        // infinite line here kept a facade 10 km down-range, because its
-        // perpendicular distance was zero.)
-        const d = Math.sqrt(distSqToSegment(mid, s, r));
+        // SEGMENT-to-SEGMENT distance, and both ends matter.
+        //
+        // Distance to the SOURCE→RECEIVER segment rather than its infinite
+        // line: a specular reflection point lies between source and receiver,
+        // so a facade far beyond either endpoint is irrelevant however
+        // collinear it happens to be. (Using the infinite line kept a facade
+        // 10 km down-range, because its perpendicular distance was zero.)
+        //
+        // And the whole FACADE rather than its midpoint: facades are now one
+        // per drawn wall edge, so a single long wall running alongside a path
+        // has a midpoint far from it — a 1 km wall passing 20 m from a 200 m
+        // path scores ~300 m on its midpoint and was dropped entirely, taking
+        // a reflection whose specular point sits 20 m away with it. Measuring
+        // the closest approach of the two segments keeps it.
+        const d = segmentDistance(f.segment[0], f.segment[1], s, r);
         if (d < best) best = d;
         if (best === 0) break;
       }
+      if (best === 0) break;
     }
     if (best <= corridor) scored.push({ f, d: best });
   }

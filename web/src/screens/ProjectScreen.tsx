@@ -37,6 +37,7 @@ import type { BessGroup } from '../lib/types';
 import type { Barrier, Project, Receiver, Source, SourceKind } from '../lib/types';
 import { settingsOf } from '../lib/types';
 import { calcAreaCorners } from '../lib/geo';
+import { pushEscHandler } from '../lib/escStack';
 import { Diagnostics, type Diagnostic } from '../lib/diagnostics';
 import {
   buildEnvelope, describePaste as describeObjectPaste, materialisePaste, parseEnvelope,
@@ -233,22 +234,14 @@ export function ProjectScreen() {
   // selection so the user is back to the default mouse cursor with no
   // sticky multi-selection. Skipped when focus is in a text field — Esc
   // there usually means "abandon edit", not "drop selection on the map".
-  useEffect(() => {
-    function onKey(ev: KeyboardEvent) {
-      if (ev.key !== 'Escape') return;
-      const t = ev.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) {
-        // Let the field blur naturally — the keydown listener on the input
-        // (e.g. NumericInput) handles its own Esc semantics.
-        return;
-      }
-      setAddMode('none');
-      setSelectedIds(new Set());
-      setSelectedGroupId(null);
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  // Bottom of the Escape stack: exiting add-mode / clearing the selection is
+  // what Esc means only when no overlay is open above the map. Registered on
+  // mount, so every window and dialog mounted later sits above it.
+  useEffect(() => pushEscHandler(() => {
+    setAddMode('none');
+    setSelectedIds(new Set());
+    setSelectedGroupId(null);
+  }), []);
 
   // I5 — Ctrl/Cmd+C / Ctrl/Cmd+V for map objects. Same skip-when-in-a-text-field
   // rule as Esc above: copying text out of an input must keep working.
@@ -1540,6 +1533,7 @@ export function ProjectScreen() {
         showContours={showContours} setShowContours={setShowContours}
         showGridDebug={showGridDebug} setShowGridDebug={setShowGridDebug}
         showBhDebug={showBhDebug} setShowBhDebug={setShowBhDebug}
+        onOpenSettings={() => setShowSettings(true)}
         onOpenPdfExport={openPdfExport}
         onOpenStudy={() => setShowStudy(true)}
         showReceiverLimits={showReceiverLimits} setShowReceiverLimits={setShowReceiverLimits}

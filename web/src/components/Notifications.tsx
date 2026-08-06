@@ -9,6 +9,7 @@ import {
   type NotifyState, type ToastKind,
 } from '../lib/notify';
 import { ModalBackdrop } from './ModalBackdrop';
+import { pushEscHandler } from '../lib/escStack';
 
 const KIND_STYLE: Record<ToastKind, { bar: string; icon: string }> = {
   info:    { bar: 'var(--blue, #1565c0)',  icon: 'ℹ' },
@@ -87,9 +88,11 @@ function ConfirmDialog({ req }: { req: ConfirmReq }) {
   // from submitting the form that opened this, or from keyboard navigation —
   // must not delete a project. Destructive actions require an explicit click or
   // a deliberate Tab-to-the-button.
+  // Escape goes through the shared stack so dismissing THIS dialog cannot also
+  // close whatever it was opened on top of.
+  useEffect(() => pushEscHandler(() => resolveDialog(req.id, false)), [req.id]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') resolveDialog(req.id, false);
       if (e.key === 'Enter' && !opts.danger) resolveDialog(req.id, true);
     };
     window.addEventListener('keydown', onKey);

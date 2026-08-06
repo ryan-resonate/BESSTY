@@ -209,14 +209,22 @@ class SceneSolveLane {
       };
       const onError = (e: ErrorEvent) => {
         cleanup();
-        this.worker = null;
+        worker.terminate();
+        if (this.worker === worker) this.worker = null;
         reject(new Error(`scene worker error: ${e.message || 'load failed'}`));
       };
       worker.addEventListener('message', onMessage);
       worker.addEventListener('error', onError);
       this.active = { id, cleanup, reject };
       timer = window.setTimeout(() => {
+        // TERMINATE, don't just reject. Leaving the worker alive meant a wedged
+        // solve kept the lane occupied: the next call skipped `cancel()` (no
+        // `active`) and queued behind the stuck job, so every later solve timed
+        // out too and only a page reload recovered. Dropping the worker forces
+        // the next call to build a clean one.
         cleanup();
+        worker.terminate();
+        if (this.worker === worker) this.worker = null;
         reject(new Error('scene worker stopped responding'));
       }, TIMEOUT_MS);
       worker.postMessage({ id, scenes });
@@ -251,12 +259,6 @@ async function solveScenes(scenes: string[], channel: SolveChannel): Promise<Sce
     return solveScenesInline(scenes);
   }
   return lanes[channel].run(scenes);
-}
-
-/// Abandon the in-flight `live` point solve. Used when a newer one is about to
-/// start; the loser rejects with [`SOLVE_SUPERSEDED`].
-export function cancelLiveSolve(): void {
-  if (workersAvailable) lanes.live.cancel();
 }
 
 /// Source **height above local ground** (HAG) — the machine height fed to the
@@ -654,9 +656,11 @@ export function describeBarnesHut(project: Project, spacingM: number): BhDebug |
       clusters++;
       clustered += es.memberCount;
       clusterBoxes.push({
-        // The walk returns the centroid; the node's own extent is recovered
-        // from the member spread it stands for, which is what makes the drawn
-        // rectangle meaningful rather than a dot.
+        // The accepted quadtree NODE's rectangle — its partition cell, which is
+        // what the acceptance test `s/d < θ` measured. That makes it the honest
+        // thing to draw: it can be larger than the members it contains, and
+        // seeing that is the point. Falls back to the centroid for a node with
+        // no recorded bounds.
         bbox: es.bbox ?? {
           minLat: es.latLng[0], maxLat: es.latLng[0],
           minLng: es.latLng[1], maxLng: es.latLng[1],
@@ -990,6 +994,13 @@ function runGridJobOnPool(
       if (settled) return;
       settled = true;
       cleanup();
+      // Tear the pool down. The other shards are still grinding through work
+      // whose result is now unusable; left alive they burn cores and, worse,
+      // the NEXT run finds no active run to supersede and queues its messages
+      // behind them — so a healthy pool then trips its own dead-man timer.
+      for (const pw of gridPool) pw?.worker.terminate();
+      gridPool = [];
+      gridWorkerSeq++;
       reject(e);
     };
     const arm = () => {
@@ -1027,8 +1038,9 @@ function runGridJobOnPool(
         }
       };
       const onError = (e: ErrorEvent) => {
-        // Drop the whole pool: a module-load failure affects every worker.
-        gridPool = [];
+        // `fail` terminates and clears the pool — a module-load failure affects
+        // every worker, and clearing the array without terminating would orphan
+        // any that are running.
         fail(new Error(`grid worker error: ${e.message || 'load failed'}`));
       };
       worker.addEventListener('message', onMessage);
