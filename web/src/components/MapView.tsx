@@ -799,6 +799,35 @@ export function MapView({
       if (dot) dot.remove();
       redrawBarrierDraft();
     };
+    /// Screen-space radius (px) within which a click lands "on" the first
+    /// vertex and closes the ring. Generous, because closing a wall exactly
+    /// on its start point by eye is otherwise fiddly at low zoom.
+    const CLOSE_SNAP_PX = 12;
+    /// Is the cursor over the start vertex of a ring that could be closed?
+    /// Needs ≥3 points — with 2 you'd be making a degenerate there-and-back.
+    const nearBarrierStart = (at: L.LatLng): boolean => {
+      const draft = barrierDraftRef.current;
+      if (!draft || draft.points.length < 3) return false;
+      return map.latLngToContainerPoint(draft.points[0])
+        .distanceTo(map.latLngToContainerPoint(at)) < CLOSE_SNAP_PX;
+    };
+    /// Highlight the start vertex while it is a valid close target, so the
+    /// affordance is discoverable rather than a hidden hotspot.
+    const setBarrierCloseHint = (on: boolean) => {
+      const first = barrierDraftRef.current?.dots[0];
+      if (!first) return;
+      first.setStyle({ color: on ? '#16a34a' : '#F2CB00', fillColor: on ? '#16a34a' : '#F2CB00' });
+      first.setRadius(on ? 7 : 4);
+    };
+    /// Close the ring by repeating the first vertex, then commit. Barriers are
+    /// stored as open polylines, so a closed wall is simply one whose last
+    /// point equals its first — no separate "polygon" type needed.
+    const closeBarrierRing = () => {
+      const draft = barrierDraftRef.current;
+      if (!draft || draft.points.length < 3) return;
+      draft.points.push(L.latLng(draft.points[0].lat, draft.points[0].lng));
+      finishBarrierDraft();
+    };
     // Enter commits the polyline; Backspace removes the last vertex. (Esc is
     // handled by ProjectScreen, which exits barrier mode → the mode-change
     // effect clears the draft.)
@@ -815,6 +844,17 @@ export function MapView({
       if (callbacksRef.current.addMode === 'barrier') finishBarrierDraft();
     });
 
+    // Right-click finishes the wall — the convention every drawing tool uses,
+    // and it doesn't drop the stray vertex a double-click's first click would.
+    // The browser menu is suppressed only while actually drawing, so a
+    // right-click elsewhere on the map still behaves normally.
+    map.on('contextmenu', (e: L.LeafletMouseEvent) => {
+      if (callbacksRef.current.addMode !== 'barrier' || !barrierDraftRef.current) return;
+      L.DomEvent.preventDefault(e.originalEvent);
+      L.DomEvent.stopPropagation(e.originalEvent);
+      finishBarrierDraft();
+    });
+
     map.on('click', (e: L.LeafletMouseEvent) => {
       const { addMode, onAddSource, onAddReceiver } = callbacksRef.current;
       const latLng: [number, number] = [e.latlng.lat, e.latlng.lng];
@@ -826,6 +866,9 @@ export function MapView({
           draft = { points: [], cursor: null, preview: null, dots: [] };
           barrierDraftRef.current = draft;
         }
+        // Clicking the start vertex closes the ring. Checked before the
+        // duplicate-vertex guard below, which only looks at the LAST point.
+        if (nearBarrierStart(e.latlng)) { closeBarrierRing(); return; }
         // A double-click fires two `click`s at (almost) the same pixel before
         // the `dblclick`. Drop the near-duplicate so we don't append a
         // zero-length vertex at the finish point.
@@ -895,7 +938,11 @@ export function MapView({
       }
       const draft = barrierDraftRef.current;
       if (draft && barriersGroupRef.current && draft.points.length > 0) {
-        draft.cursor = e.latlng;
+        const closing = nearBarrierStart(e.latlng);
+        // Snap the rubber-band to the start vertex while over it, so the
+        // preview shows the ring the click would actually produce.
+        draft.cursor = closing ? draft.points[0] : e.latlng;
+        setBarrierCloseHint(closing);
         redrawBarrierDraft();
       }
     });

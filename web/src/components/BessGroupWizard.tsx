@@ -246,6 +246,45 @@ export function BessGroupWizard(props: Props) {
     [modesFor],
   );
 
+  // Esc unwinds one layer at a time: an open segment editor closes first, and
+  // only a second press abandons the whole group. Closing the window from
+  // under an open sub-panel loses the edit the user was looking at, which is
+  // the opposite of what Esc is for. (The footer has always promised this key
+  // worked; until now nothing listened for it.)
+  //
+  // Esc inside a numeric field is handled by NumberDraft, which stops
+  // propagation so reverting a field never also closes a panel.
+  const { onCancel } = props;
+  useEffect(() => {
+    function onKey(ev: KeyboardEvent) {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (editingChipKey !== null) setEditingChipKey(null);
+      else onCancel();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [editingChipKey, onCancel]);
+
+  /// I11 — per-unit manual edits (drag a single unit, change one unit's mode
+  /// or elevation) are stored as `unitOverrides` and deliberately SURVIVE a
+  /// re-materialise, so tweaking the layout doesn't silently discard them.
+  /// That makes them invisible and sticky, hence an explicit way out.
+  const overrideCount = Object.keys(group.unitOverrides ?? {}).length;
+  async function resetOverrides() {
+    const ok = await notify.confirm({
+      title: `Discard manual edits on ${overrideCount} unit${overrideCount === 1 ? '' : 's'}?`,
+      body: 'Individually moved, re-modelled or re-elevated units go back to what '
+        + 'this group\'s settings produce. The layout itself is unchanged. '
+        + 'Takes effect when you save.',
+      confirmLabel: 'Discard manual edits',
+      danger: true,
+    });
+    if (!ok) return;
+    setGroup((g) => ({ ...g, unitOverrides: {} }));
+  }
+
   return (
     <div role="dialog" aria-modal="true" style={shellStyle}>
       <div style={modalStyle}>
@@ -278,6 +317,25 @@ export function BessGroupWizard(props: Props) {
                     : 'On Apply, the group drops in the centre of the map view — drag it into place.'}
                 </div>
               </div>
+
+              {/* Only shown when there is something to discard, so it can't be
+                  mistaken for a general "reset the group" button. */}
+              {isEdit && overrideCount > 0 && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 10, marginTop: 2,
+                  padding: '7px 9px', borderRadius: 6,
+                  background: 'var(--paper-2)', border: '1px solid var(--light)',
+                }}>
+                  <div style={{ flex: 1, fontSize: 11, color: 'var(--ink-soft)' }}>
+                    <b>{overrideCount}</b> unit{overrideCount === 1 ? ' has' : 's have'} manual
+                    edits (moved, re-modelled or re-elevated individually). These are kept
+                    when the layout changes.
+                  </div>
+                  <button type="button" onClick={() => { void resetOverrides(); }} style={btnStyle}>
+                    Reset overrides
+                  </button>
+                </div>
+              )}
 
               {/* Top-level 2-D repeat of the whole sequence. */}
               <span style={fieldLabelStyle}>Repeat whole sequence</span>
@@ -434,7 +492,8 @@ export function BessGroupWizard(props: Props) {
 
         <footer style={footerStyle}>
           <div style={{ fontSize: 12, color: 'var(--ink-soft)' }}>
-            Press <kbd style={kbdStyle}>Esc</kbd> to cancel
+            <kbd style={kbdStyle}>Esc</kbd>
+            {editingChipKey !== null ? ' closes the segment editor' : ' cancels'}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button type="button" onClick={props.onCancel} style={btnStyle}>Cancel</button>
@@ -1238,6 +1297,10 @@ function NumberDraft(props: {
       onKeyDown={(e) => {
         if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); }
         else if (e.key === 'Escape') {
+          // Revert this field only. Without stopping propagation the wizard's
+          // Esc handler would also close a panel, so one keypress would undo
+          // the edit AND lose the panel it was made in.
+          e.stopPropagation();
           setDraft(String(props.value));
           (e.target as HTMLInputElement).blur();
         }

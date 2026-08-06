@@ -12,7 +12,15 @@ The solver implements ISO 9613-2, both the 1996 and 2024 editions, validated aga
 - **Terrain** — a DEM-sampled height raster is handed to the solver, which treats any ridge breaking line of sight as a diffracting edge.
 - **Annex D** — wind-turbine specifics: ground-factor cap of 0.5, receiver-height clamp of 4 m, elevated source for barriers (hub plus rotor radius), the barrier cap, and the concave-ground correction.
 
-Cluster aggregation uses a Barnes-Hut treecode to fold distant source groups into a single virtual point for the contour grid. Named receivers always solve every source directly, with no clustering.
+## Source clustering (Barnes-Hut)
+
+Sites with hundreds of units would otherwise evaluate every source against every receiver. BESSTY builds an adaptive quadtree over the sources; each node stores the energy sum of its members' sound-power spectra, their energy-weighted centroid and mean height, and its bounding-box diagonal `s`.
+
+Walking the tree for a receiver at distance `d` from a node, the acceptance test `s / d < θ` decides between collapsing that whole branch to one virtual source at the centroid, or recursing into it. Contour grids walk the tree once per 16 by 16 cell tile, measuring `d` from the nearest point of the tile, so a cluster is only collapsed when it is far from the entire tile. Cells sitting among the sources keep every source individually, which is why a grid drawn over the site itself is barely affected by θ — the speed of that case comes from the solver, not the tree.
+
+Wind turbines are never folded into a cluster: the walk recurses until each turbine is an individual source, so its Annex D treatment survives.
+
+Because the centroid is energy-weighted, first-order position errors cancel and the aggregate error is second order in `s/d` — well under a decibel at the default θ of 0.25. Two caveats: screening is evaluated along the centroid ray only, so a cluster straddling a barrier edge or a ridge line smears members that are actually screened differently; and **θ at or above 1 carries no error guarantee at all**, since a member can then sit arbitrarily close to the receiver. Treat high θ as a stress test, not a setting for reportable results. Set θ to 0 to disable clustering entirely.
 
 ## Reflections
 

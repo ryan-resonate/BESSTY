@@ -1614,7 +1614,6 @@ export function ProjectScreen() {
           onPan={(dx, dy) => mapHandleRef.current?.panBy([dx, dy], { animate: true })}
           onHome={fitCalcArea}
           onOpen3D={() => setShow3D(true)}
-          onOpenSettings={() => setShowSettings(true)}
         />
 
         <div className="back-link">

@@ -3,7 +3,7 @@ title: Settings
 section: Reference
 ---
 
-Settings open in a floating window from the gear button on the map, grouped into five tabs. The window is non-modal, so the map stays live while you adjust things.
+Settings open in a floating window from the **gear button in the top-right of the side panel**, grouped into five tabs. The window is non-modal, so the map stays live while you adjust things — drag it out of the way rather than closing it.
 
 ## Calculation
 
@@ -11,7 +11,7 @@ Settings open in a floating window from the gear button on the map, grouped into
 - **Standard** — ISO 9613-2:1996 or :2024. They differ in the ground-effect geometry factor, the barrier `Dz` bracket and `Kmet`, plus the 2024-only annexes.
 - **Solid-angle correction** — 0 dB is the default (strict ISO 9613-2, matching SoundPLAN); +3 dB matches common practice that folds in the ground-reflection boost.
 - **Cmet** — meteorological correction per section 8.
-- **Barrier diffraction** — optional per-band cap on `Dz` for non-WTG sources. WTGs use the Annex D cap independently.
+- **Barrier diffraction** — optional per-band cap on `Dz` for non-WTG sources. WTGs use the Annex D cap independently. If a barrier is attenuating less than its geometry suggests, check this setting first: a 2 dB cap clamps `Dz` far below what ISO section 7.4 would give.
 
 ## Compliance
 
@@ -25,7 +25,13 @@ Settings open in a floating window from the gear button on the map, grouped into
 
 ## Sources
 
-- **Source containers** — model BESS and auxiliary units as screening boxes. Point-receiver and grid calculations toggle independently, because a grid pays for the extra obstacles at every cell.
+- **Source containers** — model each BESS and auxiliary unit as its physical enclosure: a screening box using the product's footprint and container height, with the acoustic centre just above the roof. Units then shade each other within a row.
+
+  Dimensions come from the catalog product, falling back to a kind default (BESS 2.6 m tall, auxiliary 2.2 m) when the product does not pin one. Set exact dimensions per product in the catalog, or per unit with the table button on a source.
+
+  The point-receiver and grid toggles are independent because a contour grid pays for the extra obstacles at every cell — it is common to want the detail on reported receiver levels but not on a whole-site map.
+
+  Expect the change at close receivers. Because each unit's source sits above its own roof, a unit only screens its neighbour once the ray descends below that neighbour's roofline. Across a flat, uniform row that is worth roughly 1 to 2 dB inside about 100 m, tending to zero by 200 m, where what remains is the acoustic centre being lifted to roof height.
 - **Annex D** — wind-turbine specifics: barrier cap, elevated source for barriers, concave correction, receiver-height clamp.
 - **General sources** — default receiver height.
 

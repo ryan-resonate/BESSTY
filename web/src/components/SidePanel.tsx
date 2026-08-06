@@ -59,7 +59,9 @@ function scopeSuffix(scope: 'global' | 'local' | 'personal'): string {
 
 export type AddMode = 'none' | 'wtg' | 'bess' | 'auxiliary' | 'receiver' | 'measure' | 'barrier';
 
-export type Tab = 'sources' | 'area' | 'receivers' | 'barriers' | 'import' | 'settings' | 'results' | 'layers' | 'project';
+/// No 'settings' tab: settings live in the floating window, opened from the
+/// ⚙ in this panel's tab row.
+export type Tab = 'sources' | 'area' | 'receivers' | 'barriers' | 'import' | 'results' | 'layers' | 'project';
 
 interface Props {
   project: Project;
@@ -177,7 +179,6 @@ const TABS: Array<{ id: Tab; label: string; numbered?: number }> = [
   { id: 'receivers', label: 'Receivers', numbered: 3 },
   { id: 'barriers',  label: 'Barriers' },
   { id: 'import',    label: 'Import' },
-  { id: 'settings',  label: 'Settings' },
   { id: 'project',   label: 'Project' },
   { id: 'results',   label: 'Results' },
   { id: 'layers',    label: 'Layers' },
@@ -195,7 +196,6 @@ export function SidePanel(props: Props) {
     receivers: project.receivers.length > 0,
     barriers: project.barriers.length > 0,
     import: false,
-    settings: false,
     project: false,
     results: false,
     layers: false,
@@ -224,6 +224,18 @@ export function SidePanel(props: Props) {
             {t.label}
           </button>
         ))}
+        {/* Settings is a floating window, not a tab — it has to stay open
+            while you work on the map, which a tab cannot do. The gear lives
+            here (panel top-right) rather than on the map, where it competed
+            with the zoom controls. */}
+        {props.onOpenSettings && (
+          <button
+            className="tab tab-icon"
+            title="Settings"
+            aria-label="Settings"
+            onClick={() => props.onOpenSettings?.()}
+          >⚙</button>
+        )}
       </div>
 
       <div className="tab-body">
@@ -236,20 +248,6 @@ export function SidePanel(props: Props) {
         {tab === 'receivers' && <ReceiversTab {...props} />}
         {tab === 'barriers' && <BarriersTab {...props} />}
         {tab === 'import' && <ImportTab {...props} />}
-        {/* I10: settings live in a floating window now. This slot keeps a
-            link so the old muscle memory still lands somewhere useful. */}
-        {tab === 'settings' && (
-          <div className="sp-section">
-            <div className="hint" style={{ marginBottom: 10 }}>
-              Settings moved to a floating window, so you can see the map change
-              as you adjust them. Open it from the <b>⚙</b> button on the map,
-              or here:
-            </div>
-            <button className="btn primary block" onClick={() => props.onOpenSettings?.()}>
-              ⚙ Open settings…
-            </button>
-          </div>
-        )}
         {tab === 'project' && props.projectId && props.currentUid && (
           <ProjectMetaPanel
             projectId={props.projectId}
@@ -1696,9 +1694,10 @@ function BarriersTab(props: Props) {
         </div>
         {addMode === 'barrier' && (
           <div className="hint">
-            Click to drop each wall vertex; double-click or press Enter to
-            finish. Backspace removes the last vertex; Esc cancels mid-draw.
-            A two-click wall is just a straight segment.
+            Click to drop each wall vertex. <b>Right-click</b>, double-click or
+            Enter finishes; clicking the <b>first vertex</b> (it turns green)
+            closes the wall into a ring. Backspace removes the last vertex;
+            Esc cancels mid-draw. A two-click wall is a straight segment.
           </div>
         )}
         <div className="hint">
@@ -1842,9 +1841,8 @@ export function SettingsTab(props: SettingsTabProps) {
           </select>
         </Field>
         <div className="hint">
-          Octave is faster; one-third octave catches narrowband content. Source data
-          in the other band system is folded automatically (third → octave by energy
-          sum; octave → third by equal distribution across the three children).
+          Octave is faster; one-third octave catches narrowband content. Source
+          data in the other band system is folded automatically.
         </div>
       </section>
       )}
@@ -1862,9 +1860,8 @@ export function SettingsTab(props: SettingsTabProps) {
           </select>
         </Field>
         <div className="hint">
-          The editions differ in the ground-effect geometry factor, the barrier
-          <code> Dz </code> bracket and <code>Kmet</code>, and the 2024-only annexes.
-          Existing projects were computed with 2024.
+          Existing projects were computed with 2024. See Help → Settings for
+          what changes between editions.
         </div>
       </section>
       )}
@@ -1912,26 +1909,10 @@ export function SettingsTab(props: SettingsTabProps) {
           />
         </Field>
         <div className="hint">
-          Models each BESS / auxiliary unit as its physical enclosure — a screening
-          box using the product's footprint and container height — with the acoustic
-          centre sitting just above the roof. Units then screen each other within a
-          row. Off by default.
-          <br />
-          The two toggles are independent because a contour grid pays for the extra
-          obstacles at every cell: it's common to want the detail on reported
-          receiver levels but not on a whole-site map.
-          <br />
-          Every BESS / auxiliary unit is boxed: dimensions come from the catalog
-          product, falling back to a kind default (BESS 2.6 m, auxiliary 2.2 m tall)
-          when it doesn't pin one. Set exact dimensions per product in the catalog,
-          or per unit via the ▤ button on a source.
-          <br />
-          Expect most of the change at close receivers. Because every unit's source
-          sits above its own roof, a unit only screens a neighbour once the ray
-          descends below that neighbour's roofline — a near-field effect. Across a
-          flat, uniform row it is worth ~1–2 dB inside about 100 m and tends to zero
-          by 200 m, where the remaining difference is the acoustic centre being
-          lifted to the roof.
+          Models each BESS / auxiliary unit as a screening box, so units shade
+          each other within a row. Off by default; worth ~1–2 dB inside about
+          100 m and near zero by 200 m. Help → Settings covers where the
+          dimensions come from and why the two toggles are separate.
         </div>
       </section>
       )}
@@ -1971,22 +1952,12 @@ export function SettingsTab(props: SettingsTabProps) {
         </Field>
         <div className="hint">
           Specular reflection off barriers and, when Source containers is on,
-          off container facades. Each barrier carries its own absorption α
-          (edit it in the Barriers tab; default 0.1, and it is <b>not</b> an NRC
-          — see Help → Barrier absorption). Container facades are fixed at
-          α = 0, a perfectly reflecting box, so any effect you see from a
-          container row is the geometry rather than a tuned number. Off by default — switching it on WILL
-          raise levels at receivers facing a wall or a container row.
-          <br />
-          The engine caps how many reflection paths it will enumerate, so a
-          large site cannot use high orders across every surface. BESSTY keeps
-          the facades nearest the source→receiver corridor and <b>lowers the
-          order automatically</b> rather than failing the solve. Order 3 fits
-          about 46 surfaces; a container contributes 4 facades.
-          <br />
-          Reflections are conformance-validated in the engine (ISO/TR 17534-3
-          case T19) but have not been A/B'd against SoundPLAN in BEESTY yet —
-          treat the first results as provisional.
+          container facades. Off by default — switching it on <b>will</b> raise
+          levels at receivers facing a wall or a container row. Each barrier
+          carries its own α (Barriers tab; default 0.1, <b>not</b> an NRC).
+          Treat results as provisional. Help → Barrier absorption and Help →
+          Methodology cover α, the path budget and the automatic order
+          reduction.
         </div>
       </section>
       )}
@@ -2004,17 +1975,10 @@ export function SettingsTab(props: SettingsTabProps) {
           </select>
         </Field>
         <div className="hint">
-          Most conditions are written against whole decibels, so by default the
-          level is rounded to the nearest integer before the comparison and only
-          a genuine exceedance fails: <b>40.4 dB → 40, which does not exceed a
-          40 dB limit → green</b>. 40.6 → 41 → red. Landing exactly on the limit
-          passes either way.
-          <br />
-          Only the level rounds — the limit is compared as entered, since it's a
-          set value rather than a measurement. Displayed numbers never change;
-          this affects the pass/fail colour only.
-          <br />
-          Switch to <b>Exact</b> for jurisdictions that compare unrounded.
+          Rounded: <b>40.4 dB → 40, so it passes a 40 dB limit</b>; 40.6 → 41
+          fails. Only the level rounds, never the limit, and displayed numbers
+          never change — this sets the pass/fail colour only. Use <b>Exact</b>
+          where the jurisdiction compares unrounded.
         </div>
       </section>
       )}
@@ -2032,14 +1996,10 @@ export function SettingsTab(props: SettingsTabProps) {
           </select>
         </Field>
         <div className="hint">
-          Frequency-independent correction added to every band per ISO 9613-2 Eq (1)
-          <code> Lp = Lw + DΩ + Dc − A</code>.
-          <br />
-          <b>+3 dB</b> matches common-practice tools that include the ground-reflection
-          boost (CONCAWE, AS 4959 etc.).
-          <br />
-          <b>0 dB</b> matches strict ISO: WTG LwA per IEC 61400-11 already encodes the
-          hemispherical reflection, so DΩ is 0.
+          Added to every band per Eq (1) <code>Lp = Lw + DΩ + Dc − A</code>.
+          <b> 0 dB</b> is strict ISO (IEC 61400-11 WTG data already encodes the
+          hemispherical reflection); <b>+3 dB</b> matches CONCAWE / AS 4959
+          practice.
         </div>
       </section>
       )}
@@ -2055,14 +2015,10 @@ export function SettingsTab(props: SettingsTabProps) {
           />
         </Field>
         <div className="hint">
-          ISO 9613-2 §8 long-term correction, <b>subtracted</b> from the downwind level:
-          <code> Cmet = C₀·[1 − 10(hs+hr)/dp]</code> (0 when dp ≤ 10(hs+hr)), where hs/hr
-          are the source/receiver heights and dp the ground-plane distance.
-          <br />
-          <b>0 dB</b> (default) = pure downwind, matching SoundPlan's default and the
-          validation set. Raise C₀ (typically <b>0–5 dB</b>, from local met statistics) to
-          discount distant sources for the long-term average — it only bites beyond
-          10(hs+hr) and grows with distance.
+          Long-term correction <b>subtracted</b> from the downwind level:
+          <code> Cmet = C₀·[1 − 10(hs+hr)/dp]</code>, zero within 10(hs+hr).
+          <b> 0 dB</b> (default) is pure downwind, matching SoundPLAN and the
+          validation set; typical values from local met statistics are 0–5 dB.
         </div>
       </section>
       )}
@@ -2139,11 +2095,10 @@ export function SettingsTab(props: SettingsTabProps) {
           </div>
         </Field>
         <div className="hint">
-          Caps the per-band diffraction attenuation Dz for BESS / auxiliary /
-          generic sources before it combines with Agr per the convention
-          above. Common project values are <b>2</b> or <b>5</b> dB. Wind
-          turbines have their own cap (Annex D — set above) and aren't
-          affected by this field.
+          Caps per-band Dz for BESS / auxiliary / generic sources; common
+          project values are <b>2</b> or <b>5</b> dB. Wind turbines use the
+          Annex D cap instead. <b>If barrier attenuation looks lower than your
+          geometry suggests, check this first.</b>
         </div>
       </section>
       )}
@@ -2235,12 +2190,11 @@ export function SettingsTab(props: SettingsTabProps) {
           </Field>
         </div>
         <div className="hint">
-          <b>Max distance:</b> sources further than this from a receiver are skipped
-          entirely. Set to <b>0</b> to disable. Default 20 km.
-          <br />
-          <b>Tree acceptance θ (Barnes-Hut):</b> when a cluster's bounding-box diagonal
-          divided by its distance to the receiver is below θ, the cluster collapses to
-          one virtual source. Lower = more accurate but slower (default 0.25).
+          <b>Max distance:</b> sources beyond this from a receiver are skipped;
+          <b> 0</b> disables. <b>Tree acceptance θ:</b> a source cluster whose
+          bounding-box diagonal over its distance falls below θ collapses to one
+          virtual source. Lower = more literal, slower. Values ≥ 1 have no error
+          guarantee — see Help → Methodology.
         </div>
       </section>
       )}

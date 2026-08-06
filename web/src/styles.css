@@ -320,6 +320,16 @@ header.app-header nav a:hover { background: var(--slate-1); }
 }
 .tab.filled .step-badge { background: var(--ink); color: var(--yellow); }
 .tab.on .step-badge { background: var(--ink); color: var(--yellow); }
+/* Settings gear: pushed to the panel's top-right corner, past the wrapping
+ * tab list. `margin-left: auto` claims the free space on whichever row it
+ * lands on, so it stays right-aligned as the panel is resized. */
+.tab-icon {
+  margin-left: auto;
+  font-size: 15px;
+  padding: 6px 9px 7px;
+  line-height: 1;
+}
+.tab-icon:hover { background: var(--paper-2); color: var(--ink); }
 .tab-body {
   flex: 1;
   overflow-y: auto;
