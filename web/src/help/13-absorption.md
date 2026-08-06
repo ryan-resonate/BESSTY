@@ -48,7 +48,7 @@ If you have a datasheet with per-band α, use the value at the dominant band of 
 
 The size that counts is the wall **as you drew it**. Each straight run between the vertices you clicked is one reflecting surface, so splitting a long wall into many short segments while drawing will reduce the reflection it produces.
 
-**Reflected levels are currently under-estimated.** A known limitation: a reflected path is also being screened by the very wall it reflects off, which costs it up to 20 dB (the standard's single-edge diffraction cap) for a tall wall. Reflections are off by default and flagged provisional, so no default result is affected — but treat the *magnitude* of a reflection as a lower bound for now. The absorption behaviour described above is unaffected: it scales the reflected path correctly whatever that path's level.
+**A wall never screens its own reflection.** ISO 9613-2 section 7.5.2 scores a reflected ray along its bent physical path, which touches the reflecting surface at the bounce and never crosses it — so the reflector contributes its absorption loss to its own ray and nothing else (ISO/TR 17534-3's reflecting-barrier case T19 lists no barrier attenuation for the reflected ray). BESSTY's solver implements exactly that: the one wall segment containing the bounce point is excused from screening the reflected ray, while a different wall — or a different part of the same wall, such as the other arm of an L — still screens it. This is verified against T19's reference value with the barrier acting as both screen and reflector, and against a mirrored-source hand calculation.
 
 ## What is not modelled
 

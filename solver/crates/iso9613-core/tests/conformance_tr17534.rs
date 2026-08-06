@@ -299,6 +299,93 @@ fn t19_reflecting_barrier_over_terrain() {
 }
 
 #[test]
+fn t19_reflector_double_listed_as_obstacle() {
+    // T19 again, but with the reflecting barrier ALSO listed as a Wall
+    // obstacle — which is how a real caller must describe a noise wall,
+    // because the same surface screens some paths and reflects others.
+    //
+    // §7.5.2 scores the reflected ray along the bent path, which touches the
+    // reflector and never crosses it; the TR's reflected-ray tables carry no
+    // Abar. So double-listing must NOT change the answer. Before the
+    // bounce-point exclusion in `walls_excluding_bounces`, this scene lost the
+    // reflection to diffraction over its own reflector (the total collapsed to
+    // roughly the direct-only 40.6 rather than 42.0) — the defect BESSTY's
+    // first-principles validation caught in the field.
+    let mut scene = tr_scene(t08_ground(), GroundMethod::General, vec![]);
+    scene.terrain = Some(t07_terrain(true));
+    scene.sources[0].position = [10.0, 10.0, 1.0];
+    scene.sources[0].height_agl = 1.0;
+    scene.receivers[0].position = [200.0, 50.0, 14.0];
+    scene.receivers[0].height_agl = 4.0;
+    scene.obstacles = vec![wall_crest(
+        [114.0, 52.0],
+        [170.0, 60.0],
+        [0.0, 0.0],
+        [15.0, 15.0],
+    )];
+    scene.reflectors = vec![Reflector {
+        segment: [[114.0, 52.0], [170.0, 60.0]],
+        base_z: 0.0,
+        top_z: 15.0,
+        alpha: 0.1,
+        alpha_bands: Some(vec![0.1, 0.1, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.5]),
+    }];
+    let (_bands, total) = run(&scene);
+    assert_relative_eq!(total, 42.00, epsilon = 0.05);
+}
+
+#[test]
+fn reflected_ray_is_still_screened_by_other_walls() {
+    // The exclusion must excuse ONLY the bounce: a second wall standing across
+    // the reflected leg still screens it. Geometry: source and receiver on the
+    // same side of a long reflector; a tall blocker crosses the image→receiver
+    // path between the reflection point and the receiver, but NOT the direct
+    // path. With the blocker present the total must drop back toward the
+    // direct-only level.
+    let ground = Ground { default_g: 0.0, regions: vec![] };
+    let mk = |obstacles: Vec<Obstacle>, reflect: bool| {
+        let mut scene = tr_scene(ground.clone(), GroundMethod::General, obstacles);
+        scene.sources[0].position = [0.0, 0.0, 4.0];
+        scene.sources[0].height_agl = 4.0;
+        scene.receivers[0].position = [200.0, 0.0, 4.0];
+        scene.receivers[0].height_agl = 4.0;
+        if reflect {
+            scene.reflectors = vec![Reflector {
+                segment: [[-60.0, 25.0], [260.0, 25.0]],
+                base_z: 0.0,
+                top_z: 20.0,
+                alpha: 0.0,
+                alpha_bands: None,
+            }];
+        }
+        run(&scene).1
+    };
+    // The reflector as its own obstacle: must not self-screen.
+    let refl_wall = wall([-60.0, 25.0], [260.0, 25.0], 20.0);
+    let open = mk(vec![refl_wall.clone()], false);
+    let with_reflection = mk(vec![refl_wall.clone()], true);
+    let gain = with_reflection - open;
+    assert!(
+        gain > 1.5 && gain < 3.0,
+        "an unscreened image at nearly the direct distance should add ~2-3 dB, got {gain:.2}"
+    );
+    // A 20 m blocker across the reflected leg only (crosses y=12.5 at x=150,
+    // between bounce and receiver; the direct path at y=0 misses it).
+    let blocker = wall([140.0, 5.0], [160.0, 40.0], 20.0);
+    let blocked = mk(vec![refl_wall, blocker], true);
+    assert!(
+        with_reflection - blocked > 1.0,
+        "a wall across the reflected leg must attenuate the reflection: \
+         open {with_reflection:.2} vs blocked {blocked:.2}"
+    );
+    assert!(
+        (blocked - open).abs() < 1.0,
+        "with the reflection screened, the total should sit near direct-only \
+         ({blocked:.2} vs {open:.2})"
+    );
+}
+
+#[test]
 fn t14_polygonal_building_over_terrain() {
     // §6.2.15 — octagonal building (h=30) over the T06 terrain, ground areas
     // A1=0.5/A2=0.9/A3=0.2, S(10,10,1) → R(200,50,28.5). Table 45. The footprint

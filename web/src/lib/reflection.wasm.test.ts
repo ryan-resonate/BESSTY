@@ -465,60 +465,49 @@ function reflectedContribution(hz: number, wallHeightM: number): number {
   return delta > 0 ? 10 * Math.log10(delta) : -Infinity;
 }
 
-test('KNOWN LIMITATION: a reflected path is screened by the wall it reflects off', () => {
-  // ------------------------------------------------------------------
-  // This test asserts a DEFECT, deliberately, so it is visible and cannot
-  // regress silently. It should be INVERTED once the engine is fixed.
-  // ------------------------------------------------------------------
+test('V-R2d: the reflected path matches a source mirrored in the wall', () => {
+  // A specular reflection is the field of the source mirrored in the facade
+  // (§7.5.2: the attenuation follows the bent path, which touches the
+  // reflector at the bounce and never crosses it — ISO/TR 17534-3 T19's
+  // reflected-ray tables carry no Abar). The wall here is 25 m to the side of
+  // a 200 m path, so the image sits 50 m off and its path is 206.2 m against
+  // the direct 200 m.
   //
-  // A specular reflection is the field of the source mirrored in the facade.
-  // The wall here is 25 m to the side of a 200 m path, so the image sits 50 m
-  // off and its path is 206.2 m against the direct 200 m — worth about 0.3 dB.
-  // The reflected contribution should therefore land within a decibel or so of
-  // the mirrored source solved on its own.
-  //
-  // It does not. BESSTY lists a barrier in BOTH the `obstacles` and
-  // `reflectors` arrays — intentionally, because the engine is documented as
-  // keeping the two apart so a reflected ray is not re-diffracted by the
-  // surface it bounced off. Measurement says otherwise: the image-source path
-  // runs from the image, through the facade at exactly the reflection point, to
-  // the receiver, and the engine screens it against that same wall. The loss
-  // therefore GROWS with the wall's height and saturates at the 20 dB
-  // single-edge Dz cap, while being almost independent of how far the wall is
-  // from the path — the signature of screening, not of a longer path.
-  //
-  // Consequence: reflected contributions off barriers are under-estimated, by
-  // up to 20 dB for a tall wall. Reflections are off by default and documented
-  // as provisional, so no default result is affected. The fix belongs in the
-  // engine (exclude a reflector's own surface from the screening test for the
-  // path that reflected off it), which is outside this plan's scope.
+  // HISTORY: this test previously asserted the OPPOSITE — the engine screened
+  // a reflected ray against the wall it bounced off (BESSTY lists a barrier as
+  // both obstacle and reflector, and the straight image→receiver segment
+  // pierces the reflector at the bounce by construction). The loss grew with
+  // wall height and saturated at exactly the 20 dB single-edge Dz cap. Fixed
+  // in the engine by `walls_excluding_bounces`: only the wall segment
+  // containing a bounce point is excused from screening the reflected ray.
   const image = solve({
     sources: [{ id: 'img', latLng: at(0, 2 * R2_WALL_N), heightAglM: 4, lw: lwFlat() }],
     receiver: at(200, 0),
     rxHeight: 4,
   })[bandIndex(500)];
 
+  // The reflected contribution now sits beside the mirrored source solved
+  // directly — the residual difference is the image path's slightly different
+  // ground interaction, not screening.
   const r20 = reflectedContribution(500, 20);
-  // The defect: far below the mirrored source, not within a decibel of it.
   assert.ok(
-    image - r20 > 10,
-    'if the reflected contribution is now close to the mirrored source, the engine '
-    + `has been fixed — invert this test. image=${image.toFixed(2)} reflected=${r20.toFixed(2)}`,
+    Math.abs(image - r20) < 1.5,
+    `reflected contribution (${r20.toFixed(2)} dB) should sit within 1.5 dB of `
+    + `the mirrored source solved directly (${image.toFixed(2)} dB)`,
   );
 
-  // Signature 1: the loss grows with wall height and saturates at the Dz cap.
+  // And it no longer depends on the wall's height (only the Fresnel gate
+  // cares, and every height here passes it at 500 Hz).
   const r10 = reflectedContribution(500, 10);
   const r40 = reflectedContribution(500, 40);
-  const r80 = reflectedContribution(500, 80);
-  assert.ok(r10 > r20 && r20 > r40, `taller wall ⇒ more self-screening (${r10.toFixed(2)}, ${r20.toFixed(2)}, ${r40.toFixed(2)})`);
-  assert.ok(Math.abs(r40 - r80) < 0.1, 'the self-screening saturates at the 20 dB single-edge cap');
   assert.ok(
-    Math.abs((image - r40) - 20) < 1.0,
-    `saturated loss should equal the 20 dB Dz cap, got ${(image - r40).toFixed(2)} dB`,
+    Math.abs(r10 - r20) < 0.3 && Math.abs(r20 - r40) < 0.3,
+    `reflected level must not vary with wall height once the Fresnel gate passes `
+    + `(${r10.toFixed(2)}, ${r20.toFixed(2)}, ${r40.toFixed(2)})`,
   );
 
-  // Signature 2: moving the wall further from the path barely changes the
-  // reflected level, which no genuine image-source geometry would do.
+  // Moving the wall further away weakens the reflection by the longer image
+  // path — the genuine image-source geometry, restored.
   const farWall = (n: number): number => {
     const c = (on: boolean): Case => ({
       sources: r2Sources(),
@@ -532,9 +521,16 @@ test('KNOWN LIMITATION: a reflected path is screened by the wall it reflects off
     const d = energy(solve(c(true))[i]) - energy(solve(c(false))[i]);
     return d > 0 ? 10 * Math.log10(d) : -Infinity;
   };
+  const near = farWall(25);
+  const far = farWall(100);
+  // Wall offsets 25 m and 100 m put the image at 50 m and 200 m: image paths
+  // √(200²+50²) = 206 m and √(200²+200²) = 283 m ⇒ ~2.7 dB of extra
+  // divergence (plus a touch of air absorption and ground-geometry drift).
+  const predicted = 20 * Math.log10(Math.hypot(200, 200) / Math.hypot(200, 50));
   assert.ok(
-    Math.abs(farWall(25) - farWall(100)) < 1.0,
-    'reflected level is nearly independent of wall offset — screening, not path length',
+    Math.abs((near - far) - predicted) < 1.0,
+    `a further wall must cost the divergence of the longer image path `
+    + `(expected ~${predicted.toFixed(2)} dB, got ${(near - far).toFixed(2)} dB)`,
   );
 });
 

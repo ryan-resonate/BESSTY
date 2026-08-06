@@ -847,8 +847,21 @@ not just the engine. Each runs at θ = 0 (no clustering) and default θ.
 | V | V-R1…V-B1 validation cases + reflection review | M | **DONE** `f90f6b6` |
 | I | Barnes-Hut debug layer | M | **DONE** |
 | H | DEM fetch box ignores calc-area rotation (corner under-coverage) | S | **DONE** |
-| P3 | Contour extraction in worker | S | queued |
-| P4 | Incremental regrid | L | later |
+| P3 | Contour extraction in worker | S | **DONE** `e24bf83` |
+| P4 | Incremental regrid | L | **DONE** `e24bf83` |
+| R | Engine: reflected ray not screened by its own reflector (§7.5.2 / T19) | M | **DONE** |
+| P5 | Wall-segment pruning in the engine (approved, Ryan 2026-08-06) | M | queued |
+
+### P5 — wall-segment pruning (approved, queued)
+
+`project_walls` runs once per source→receiver pair and does a line-intersection
+test against EVERY wall segment in the scene — segments scale as drawn-length ÷
+10 m, so 2 km of site fencing is 200 tests inside the innermost loop. Add a
+cheap spatial prune (per-wall AABB against the pair's bounding box, or a
+per-tile pre-filter at decomposition time) so distant walls skip the per-pair
+test entirely. Decision recorded: do NOT tie the 10 m densification pitch to
+DEM resolution — too many edge cases (Ryan). Profile before/after on a
+representative project so the win is a number, not a hope.
 
 ## Findings from the V-item validation (2026-08-06)
 
@@ -875,18 +888,36 @@ reflection in every band but the highest, and one wall consumed 32 of the
 46-surface order-3 budget. Facades now come from the drawn edges
 (`facadesFromBarrier`), ground still sampled at the screening pitch.
 
-**Defect found, NOT fixed — a reflected path is screened by the wall it
-reflects off.** BESSTY lists a barrier in both `obstacles` and `reflectors`,
-which the engine is documented as keeping apart so a reflected ray is not
-re-diffracted by its own surface. Measurement says otherwise: the image-source
-path crosses the facade at exactly the reflection point and is screened there.
-The loss grows with wall height, saturates at exactly the 20 dB single-edge cap,
-and is nearly independent of the wall's offset — the signature of screening, not
-of a longer path. **Reflected contributions off barriers are therefore a lower
-bound, under-estimated by up to 20 dB for a tall wall.** Reflections are off by
-default and documented provisional, so no default result is affected. The fix
-belongs in the engine (exclude a reflector's own surface from the screening test
-for the path that reflected off it) and is outside this plan's scope — it needs
-Ryan's go-ahead to touch the Rust crate. Pinned by a test that asserts the
-defect so it cannot regress silently, and documented in Help → Barrier
-absorption.
+**Defect found and FIXED (engine, Ryan-approved 2026-08-06) — a reflected path
+was screened by the wall it reflects off.** BESSTY lists a barrier in both
+`obstacles` and `reflectors` (it must: the same wall screens some paths and
+reflects others), and the engine scored the reflected ray on the straight
+image→receiver segment against ALL obstacles — a segment that pierces the
+reflector at the bounce by construction. The loss grew with wall height,
+saturated at exactly the 20 dB single-edge cap, and was nearly independent of
+the wall's offset — the signature of screening, not of a longer path.
+
+The standards ruled decisively: §7.5.2 scores reflected sound "according to the
+propagation path of the reflected sound" — the bent ray, which touches the
+reflector and never crosses it — and ISO/TR 17534-3 T19's reflected-ray tables
+(66–67) carry **no Abar term at all** (LW with the α loss, Aatm, and Agr along
+the bent path). SoundPLAN and CadnaA certify against those tables.
+
+Fix: `walls_excluding_bounces` in `scene/mod.rs` — when scoring a reflected
+ray, the wall segment(s) containing a bounce point are excused from screening;
+every other crossing (another wall, another part of the same wall) still
+screens. Applied to first-order, higher-order chains (bounce points now
+exported from `ReflectionChain`), and cylinder reflections. Regression-locked
+three ways: `t19_reflector_double_listed_as_obstacle` (the TR's own 42.00
+reference with the barrier double-listed), `reflected_ray_is_still_screened_by_
+other_walls` (only the bounce is excused), and web-side V-R2d (the reflected
+contribution matches a mirrored source to <1.5 dB, is height-independent once
+the Fresnel gate passes, and weakens with wall offset by exactly the image
+path's divergence). 21/21 conformance, clippy clean, wasm rebuilt.
+
+Known residual (documented, second-order): the reflected ray's ground regions
+are still taken along the straight image line's plan route rather than the bent
+route (T19 passes within tolerance regardless), and exotic order-≥2 geometries
+(corner reflectors) can still see a spurious crossing of an EARLIER facade in
+the chain where the straight line happens to cross its real segment away from
+the bounce.

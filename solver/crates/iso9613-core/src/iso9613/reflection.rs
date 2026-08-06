@@ -86,6 +86,12 @@ pub struct ReflectionChain {
     /// Highest-order image source (`S_n`); its straight-line distance to the
     /// receiver equals the real bent path length.
     pub image_source: Vec3,
+    /// Plan positions of the reflection points `P_0 … P_{k-1}`, in bounce
+    /// order. The scene layer needs these to excuse the reflecting surfaces
+    /// from screening their own ray at the bounce (§7.5.2 — the attenuation of
+    /// reflected sound follows the BENT path, which touches each reflector and
+    /// never crosses it).
+    pub bounces: Vec<[f64; 2]>,
 }
 
 /// Build the nth-order reflection for the ordered `facades`, gated per-reflector
@@ -145,7 +151,13 @@ pub fn reflect_chain(
             }
         }
     }
-    Some((ReflectionChain { image_source: images[k] }, valid))
+    Some((
+        ReflectionChain {
+            image_source: images[k],
+            bounces: points.iter().map(|p| [p.e, p.n]).collect(),
+        },
+        valid,
+    ))
 }
 
 /// A vertical cylindrical reflector (vessel, tank, curved façade) — ISO

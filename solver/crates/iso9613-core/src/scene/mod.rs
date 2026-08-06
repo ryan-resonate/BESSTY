@@ -846,6 +846,45 @@ impl Scene {
 /// All ordered reflector sequences of length 2..=`max_order` from `m` reflectors,
 /// with no immediate repeat (a ray can't bounce off the same facade twice in a
 /// row). Drives the higher-order reflection search (§7.5.3).
+/// The obstacle set for scoring a REFLECTED ray: every wall segment except
+/// those containing a bounce point.
+///
+/// §7.5.2 prescribes the attenuation of reflected sound "according to the
+/// propagation path of the reflected sound" — the bent ray S→P→R, which
+/// touches each reflecting surface at its bounce point and never crosses it.
+/// The evaluator scores the straight image→receiver segment instead, and that
+/// segment pierces the reflecting surface at P by construction. A surface
+/// listed both as an obstacle and as a reflector (the normal case: a noise
+/// wall screens some paths and reflects others) therefore had its own
+/// reflection diffracted over itself — up to the full 20 dB single-edge cap of
+/// spurious Abar, growing with wall height and independent of offset. ISO/TR
+/// 17534-3 T19's reflected-ray tables (66–67) carry no Abar at all: the
+/// reflector contributes its `10·lg(1−α)` loss and nothing else to its own ray.
+///
+/// Obstacles and reflectors arrive as separate lists with no identity link, so
+/// the shared surface is recognised geometrically: a bounce point lies ON it.
+/// Only the segment(s) containing a bounce are excused — a different wall, or
+/// a different PART of the same wall (an L-shape whose other arm blocks the
+/// reflected leg), still screens. The 1 cm tolerance absorbs floating-point
+/// noise; the bounce is computed from the same line–line intersection the
+/// crossing test performs, so the true distance is ~1e-9 m.
+fn walls_excluding_bounces(walls: &[WallBarrier], bounces: &[[f64; 2]]) -> Vec<WallBarrier> {
+    const EPS_M: f64 = 0.01;
+    let dist_sq = |p: &[f64; 2], w: &WallBarrier| -> f64 {
+        let (vx, vy) = (w.b_e - w.a_e, w.b_n - w.a_n);
+        let (wx, wy) = (p[0] - w.a_e, p[1] - w.a_n);
+        let len2 = vx * vx + vy * vy;
+        let t = if len2 > 0.0 { (wx * vx + wy * vy).clamp(0.0, len2) / len2 } else { 0.0 };
+        let (dx, dy) = (p[0] - (w.a_e + t * vx), p[1] - (w.a_n + t * vy));
+        dx * dx + dy * dy
+    };
+    walls
+        .iter()
+        .filter(|w| !bounces.iter().any(|p| dist_sq(p, w) <= EPS_M * EPS_M))
+        .copied()
+        .collect()
+}
+
 fn reflection_sequences(m: usize, max_order: usize) -> Vec<Vec<usize>> {
     fn rec(m: usize, max_order: usize, cur: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
         if cur.len() >= 2 {
@@ -1175,6 +1214,21 @@ fn solve_cached(
                 // §7.5 first-order reflections (general sources): each valid
                 // facade adds an image-source contribution, energy-summed with
                 // the direct path per band (gated by the Fresnel size validity).
+                //
+                // Screening of the reflected ray goes through
+                // `walls_excluding_bounces`: §7.5.2 prescribes the attenuation
+                // terms "according to the propagation path of the reflected
+                // sound" — the BENT path S→P→R, which touches the reflector at
+                // the bounce and never crosses it. The evaluator scores the
+                // straight image→R segment instead, and that segment pierces
+                // the reflecting surface at P by construction. When the same
+                // surface is also listed as an obstacle (a wall that screens
+                // other paths AND reflects this one — the normal case for a
+                // noise wall), the ray was diffracted over its own reflector:
+                // up to the full 20 dB single-edge cap of spurious Abar.
+                // ISO/TR 17534-3 T19's reflected-ray tables (66–67) carry NO
+                // Abar term — the reflector contributes its α loss and nothing
+                // else to its own ray.
                 if matches!(src.kind, SourceKind::General) && !scene.reflectors.is_empty() {
                     let centres = system.centres_exact();
                     for reflector in &scene.reflectors {
@@ -1195,11 +1249,15 @@ fn solve_cached(
                                 x + 10.0 * (1.0 - alpha).max(1e-12).log10()
                             }),
                         );
+                        let refl_walls = walls_excluding_bounces(
+                            &walls,
+                            &[[refl.refl_point.e, refl.refl_point.n]],
+                        );
                         let refl_lp = model.evaluate_general(&GeneralEval {
                             lw: &img_lw, source: refl.image_source, receiver: r,
                             h_s: src.height_agl, h_r: rx.height_agl,
                             g_source, g_middle, g_receiver,
-                            barriers: &walls, lateral: &lateral,
+                            barriers: &refl_walls, lateral: &lateral,
                             // Terrain screening + building wraps of the reflected
                             // ray (a distinct image→R profile) are deferred; the
                             // direct path dominates in practice.
@@ -1242,6 +1300,9 @@ fn solve_cached(
                         else {
                             continue;
                         };
+                        // Same §7.5.2 rule as first order: no facade in the
+                        // chain screens its own ray at a bounce point.
+                        let refl_walls = walls_excluding_bounces(&walls, &chain.bounces);
                         // Image LW = LW + Σ per-band reflection losses of the chain.
                         let img_lw = BandSpectrum::from_iter(
                             system,
@@ -1264,7 +1325,7 @@ fn solve_cached(
                             lw: &img_lw, source: chain.image_source, receiver: r,
                             h_s: src.height_agl, h_r: rx.height_agl,
                             g_source, g_middle, g_receiver,
-                            barriers: &walls, lateral: &lateral,
+                            barriers: &refl_walls, lateral: &lateral,
                             terrain_edges: &[], footprints: &[], solids: &[],
                             dz_cap: scene.settings.dz_cap_db, atm,
                             ground_method: scene.settings.ground_method, hm_override,
@@ -1302,11 +1363,17 @@ fn solve_cached(
                                 x + 10.0 * (1.0 - alpha).max(1e-12).log10() - cr.a_curv
                             }),
                         );
+                        // Same §7.5.2 rule: a wall coinciding with the tangent
+                        // point must not screen the ray it reflects.
+                        let refl_walls = walls_excluding_bounces(
+                            &walls,
+                            &[[cr.refl_point.e, cr.refl_point.n]],
+                        );
                         let refl_lp = model.evaluate_general(&GeneralEval {
                             lw: &img_lw, source: cr.image_source, receiver: r,
                             h_s: src.height_agl, h_r: rx.height_agl,
                             g_source, g_middle, g_receiver,
-                            barriers: &walls, lateral: &lateral,
+                            barriers: &refl_walls, lateral: &lateral,
                             terrain_edges: &[], footprints: &[], solids: &[],
                             dz_cap: scene.settings.dz_cap_db, atm,
                             ground_method: scene.settings.ground_method, hm_override,

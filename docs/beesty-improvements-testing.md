@@ -499,10 +499,17 @@ Automated (`npm test`), so nothing to do by hand — but the findings matter:
   beside a 200 m path reflects nothing below ~550 Hz; a 20 m wall reflects from
   ~125 Hz. And the size that counts is each straight run **as drawn** — so
   drawing one long wall as many short segments weakens its reflection.
-- **Reflected levels are currently under-estimated** (up to 20 dB for a tall
-  wall) because a reflected path is screened by the wall it bounces off. Off by
-  default, flagged provisional; treat reflection magnitudes as a lower bound
-  until the engine fix lands.
+- **Reflected levels are no longer under-estimated** — the engine fix landed
+  (2026-08-06, Ryan-approved). A wall no longer screens its own reflection:
+  §7.5.2 scores the bent path, which touches the reflector and never crosses
+  it, and ISO/TR 17534-3 T19's reflected-ray tables carry no Abar. Verified
+  three ways: the TR's own 42.00 dB reference with the barrier double-listed
+  as screen + reflector; a wall across the reflected leg still screens it;
+  and the reflected contribution now matches a mirrored source to <1.5 dB,
+  independent of wall height, weakening with offset by exactly the image
+  path's divergence. To eyeball in the app: reflections ON, receiver on the
+  source side of a tall wall — making the wall taller must no longer make the
+  reflection weaker.
 
 ## Rotated calculation areas (H)
 
