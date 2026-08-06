@@ -173,6 +173,16 @@ export interface SceneInput {
   /// Requested specular order (1–4). Degraded automatically if the reflector
   /// count would blow the engine's path-enumeration guard.
   maxReflectionOrder?: number;
+  /// Receiver positions to CULL reflecting facades against, when the scene's
+  /// own `receivers` list is not yet populated.
+  ///
+  /// The grid builds one Scene per tile with `receivers: []` and swaps the
+  /// cells in afterwards via `WasmSession::set_receivers` — so the corridor
+  /// cull had no receiver to measure a facade against, every facade scored
+  /// `Infinity`, and CONTOURS SILENTLY GOT NO REFLECTIONS AT ALL while point
+  /// receivers (which pass real receivers here) worked. The grid now passes
+  /// its tile's cell extent.
+  cullReceiversLatLng?: Array<[number, number]>;
   /// Absorption for container facades. Fixed at 0 (perfectly reflecting) and
   /// deliberately NOT exposed to users yet — Ryan wants to understand how the
   /// property behaves in the model before it becomes a knob people can turn.
@@ -456,11 +466,17 @@ export function buildScene(input: SceneInput): Scene {
 
   // I18: fit the candidate facades into the engine's path-enumeration guard,
   // degrading the order rather than emitting a scene the engine will reject.
-  const cull = wantReflections && candidateFacades.length > 0
+  // Cull against the scene's receivers, or — when they are added later, as the
+  // grid does — against the extent the caller says they will occupy. Culling
+  // against an empty list would drop every facade.
+  const cullTargets: Array<[number, number]> = input.cullReceiversLatLng
+    ? input.cullReceiversLatLng.map((ll) => latLngToLocalMetres(ll, origin))
+    : receivers.map((r) => [r.position[0], r.position[1]] as [number, number]);
+  const cull = wantReflections && candidateFacades.length > 0 && cullTargets.length > 0
     ? cullFacades(
         candidateFacades,
         sources.map((s) => [s.position[0], s.position[1]] as [number, number]),
-        receivers.map((r) => [r.position[0], r.position[1]] as [number, number]),
+        cullTargets,
         { order: input.maxReflectionOrder ?? 1 },
       )
     : null;

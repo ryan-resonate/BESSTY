@@ -300,6 +300,11 @@ export function runBatchedGrid(
         roofOffsetM,
         includeReflections,
         maxReflectionOrder,
+        // The Scene is built with no receivers (cells arrive via
+        // `set_receivers`), so the facade cull needs to know where they WILL
+        // be — otherwise every reflector is dropped and contours lose their
+        // reflections entirely while point receivers keep theirs.
+        cullReceiversLatLng: cells.map((c) => c.latLng),
       });
 
       let session: WasmSession;

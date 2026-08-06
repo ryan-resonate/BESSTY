@@ -217,6 +217,18 @@ export function SidePanel(props: Props) {
 
   return (
     <aside className="side-panel" onClick={maybeCancelAddMode}>
+      {/* Own row above the tabs: inside the tab strip it rode the LAST wrapped
+          row, which put it at the bottom of the tab block on a narrow panel. */}
+      {props.onOpenSettings && (
+        <div className="side-panel-header">
+          <button
+            className="gear-btn"
+            title="Settings"
+            aria-label="Settings"
+            onClick={() => props.onOpenSettings?.()}
+          >⚙</button>
+        </div>
+      )}
       <div className="tabs">
         {TABS.map((t) => (
           <button
@@ -228,18 +240,6 @@ export function SidePanel(props: Props) {
             {t.label}
           </button>
         ))}
-        {/* Settings is a floating window, not a tab — it has to stay open
-            while you work on the map, which a tab cannot do. The gear lives
-            here (panel top-right) rather than on the map, where it competed
-            with the zoom controls. */}
-        {props.onOpenSettings && (
-          <button
-            className="tab tab-icon"
-            title="Settings"
-            aria-label="Settings"
-            onClick={() => props.onOpenSettings?.()}
-          >⚙</button>
-        )}
       </div>
 
       <div className="tab-body">
@@ -1450,11 +1450,30 @@ function LayersTab(props: Props) {
               <span>Debug: Barnes-Hut clustering</span>
             </label>
             <div className="hint" style={{ marginTop: 4 }}>
-              One box per grid tile, labelled with the number of sources the
-              solver used for it: <b>n</b> where every source is kept, or
-              <b> n (c)</b> where c of them are cluster stand-ins. Tiles over
-              the array should show nearly every source; distant tiles should
-              collapse. Click a tile to outline the clusters it used.
+              Shows how the solver <b>grouped your sources</b> for the contour
+              grid. The grid is computed in square tiles, and each tile decides
+              for itself which sources to keep separate and which to merge —
+              so this draws one box per tile with what that tile actually used.
+              <br /><br />
+              The label reads <b>n</b>, the number of sources the tile solved,
+              and <b>(Nc)</b> when N of those are <b>cluster stand-ins</b>: one
+              virtual source replacing a whole group of real ones, placed at
+              their combined acoustic centre and carrying their summed sound
+              power. A tile far from the site can treat the whole array as a
+              single stand-in without changing its answer; a tile sitting among
+              the units cannot, because its nearest sources dominate.
+              <br /><br />
+              Colour is how much merging happened — <span style={{ color: '#16a34a' }}>green</span> mostly
+              merged, <span style={{ color: '#ef4444' }}>red</span> barely.
+              Expect green far out and red over the array. <b>A far tile that
+              stays red is the bug this view exists to reveal.</b>
+              <br /><br />
+              <b>Click a tile</b> to see the grouping itself: each stand-in it
+              accepted is outlined as a dashed purple box over the region it
+              replaced, with a dot at its centre labelled by how many real
+              sources it stands for and their combined sound power. Raise
+              <b> Tree acceptance θ</b> (Settings → Performance) and more tiles
+              turn green.
             </div>
           </Field>
         )}
@@ -2203,8 +2222,8 @@ export function SettingsTab(props: SettingsTabProps) {
               })}
             />
           </Field>
-          <Field label="Tree acceptance θ (0.1–2.0)">
-            <NumericInput min={0.1} max={2} step={0.05}
+          <Field label="Tree acceptance θ (0.1–3.0)">
+            <NumericInput min={0.1} max={3} step={0.05}
               value={propagation.treeAcceptanceTheta} fallback={0.25}
               onChange={(v) => update({
                 propagation: { ...propagation, treeAcceptanceTheta: v },
@@ -2217,7 +2236,9 @@ export function SettingsTab(props: SettingsTabProps) {
           <b> 0</b> disables. <b>Tree acceptance θ:</b> a source cluster whose
           bounding-box diagonal over its distance falls below θ collapses to one
           virtual source. Lower = more literal, slower. Values ≥ 1 have no error
-          guarantee — see Help → Methodology.
+          guarantee at all and are a stress test, not a setting for reportable
+          results — see Help → Methodology. Watch the effect with Layers →
+          Debug → Barnes-Hut clustering.
         </div>
       </section>
       )}

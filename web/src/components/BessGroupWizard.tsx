@@ -312,24 +312,6 @@ export function BessGroupWizard(props: Props) {
                 </div>
               </div>
 
-              {/* Only shown when there is something to discard, so it can't be
-                  mistaken for a general "reset the group" button. */}
-              {isEdit && overrideCount > 0 && (
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: 10, marginTop: 2,
-                  padding: '7px 9px', borderRadius: 6,
-                  background: 'var(--paper-2)', border: '1px solid var(--light)',
-                }}>
-                  <div style={{ flex: 1, fontSize: 11, color: 'var(--ink-soft)' }}>
-                    <b>{overrideCount}</b> unit{overrideCount === 1 ? ' has' : 's have'} manual
-                    edits (moved, re-modelled or re-elevated individually). These are kept
-                    when the layout changes.
-                  </div>
-                  <button type="button" onClick={() => { void resetOverrides(); }} style={btnStyle}>
-                    Reset overrides
-                  </button>
-                </div>
-              )}
 
               {/* Top-level 2-D repeat of the whole sequence. */}
               <span style={fieldLabelStyle}>Repeat whole sequence</span>
@@ -489,7 +471,22 @@ export function BessGroupWizard(props: Props) {
             <kbd style={kbdStyle}>Esc</kbd>
             {editingChipKey !== null ? ' closes the segment editor' : ' cancels'}
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {/* Only present when there is something to discard, so it can't be
+                mistaken for a general "reset the group" button. Sits with the
+                other actions rather than buried in the form. */}
+            {isEdit && overrideCount > 0 && (
+              <button
+                type="button"
+                onClick={() => { void resetOverrides(); }}
+                style={btnStyle}
+                title={`${overrideCount} unit${overrideCount === 1 ? ' has' : 's have'} manual `
+                  + 'edits (moved, re-modelled or re-elevated individually). They are kept '
+                  + 'when the layout changes; this discards them.'}
+              >
+                Reset overrides ({overrideCount})
+              </button>
+            )}
             <button type="button" onClick={props.onCancel} style={btnStyle}>Cancel</button>
             <button type="button" onClick={() => props.onApply(group)} style={primaryBtnStyle}>
               {isEdit ? 'Save changes' : 'Apply group'}

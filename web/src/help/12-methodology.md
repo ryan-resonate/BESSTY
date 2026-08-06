@@ -20,7 +20,11 @@ Walking the tree for a receiver at distance `d` from a node, the acceptance test
 
 Wind turbines are never folded into a cluster: the walk recurses until each turbine is an individual source, so its Annex D treatment survives.
 
-Because the centroid is energy-weighted, first-order position errors cancel and the aggregate error is second order in `s/d` — well under a decibel at the default θ of 0.25. Two caveats: screening is evaluated along the centroid ray only, so a cluster straddling a barrier edge or a ridge line smears members that are actually screened differently; and **θ at or above 1 carries no error guarantee at all**, since a member can then sit arbitrarily close to the receiver. Treat high θ as a stress test, not a setting for reportable results. Set θ to 0 to disable clustering entirely.
+Because the centroid is energy-weighted, first-order position errors cancel and the aggregate error is second order in `s/d` — well under a decibel at the default θ of 0.25. Two caveats: screening is evaluated along the centroid ray only, so a cluster straddling a barrier edge or a ridge line smears members that are actually screened differently; and **θ at or above 1 carries no error guarantee at all**, since a member can then sit arbitrarily close to the receiver. Treat high θ as a stress test, not a setting for reportable results. Set θ to 0 to disable clustering entirely. The setting accepts up to 3 so the behaviour can be explored, but nothing above about 0.5 belongs in a reported result.
+
+### Seeing it
+
+Layers → Debug → **Barnes-Hut clustering** draws the grouping the solver actually used. One box per grid tile, labelled with the number of sources that tile solved and how many of those were cluster stand-ins, coloured by how much merging happened. Clicking a tile outlines each stand-in over the region it replaced, with its member count and combined sound power. It runs the same tree and the same per-tile walk the solver does, so what it draws is what was computed — not a reconstruction that could drift.
 
 ## Reflections
 

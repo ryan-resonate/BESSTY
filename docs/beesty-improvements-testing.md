@@ -518,3 +518,57 @@ Automated (`npm test`), so nothing to do by hand — but the findings matter:
   0 m (sea level) because a DEM miss reads as zero rather than an error.
 - Worth one check on a sloping site: rotate, regrid, and confirm the contours
   near the corners look like the terrain rather than flat.
+
+---
+
+# Addendum (2026-08-07) — grid reflections fixed, plus four UI items
+
+## BUG: contours had NO reflections at all *(the important one)*
+
+Ryan's report: a U of noise wall open on one side showed identical contours at
+α = 0 and α = 1, while point receivers moved correctly.
+
+Cause: `buildScene` culls candidate reflecting facades against the scene's
+receivers (a facade far from every source→receiver corridor cannot carry a
+specular path). The grid builds ONE scene per tile with `receivers: []` — the
+cells are swapped in afterwards through `WasmSession::set_receivers` — so the
+cull had nothing to measure against, every facade scored `Infinity`, and the
+grid was handed an empty reflector list. Point receivers pass real receivers,
+which is why only they worked.
+
+Fixed by giving the builder the cell extent the tile is about to solve
+(`cullReceiversLatLng`). Two regression tests: a U-shaped reflective wall must
+change grid levels between α = 0 and α = 1, and an α = 1 wall must reproduce
+the reflections-off grid cell for cell. Both verified to fail without the fix.
+
+To check in the app: draw a U open on one side, reflections ON for grids, run
+a contour. Set the wall α to 0, re-run, then α to 1 and re-run — **the open
+side must be louder with α = 0**. Point receivers in the same spot should move
+by a similar amount.
+
+## BESS wizard
+
+- **Reset overrides** moved to the footer beside Cancel / Save changes, and
+  now shows the count on the button.
+- The confirmation it raises appeared BEHIND the wizard (the wizard sits at
+  z-index 9000, the dialog backdrop was at 1000). Dialogs now sit above every
+  window. Worth a quick check that the Help and Settings windows still
+  layer sensibly, and that a confirm raised from either appears in front.
+
+## Settings gear
+
+Moved to its own row at the very top-right of the side panel and made ~50%
+larger. It was inside the tab strip, which wraps — so on a narrow panel it
+rode the last wrapped row and appeared at the BOTTOM of the tab block.
+
+## Barnes-Hut debug layer
+
+- Layers-tab text now explains what the view is for, what a **cluster
+  stand-in** is (one virtual source replacing a group of real ones at their
+  combined acoustic centre, carrying their summed sound power), what the
+  `n (Nc)` label means, what the colours mean, and that **clicking a tile is
+  how you see the grouping itself**.
+- Cluster labels now read `12 sources → 1 · Lw 82 dB(A)` rather than `12× · Lw 82`.
+- **Tree acceptance θ now accepts up to 3** (was 2). The help is explicit that
+  anything at or above 1 has no error guarantee and belongs in exploration,
+  not in a reported result.

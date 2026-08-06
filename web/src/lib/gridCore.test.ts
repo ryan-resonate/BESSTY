@@ -599,3 +599,72 @@ test('a grid culled per tile is IDENTICAL to one solved with every barrier', () 
     'culling barriers a tile cannot see must not change any cell',
   );
 });
+
+// ============== reflections must reach the GRID, not just point receivers ==============
+
+test('a U-shaped reflective wall changes contour levels with absorption', () => {
+  // Ryan's report: a U of noise wall open on one side, contours identical at
+  // α = 0 and α = 1 while point receivers moved. Cause: the grid builds its
+  // Scene with `receivers: []` (cells arrive later via `set_receivers`), so the
+  // facade corridor cull had nothing to measure against, every facade scored
+  // Infinity, and the grid got NO reflectors at all.
+  const R = 6371008.8;
+  const at = (e: number, n: number): [number, number] => [
+    ORIGIN[0] + (n / R) * (180 / Math.PI),
+    ORIGIN[1] + (e / (R * Math.cos((ORIGIN[0] * Math.PI) / 180))) * (180 / Math.PI),
+  ];
+  // U open to the east, source inside, cells span the open side.
+  const u = (alpha: number) => ([{
+    id: 'u', name: 'u', type: 'wall' as const,
+    polylineLatLng: [at(60, -60), at(-60, -60), at(-60, 60), at(60, 60)],
+    topHeightsM: [8, 8, 8, 8],
+    baseFromGroundM: 0, surfaceDensityKgM2: 20, absorptionCoeff: alpha,
+  }]);
+  const job = (alpha: number) => makeJob(32, 32, 900, [
+    { id: 's1', latLng: at(0, 0), heightAglM: 3, lw: lw10() },
+  ], { barriers: u(alpha), includeReflections: true, maxReflectionOrder: 1 });
+
+  const hard = runBatchedGrid(job(0), flatDem);
+  const dead = runBatchedGrid(job(1), flatDem);
+
+  // α = 1 absorbs everything, so it must be QUIETER than a perfectly
+  // reflecting U — somewhere, by a real margin.
+  let maxGain = 0;
+  for (let i = 0; i < hard.dbA.length; i++) {
+    if (Number.isFinite(hard.dbA[i]) && Number.isFinite(dead.dbA[i])) {
+      maxGain = Math.max(maxGain, hard.dbA[i] - dead.dbA[i]);
+    }
+  }
+  assert.ok(
+    maxGain > 0.2,
+    `reflective walls must raise grid levels vs fully absorptive ones; `
+    + `largest difference was ${maxGain.toFixed(4)} dB (0 ⇒ the grid has no reflectors)`,
+  );
+});
+
+test('reflections OFF and fully-absorptive walls agree on the grid', () => {
+  // The control for the test above: with α = 1 the reflected path contributes
+  // nothing, so it must match the reflections-off grid cell for cell. If this
+  // fails while the previous test passes, the reflection wiring is adding
+  // energy it should not.
+  const R = 6371008.8;
+  const at = (e: number, n: number): [number, number] => [
+    ORIGIN[0] + (n / R) * (180 / Math.PI),
+    ORIGIN[1] + (e / (R * Math.cos((ORIGIN[0] * Math.PI) / 180))) * (180 / Math.PI),
+  ];
+  const wall = (alpha: number) => ([{
+    id: 'w', name: 'w', type: 'wall' as const,
+    polylineLatLng: [at(-60, 40), at(60, 40)],
+    topHeightsM: [8, 8], baseFromGroundM: 0,
+    surfaceDensityKgM2: 20, absorptionCoeff: alpha,
+  }]);
+  const src = [{ id: 's1', latLng: at(0, 0), heightAglM: 3, lw: lw10() }];
+  const off = runBatchedGrid(makeJob(24, 24, 800, src, { barriers: wall(0) }), flatDem);
+  const absorptive = runBatchedGrid(
+    makeJob(24, 24, 800, src, {
+      barriers: wall(1), includeReflections: true, maxReflectionOrder: 1,
+    }),
+    flatDem,
+  );
+  assert.deepEqual(Array.from(absorptive.dbA), Array.from(off.dbA));
+});
