@@ -849,6 +849,7 @@ not just the engine. Each runs at θ = 0 (no clustering) and default θ.
 | H | DEM fetch box ignores calc-area rotation (corner under-coverage) | S | **DONE** |
 | P3 | Contour extraction in worker | S | **DONE** `e24bf83` |
 | P4 | Incremental regrid | L | **DONE** `e24bf83` |
+| W | Wiring tests (static checks over the source tree) | S | **DONE** |
 | R | Engine: reflected ray not screened by its own reflector (§7.5.2 / T19) | M | **DONE** |
 | P5 | Wall screening: per-tile barrier culling (+ perf harness) | M | **DONE** |
 
@@ -899,3 +900,38 @@ near the sources and a fence 3 km away.
 
 Decision recorded: do NOT tie the 10 m densification pitch to DEM resolution —
 too many edge cases (Ryan, 2026-08-06).
+
+## W — wiring tests (DONE)
+
+Two defects shipped past a fully green suite — tsc, 221 unit tests, a clean
+production build — because nothing in the pipeline looks at how components are
+CONNECTED:
+
+- the settings gear renders only when its parent passes `onOpenSettings`;
+  moving it into the side panel dropped the prop, and since both ends are
+  optional nothing complained. Settings became unreachable from the app.
+- every overlay attached its own `window` Escape listener. Those are siblings
+  on one EventTarget, so one keypress fired all of them: dismissing a confirm
+  dialog also closed the wizard behind it and discarded the user's edits.
+
+`web/src/lib/wiring.test.ts` reads the app's own source and asserts the
+properties a per-module test cannot see:
+
+1. every optional `on*` prop that GATES a rendered control is passed by some
+   parent (the gear bug);
+2. Escape is only handled through `lib/escStack`, except element-level
+   `onKeyDown` where Escape means "revert this field" (the collision bug);
+3. every tab in the side panel's list has a body to render;
+4. `App.tsx` mounts `<Notifications />` — `notify.confirm()` resolves
+   NEGATIVELY without it, so losing the provider would silently turn every
+   confirmation into a "no";
+5. `new Worker` appears only in the modules that pool one.
+
+Each rule was verified by reintroducing the bug it targets and confirming the
+suite goes red. A DOM harness would catch more, but needs dependencies outside
+this plan's approved set; these cost nothing and hit the observed failure mode.
+
+Rule 2 immediately found a leftover from the Escape-stack migration — the
+PROMPT dialog still had its own window listener (only the confirm dialog had
+been converted). Fixed, with the auto-focused input handling its own Escape
+since the stack deliberately ignores keys raised inside text fields.

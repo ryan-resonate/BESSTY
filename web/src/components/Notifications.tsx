@@ -138,13 +138,11 @@ function PromptDialog({ req }: { req: PromptReq }) {
     inputRef.current?.select();
   }, []);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') resolveDialog(req.id, null);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [req.id]);
+  // Through the shared stack, like the confirm dialog: a prompt opened on top
+  // of a window must not close that window when it is dismissed. (The stack
+  // ignores Escape raised inside a text field, and this dialog's input owns
+  // its own Escape — see the field's onKeyDown below.)
+  useEffect(() => pushEscHandler(() => resolveDialog(req.id, null)), [req.id]);
 
   return (
     <ModalBackdrop onClose={() => resolveDialog(req.id, null)}>
@@ -162,6 +160,15 @@ function PromptDialog({ req }: { req: PromptReq }) {
               placeholder={opts.placeholder}
               style={{ width: '100%' }}
               onChange={(e) => setValue(e.target.value)}
+              // The field is auto-focused, and the Escape stack deliberately
+              // ignores keys raised inside text inputs — so cancelling has to
+              // be handled here or Escape would do nothing at all.
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  resolveDialog(req.id, null);
+                }
+              }}
             />
           </label>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
