@@ -5,7 +5,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import init, { solve_scene } from '../wasm/iso9613_wasm.js';
-import { runBatchedGrid, type GridJob, type GridTile } from './gridCore';
+import {
+  mergeShard, runBatchedGrid, shardTiles, type GridJob, type GridTile,
+} from './gridCore';
 import { buildScene } from './sceneBuilder';
 import { buildTerrainField } from './terrainField';
 import type { ResolvedSource, SceneSettings } from './sceneBuilder';
@@ -304,4 +306,80 @@ test('rotating a grid changes the answer at a fixed cell index', () => {
   const a = runBatchedGrid(job, flatDem);
   const b = runBatchedGrid({ ...job, rotationDeg: 90 }, flatDem);
   assert.notDeepEqual(Array.from(a.dbA), Array.from(b.dbA));
+});
+
+// ============== P2: sharding a grid across a worker pool ==============
+
+test('round-robin sharding covers every tile exactly once', () => {
+  const job = makeJob(64, 48, 2000, [
+    { id: 's1', latLng: ORIGIN, heightAglM: 4, lw: lw10() },
+  ]);
+  for (const n of [1, 2, 3, 5, 8]) {
+    const shards = shardTiles(job.tiles, n);
+    const flat = shards.flat();
+    assert.equal(flat.length, job.tiles.length, `n=${n}: tile count`);
+    assert.equal(new Set(flat).size, job.tiles.length, `n=${n}: no tile duplicated or dropped`);
+    // Round-robin must actually balance: shard sizes differ by at most one.
+    const sizes = shards.map((s) => s.length);
+    assert.ok(Math.max(...sizes) - Math.min(...sizes) <= 1, `n=${n}: balanced (${sizes})`);
+  }
+});
+
+test('asking for more shards than tiles yields one tile each, never an empty shard', () => {
+  const job = makeJob(16, 16, 400, [
+    { id: 's1', latLng: ORIGIN, heightAglM: 4, lw: lw10() },
+  ]);   // one 16x16 tile
+  const shards = shardTiles(job.tiles, 8);
+  assert.equal(shards.length, 1);
+  assert.equal(shards[0].length, 1);
+});
+
+test('a grid solved in shards and merged is IDENTICAL to solving it in one pass', () => {
+  // The whole justification for the worker pool: splitting the tiles must not
+  // change a single cell. Two off-centre sources so the field is not symmetric
+  // and a mis-stitched shard could not accidentally match.
+  const sources: ResolvedSource[] = [
+    { id: 's1', latLng: [ORIGIN[0] + 0.004, ORIGIN[1] - 0.003], heightAglM: 4, lw: lw10() },
+    { id: 's2', latLng: [ORIGIN[0] - 0.002, ORIGIN[1] + 0.005], heightAglM: 9, lw: lw10() },
+  ];
+  const job = makeJob(48, 32, 1600, sources);
+  const whole = runBatchedGrid(job, flatDem);
+
+  for (const n of [2, 3, 5]) {
+    const merged = new Float32Array(job.cols * job.rows).fill(-120);
+    for (const shard of shardTiles(job.tiles, n)) {
+      const part = runBatchedGrid({ ...job, tiles: shard }, flatDem);
+      mergeShard(merged, part.dbA, shard, job.cols, job.rows);
+    }
+    assert.deepEqual(
+      Array.from(merged), Array.from(whole.dbA),
+      `${n} shards must reproduce the single-pass grid exactly`,
+    );
+  }
+});
+
+test('merging only writes the cells a shard owns', () => {
+  const cols = 8; const rows = 4;
+  const into = new Float32Array(cols * rows).fill(-120);
+  const from = new Float32Array(cols * rows).fill(42);
+  // One 2x2 tile at (col 2, row 1).
+  mergeShard(into, from, [{ col0: 2, row0: 1, cols: 2, rows: 2, sources: [] }], cols, rows);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const owned = c >= 2 && c < 4 && r >= 1 && r < 3;
+      assert.equal(into[r * cols + c], owned ? 42 : -120, `cell (${c},${r})`);
+    }
+  }
+});
+
+test('a tile running past the grid edge is clipped, not wrapped', () => {
+  const cols = 4; const rows = 4;
+  const into = new Float32Array(cols * rows).fill(-120);
+  const from = new Float32Array(cols * rows).fill(7);
+  // Deliberately oversized: 16x16 tile anchored near the corner.
+  mergeShard(into, from, [{ col0: 2, row0: 2, cols: 16, rows: 16, sources: [] }], cols, rows);
+  // Only the bottom-right 2x2 may be written; nothing wraps to row 0.
+  assert.deepEqual(Array.from(into.slice(0, 4)), [-120, -120, -120, -120]);
+  assert.equal(into[2 * cols + 2], 7);
+  assert.equal(into[3 * cols + 3], 7);
 });

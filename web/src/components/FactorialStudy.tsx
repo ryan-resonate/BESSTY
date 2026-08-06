@@ -4,9 +4,19 @@
 // constant. Results are transient: re-run to refresh. Persisting them would
 // mean invalidating on every source edit, and a stale matrix that looks current
 // is worse than no matrix.
+//
+// The window is NON-MODAL (Ryan): a study of any size takes long enough that
+// blocking the whole app behind it is unreasonable, so it docks as a draggable
+// floating window and the project stays editable while it runs.
+//
+// Non-modality forces one rule: everything a result depends on — the project,
+// both axis specs, the receiver set, the axis labels — is SNAPSHOTTED when Run
+// is pressed, and the matrix is rendered and exported from that snapshot alone.
+// Reading any of it live would let an edit made during (or after) a run
+// silently re-label or re-shape a matrix that was computed from something else.
 
-import { useMemo, useState } from 'react';
-import { ModalBackdrop } from './ModalBackdrop';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { FloatingWindow } from './FloatingWindow';
 import { notify } from '../lib/notify';
 import { listEntriesByKind } from '../lib/catalog';
 import { evaluateProject } from '../lib/solver';
@@ -24,6 +34,17 @@ interface Props {
   project: Project;
   dem: DemRaster | null;
   onClose(): void;
+}
+
+/// Everything a completed run was computed against. Held whole so the matrix
+/// can never drift from the numbers in it.
+interface RunSnapshot {
+  project: Project;
+  battery: AxisSpec;
+  inverter: AxisSpec;
+  receivers: Receiver[];
+  axisLabels: { axis1: string; axis2: string };
+  at: Date;
 }
 
 /// Model + mode pairs available for a kind. A model with several modes appears
@@ -74,8 +95,13 @@ export function FactorialStudy({ project, dem, onClose }: Props) {
   const [invSel, setInvSel] = useState<Set<number>>(new Set());
   const [rxSel, setRxSel] = useState<Set<string>>(() => new Set(project.receivers.map((r) => r.id)));
   const [results, setResults] = useState<ComboResult[] | null>(null);
+  const [ran, setRan] = useState<RunSnapshot | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const cancelRef = useState<{ v: boolean }>({ v: false })[0];
+  const cancelRef = useRef({ v: false });
+
+  // Closing the window mid-run must stop the loop. Without this the solve
+  // keeps burning the main thread for a result nobody will see.
+  useEffect(() => () => { cancelRef.current.v = true; }, []);
 
   const battery: AxisSpec = {
     sourceIds: bessIds,
@@ -96,22 +122,40 @@ export function FactorialStudy({ project, dem, onClose }: Props) {
 
   async function run() {
     if (combos.length === 0 || receivers.length === 0) return;
-    cancelRef.v = false;
+    cancelRef.current.v = false;
     setResults(null);
+    setRan(null);
     setProgress({ done: 0, total: combos.length });
+    // Freeze the inputs. `project` is a prop and the user can edit the model
+    // while this runs, so every combination has to be solved against the same
+    // geometry or the matrix compares configurations AND edits at once.
+    const snap: RunSnapshot = {
+      project,
+      battery,
+      inverter,
+      receivers,
+      axisLabels: { axis1: batOpt?.label ?? 'Axis 1', axis2: invOpt?.label ?? 'Axis 2' },
+      at: new Date(),
+    };
+    const selectedRxIds = new Set(snap.receivers.map((r) => r.id));
     const out: ComboResult[] = [];
     try {
       for (let i = 0; i < combos.length; i++) {
-        if (cancelRef.v) { setProgress(null); return; }
+        if (cancelRef.current.v) { setProgress(null); return; }
         // A CLONE per combination — the live project is never touched.
-        const p = projectForCombo(project, battery, inverter, combos[i]);
-        const rs = await evaluateProject(p, dem);
+        const p = projectForCombo(snap.project, snap.battery, snap.inverter, combos[i]);
+        // The 'study' channel has its own worker, queued rather than
+        // superseding: editing the project while this runs fires the editor's
+        // own live solves, and those must not cancel the sweep.
+        const rs = await evaluateProject(p, dem, undefined, 'study');
         const byReceiver = new Map<string, number>();
-        for (const r of rs) if (rxSel.has(r.receiverId)) byReceiver.set(r.receiverId, r.totalDbA);
+        for (const r of rs) if (selectedRxIds.has(r.receiverId)) byReceiver.set(r.receiverId, r.totalDbA);
         out.push({ combo: combos[i], byReceiver });
         setProgress({ done: i + 1, total: combos.length });
       }
+      if (cancelRef.current.v) { setProgress(null); return; }
       setResults(out);
+      setRan(snap);
     } catch (e) {
       notify.error((e as Error).message, { title: 'Study failed' });
     } finally {
@@ -120,16 +164,15 @@ export function FactorialStudy({ project, dem, onClose }: Props) {
   }
 
   async function exportXlsx() {
-    if (!results) return;
+    if (!results || !ran) return;
     try {
       const blob = await buildFactorialXlsx(
-        project, battery, inverter, results, receivers,
-        { axis1: batOpt?.label ?? 'Axis 1', axis2: invOpt?.label ?? 'Axis 2' },
+        ran.project, ran.battery, ran.inverter, results, ran.receivers, ran.axisLabels,
       );
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${(project.name || 'bessty').replace(/[^\w.-]+/g, '_')}-study.xlsx`;
+      a.download = `${(ran.project.name || 'bessty').replace(/[^\w.-]+/g, '_')}-study.xlsx`;
       a.click();
       URL.revokeObjectURL(url);
       notify.success('Study exported.');
@@ -145,135 +188,153 @@ export function FactorialStudy({ project, dem, onClose }: Props) {
   };
 
   const [viewRx, setViewRx] = useState<string>('worst');
-  const mode = limitComparisonFor(project);
-  const period = project.scenario.period;
+  // Read from the snapshot: the limit-comparison mode and period are project
+  // settings, and the matrix's colours must match the run, not later edits.
+  const mode = limitComparisonFor(ran?.project ?? project);
+  const period = (ran?.project ?? project).scenario.period;
+  /// The project has moved on since these numbers were computed.
+  const stale = ran != null && ran.project !== project;
 
   function cellValue(r: ComboResult): { v: number | null; fail: boolean } {
+    const rxs = ran?.receivers ?? [];
     if (viewRx === 'worst') {
-      const v = worstOf(r, receivers.map((x) => x.id));
-      const fail = receivers.some((rx) =>
+      const v = worstOf(r, rxs.map((x) => x.id));
+      const fail = rxs.some((rx) =>
         exceedsLimit(r.byReceiver.get(rx.id), limitForPeriod(rx, period), mode));
       return { v, fail };
     }
-    const rx = receivers.find((x) => x.id === viewRx);
+    const rx = rxs.find((x) => x.id === viewRx);
     const v = r.byReceiver.get(viewRx) ?? null;
     return { v, fail: rx ? exceedsLimit(v, limitForPeriod(rx, period), mode) : false };
   }
 
   return (
-    <ModalBackdrop onClose={onClose}>
-      <div className="modal" style={{ maxWidth: 900, width: '92vw' }} onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ marginTop: 0 }}>Compare configurations</h3>
-        <div className="hint" style={{ marginBottom: 10 }}>
-          Every battery candidate against every inverter candidate, with
-          everything else held constant. Sources outside the two axes are
-          untouched, and <b>your project is never modified</b> — each
-          combination is solved against a copy.
-        </div>
+    <FloatingWindow
+      title="Compare configurations"
+      onClose={onClose}
+      persistKey="study"
+      defaultRect={{ w: 880, h: Math.min(700, window.innerHeight - 120), x: 80, y: 70 }}
+      minW={520}
+      minH={320}
+    >
+      <div className="hint" style={{ marginBottom: 10 }}>
+        Every battery candidate against every inverter candidate, with
+        everything else held constant. Sources outside the two axes are
+        untouched, and <b>your project is never modified</b> — each
+        combination is solved against a copy. Keep working while it runs;
+        results are computed against the project as it was when you pressed
+        Run.
+      </div>
 
-        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-          <Pool
-            title="Axis 1"
-            scopes={scopes} scopeValue={batScope}
-            onScope={(v) => { setBatScope(v); setBatSel(new Set()); }}
-            pool={batteryPool} sel={batSel}
-            onToggle={(i) => toggle(batSel, i, setBatSel)} />
-          <Pool
-            title="Axis 2"
-            scopes={scopes} scopeValue={invScope}
-            onScope={(v) => { setInvScope(v); setInvSel(new Set()); }}
-            pool={inverterPool} sel={invSel}
-            onToggle={(i) => toggle(invSel, i, setInvSel)} />
-          <div style={{ flex: '1 1 200px', minWidth: 180 }}>
-            <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>
-              Receivers ({rxSel.size}/{project.receivers.length})
-            </div>
-            <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
-              <button className="btn small"
-                onClick={() => setRxSel(new Set(project.receivers.map((r) => r.id)))}>All</button>
-              <button className="btn small" onClick={() => setRxSel(new Set())}>None</button>
-            </div>
-            <div style={{ maxHeight: 150, overflowY: 'auto' }}>
-              {project.receivers.map((r) => (
-                <label key={r.id} className="row-checkbox">
-                  <input type="checkbox" checked={rxSel.has(r.id)}
-                    onChange={() => {
-                      const n = new Set(rxSel);
-                      if (n.has(r.id)) n.delete(r.id); else n.add(r.id);
-                      setRxSel(n);
-                    }} />
-                  <span>{r.name}</span>
-                </label>
-              ))}
-            </div>
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+        <Pool
+          title="Axis 1"
+          scopes={scopes} scopeValue={batScope}
+          onScope={(v) => { setBatScope(v); setBatSel(new Set()); }}
+          pool={batteryPool} sel={batSel}
+          onToggle={(i) => toggle(batSel, i, setBatSel)} />
+        <Pool
+          title="Axis 2"
+          scopes={scopes} scopeValue={invScope}
+          onScope={(v) => { setInvScope(v); setInvSel(new Set()); }}
+          pool={inverterPool} sel={invSel}
+          onToggle={(i) => toggle(invSel, i, setInvSel)} />
+        <div style={{ flex: '1 1 200px', minWidth: 180 }}>
+          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>
+            Receivers ({rxSel.size}/{project.receivers.length})
+          </div>
+          <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+            <button className="btn small"
+              onClick={() => setRxSel(new Set(project.receivers.map((r) => r.id)))}>All</button>
+            <button className="btn small" onClick={() => setRxSel(new Set())}>None</button>
+          </div>
+          <div style={{ maxHeight: 150, overflowY: 'auto' }}>
+            {project.receivers.map((r) => (
+              <label key={r.id} className="row-checkbox">
+                <input type="checkbox" checked={rxSel.has(r.id)}
+                  onChange={() => {
+                    const n = new Set(rxSel);
+                    if (n.has(r.id)) n.delete(r.id); else n.add(r.id);
+                    setRxSel(n);
+                  }} />
+                <span>{r.name}</span>
+              </label>
+            ))}
           </div>
         </div>
+      </div>
 
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12 }}>
-          <button className="btn primary" onClick={run}
-            disabled={!!progress || combos.length === 0 || receivers.length === 0}>
-            {progress ? `Solving ${progress.done}/${progress.total}…` : `Run ${combos.length || '—'} combinations`}
-          </button>
-          {progress && (
-            <button className="btn" style={{ color: 'var(--red)' }}
-              onClick={() => { cancelRef.v = true; }}>Cancel</button>
-          )}
-          {results && (
-            <>
-              <select value={viewRx} onChange={(e) => setViewRx(e.target.value)}>
-                <option value="worst">All receivers (worst case)</option>
-                {receivers.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-              </select>
-              <button className="btn" onClick={exportXlsx}>⬇ Export XLSX</button>
-            </>
-          )}
-          <span style={{ flex: 1 }} />
-          <button className="btn" onClick={onClose}>Close</button>
-        </div>
-
-        {overlap.length > 0 && (
-          <div className="hint" style={{ color: 'var(--red)', marginTop: 8 }}>
-            The two axes both control {overlap.length} of the same
-            unit{overlap.length === 1 ? '' : 's'}. Pick scopes that don't
-            overlap — otherwise axis 2 would have no effect on those units and
-            the matrix would imply a comparison that never happened.
-          </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
+        <button className="btn primary" onClick={run}
+          disabled={!!progress || combos.length === 0 || receivers.length === 0}>
+          {progress ? `Solving ${progress.done}/${progress.total}…` : `Run ${combos.length || '—'} combinations`}
+        </button>
+        {progress && (
+          <button className="btn" style={{ color: 'var(--red)' }}
+            onClick={() => { cancelRef.current.v = true; }}>Cancel</button>
         )}
-
-        {results && (
-          <div style={{ overflowX: 'auto', marginTop: 12 }}>
-            <table className="catalog-table" style={{ fontSize: 11 }}>
-              <thead>
-                <tr>
-                  <th>{invOpt?.label ?? 'Axis 2'} \ {batOpt?.label ?? 'Axis 1'}</th>
-                  {battery.candidates.map((c) => <th key={c.label}>{c.label}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {inverter.candidates.map((inv, i) => (
-                  <tr key={inv.label}>
-                    <td style={{ fontWeight: 600 }}>{inv.label}</td>
-                    {battery.candidates.map((_, b) => {
-                      const r = results.find((x) =>
-                        x.combo.batteryIdx === b && x.combo.inverterIdx === i);
-                      const { v, fail } = r ? cellValue(r) : { v: null, fail: false };
-                      return (
-                        <td key={b} style={{
-                          textAlign: 'right',
-                          background: v == null ? undefined : fail ? 'rgba(211,47,47,.16)' : 'rgba(46,125,50,.16)',
-                          color: v == null ? 'var(--ink-soft)' : fail ? 'var(--red)' : 'var(--green)',
-                          fontWeight: 600,
-                        }}>{v == null ? '—' : v.toFixed(1)}</td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        {results && ran && (
+          <>
+            <select value={viewRx} onChange={(e) => setViewRx(e.target.value)}>
+              <option value="worst">All receivers (worst case)</option>
+              {ran.receivers.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+            <button className="btn" onClick={exportXlsx}>⬇ Export XLSX</button>
+          </>
         )}
       </div>
-    </ModalBackdrop>
+
+      {overlap.length > 0 && (
+        <div className="hint" style={{ color: 'var(--red)', marginTop: 8 }}>
+          The two axes both control {overlap.length} of the same
+          unit{overlap.length === 1 ? '' : 's'}. Pick scopes that don't
+          overlap — otherwise axis 2 would have no effect on those units and
+          the matrix would imply a comparison that never happened.
+        </div>
+      )}
+
+      {results && ran && (
+        <div style={{ overflowX: 'auto', marginTop: 12 }}>
+          <div className="hint" style={{
+            marginBottom: 6,
+            color: stale ? 'var(--red)' : undefined,
+          }}>
+            {stale
+              ? `⚠ The project has changed since this ran (${ran.at.toLocaleTimeString()}). `
+                + 'These numbers describe the earlier model — re-run to refresh.'
+              : `Solved against the project at ${ran.at.toLocaleTimeString()}.`}
+          </div>
+          <table className="catalog-table" style={{ fontSize: 11 }}>
+            <thead>
+              <tr>
+                <th>{ran.axisLabels.axis2} \ {ran.axisLabels.axis1}</th>
+                {ran.battery.candidates.map((c) => <th key={c.label}>{c.label}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {ran.inverter.candidates.map((inv, i) => (
+                <tr key={inv.label}>
+                  <td style={{ fontWeight: 600 }}>{inv.label}</td>
+                  {ran.battery.candidates.map((_, b) => {
+                    const r = results.find((x) =>
+                      x.combo.batteryIdx === b && x.combo.inverterIdx === i);
+                    const { v, fail } = r ? cellValue(r) : { v: null, fail: false };
+                    return (
+                      <td key={b} style={{
+                        textAlign: 'right',
+                        background: v == null ? undefined : fail ? 'rgba(211,47,47,.16)' : 'rgba(46,125,50,.16)',
+                        color: v == null ? 'var(--ink-soft)' : fail ? 'var(--red)' : 'var(--green)',
+                        fontWeight: 600,
+                      }}>{v == null ? '—' : v.toFixed(1)}</td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </FloatingWindow>
   );
 }
 

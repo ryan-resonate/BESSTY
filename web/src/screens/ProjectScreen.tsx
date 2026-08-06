@@ -18,6 +18,7 @@ import {
   evaluateGridViaWorker,
   cancelGridRun,
   evaluateProject,
+  SOLVE_SUPERSEDED,
   type GridResult,
   type ReceiverResult,
 } from '../lib/solver';
@@ -1033,7 +1034,14 @@ export function ProjectScreen() {
           setDiagnostics(diag.list());                   // I20
           setLastSolveMs(performance.now() - start);
         })
-        .catch((e) => { if (gen === pointGenRef.current) setError(String(e)); })
+        .catch((e) => {
+          // A superseded solve is the normal case when edits arrive faster than
+          // the solve completes (P1 kills the stale worker job) — not an error
+          // to show the user.
+          if (gen !== pointGenRef.current) return;
+          if (String((e as Error)?.message ?? e).includes(SOLVE_SUPERSEDED)) return;
+          setError(String(e));
+        })
         .finally(() => { if (gen === pointGenRef.current) setComputing(false); });
     }, 80);
     return () => clearTimeout(handle);

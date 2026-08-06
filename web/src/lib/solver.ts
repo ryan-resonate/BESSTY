@@ -48,7 +48,9 @@ import { Diagnostics } from './diagnostics';
 import { approxDistanceM } from './geo';
 import {
   concaveCorrectionMet,
+  mergeShard,
   runBatchedGrid,
+  shardTiles,
   type GridJob,
   type GridTile,
   type GridResult,
@@ -119,6 +121,142 @@ export interface ReceiverResult {
   perBandLp: Float64Array;
   totalDbA: number;
   perSource: Array<{ sourceId: string; perBandLp: Float64Array }>;
+}
+
+// ============== P1: point solve off the main thread ==============
+
+/// One entry per scene sent, in order. Mirrors `scene.worker.ts`.
+type SceneSolveOutcome =
+  | { ok: true; json: string }
+  | { ok: false; error: string };
+
+/// Why a point solve is superseded rather than an error.
+export const SOLVE_SUPERSEDED = 'solve superseded';
+
+/// Which stream of point solves a call belongs to. Each channel owns a worker,
+/// so the two never fight:
+///
+///   - `live`  — the editor's own solve. Newest-wins: a new request kills the
+///     in-flight one, because an edit has already invalidated it.
+///   - `study` — the factorial study's sequential sweep. Queued, never
+///     superseded: the study runs while the user keeps editing, and its
+///     combinations must not be cancelled by the editor's live re-solves.
+export type SolveChannel = 'live' | 'study';
+
+/// A single-worker lane for `solve_scene` calls.
+class SceneSolveLane {
+  private worker: Worker | null = null;
+  private seq = 0;
+  private active: { id: number; cleanup(): void; reject(e: Error): void } | null = null;
+  /// Serialises `study` work so queued calls run one after another rather than
+  /// racing for the one worker.
+  private tail: Promise<unknown> = Promise.resolve();
+
+  constructor(private readonly supersedes: boolean) {}
+
+  private ensureWorker(): Worker {
+    if (!this.worker) {
+      this.worker = new Worker(new URL('./scene.worker.ts', import.meta.url), { type: 'module' });
+    }
+    return this.worker;
+  }
+
+  /// Drop the in-flight job and rebuild the worker next time. The wasm solve is
+  /// a tight loop with no yield point, so a cooperative flag would not be read
+  /// until it finished — terminate is the only way to actually stop it.
+  cancel(): void {
+    if (this.worker) { this.worker.terminate(); this.worker = null; }
+    this.seq++;
+    if (this.active) {
+      const stale = this.active;
+      this.active = null;
+      stale.cleanup();
+      stale.reject(new Error(SOLVE_SUPERSEDED));
+    }
+  }
+
+  run(scenes: string[]): Promise<SceneSolveOutcome[]> {
+    if (this.supersedes) return this.post(scenes);
+    // Queued lane: chain behind whatever is already running.
+    const next = this.tail.then(() => this.post(scenes), () => this.post(scenes));
+    this.tail = next.catch(() => undefined);
+    return next;
+  }
+
+  private post(scenes: string[]): Promise<SceneSolveOutcome[]> {
+    if (this.supersedes && this.active) this.cancel();
+    const worker = this.ensureWorker();
+    const id = ++this.seq;
+    return new Promise<SceneSolveOutcome[]>((resolve, reject) => {
+      // Dead-man switch: a wedged worker must not hang the editor forever.
+      // Generous, because one solve of a very large site is legitimately slow.
+      const TIMEOUT_MS = 120000;
+      let timer = 0;
+      const cleanup = () => {
+        if (this.active?.id === id) this.active = null;
+        clearTimeout(timer);
+        worker.removeEventListener('message', onMessage);
+        worker.removeEventListener('error', onError);
+      };
+      const onMessage = (ev: MessageEvent) => {
+        const data = ev.data as {
+          id: number; ok?: boolean; results?: SceneSolveOutcome[]; error?: string;
+        };
+        if (data.id !== id) return;
+        cleanup();
+        if (data.ok && data.results) resolve(data.results);
+        else reject(new Error(data.error ?? 'scene worker failed'));
+      };
+      const onError = (e: ErrorEvent) => {
+        cleanup();
+        this.worker = null;
+        reject(new Error(`scene worker error: ${e.message || 'load failed'}`));
+      };
+      worker.addEventListener('message', onMessage);
+      worker.addEventListener('error', onError);
+      this.active = { id, cleanup, reject };
+      timer = window.setTimeout(() => {
+        cleanup();
+        reject(new Error('scene worker stopped responding'));
+      }, TIMEOUT_MS);
+      worker.postMessage({ id, scenes });
+    });
+  }
+}
+
+const lanes: Record<SolveChannel, SceneSolveLane> = {
+  live: new SceneSolveLane(true),
+  study: new SceneSolveLane(false),
+};
+
+/// Web Workers don't exist under `node:test`, and the conformance/wasm tests
+/// call the solver directly. Fall back to solving inline there — same code
+/// path, just on the calling thread.
+const workersAvailable = typeof Worker !== 'undefined';
+
+function solveScenesInline(scenes: string[]): SceneSolveOutcome[] {
+  return scenes.map((s) => {
+    try {
+      return { ok: true as const, json: solve_scene(s) };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+}
+
+async function solveScenes(scenes: string[], channel: SolveChannel): Promise<SceneSolveOutcome[]> {
+  if (scenes.length === 0) return [];
+  if (!workersAvailable) {
+    await ensureSolverReady();
+    return solveScenesInline(scenes);
+  }
+  return lanes[channel].run(scenes);
+}
+
+/// Abandon the in-flight `live` point solve. Used when a newer one is about to
+/// start; the loser rejects with [`SOLVE_SUPERSEDED`].
+export function cancelLiveSolve(): void {
+  if (workersAvailable) lanes.live.cancel();
 }
 
 /// Source **height above local ground** (HAG) — the machine height fed to the
@@ -215,10 +353,16 @@ function groundElevation(dem: DemRaster | null, latLng: [number, number]): numbe
 /// decomposed once for all receivers instead of per source→receiver pair.
 /// `diagnostics` (I20) collects the approximations this solve applied. Pass one
 /// in to surface them; omit it and they're simply not recorded.
+///
+/// P1: the `solve_scene` calls run on a Web Worker (see `SolveChannel`), so an
+/// edit no longer blocks input for the length of the solve. Everything that
+/// needs the project or the DEM — catalog resolution, the terrain raster, the
+/// Annex D.5 concave grouping — still happens here, on the calling thread.
 export async function evaluateProject(
   project: Project,
   dem: DemRaster | null,
   diagnostics: Diagnostics = new Diagnostics(),
+  channel: SolveChannel = 'live',
 ): Promise<ReceiverResult[]> {
   await ensureSolverReady();
 
@@ -276,30 +420,40 @@ export async function evaluateProject(
     );
   });
 
-  for (const group of groups) {
-    const scene = buildScene({
-      origin,
-      sources: withConcave(sources, group.concaveBySourceId),
-      receivers: group.receivers.map((rx) => ({
-        id: rx.id, latLng: rx.latLng, heightAboveGroundM: rx.heightAboveGroundM,
-      })),
-      barriers: project.barriers ?? [],
-      dem,
-      terrain,
-      settings,
-      includeContainers: containers?.receiverCalc ?? false,
-      roofOffsetM: containers?.roofOffsetM,
-      includeReflections: reflections?.receiverCalc ?? false,
-      maxReflectionOrder: reflections?.maxOrder ?? 3,
-    });
+  // Build every concave group's scene, then solve them in ONE worker round
+  // trip. (With no turbines there is exactly one group.)
+  const sceneJson = groups.map((group) => JSON.stringify(buildScene({
+    origin,
+    sources: withConcave(sources, group.concaveBySourceId),
+    receivers: group.receivers.map((rx) => ({
+      id: rx.id, latLng: rx.latLng, heightAboveGroundM: rx.heightAboveGroundM,
+    })),
+    barriers: project.barriers ?? [],
+    dem,
+    terrain,
+    settings,
+    includeContainers: containers?.receiverCalc ?? false,
+    roofOffsetM: containers?.roofOffsetM,
+    includeReflections: reflections?.receiverCalc ?? false,
+    maxReflectionOrder: reflections?.maxOrder ?? 3,
+  })));
 
-    let solved: SceneResults;
-    try {
-      solved = JSON.parse(solve_scene(JSON.stringify(scene))) as SceneResults;
-    } catch (e) {
+  const outcomes = await solveScenes(sceneJson, channel);
+
+  for (let gi = 0; gi < groups.length; gi++) {
+    const group = groups[gi];
+    const outcome = outcomes[gi];
+    if (!outcome || !outcome.ok) {
       // A rejected scene is a modelling error, not a crash: surface it and show
       // "—" rows rather than taking the whole page down.
-      console.error('solve failed:', e instanceof Error ? e.message : e);
+      console.error('solve failed:', outcome?.error ?? 'no result');
+      continue;
+    }
+    let solved: SceneResults;
+    try {
+      solved = JSON.parse(outcome.json) as SceneResults;
+    } catch (e) {
+      console.error('solve returned unparseable results:', e);
       continue;
     }
 
@@ -564,8 +718,8 @@ export async function evaluateGridViaWorker(
     // doesn't move geometry (e.g. wind speed / G / atmosphere change, or a
     // re-run of the same area) reuses the sampled terrain instead of
     // re-sampling ~10⁶ DEM points on the main thread each time.
-    const region = dem ? captureDemRegionCached(dem, sourcePaddedBounds(job)) : null;
-    return await runGridJobOnWorker(job, region, onProgress);
+    const cached = dem ? captureDemRegionCached(dem, sourcePaddedBounds(job)) : null;
+    return await runGridJobOnPool(job, cached, onProgress);
   }
 }
 
@@ -576,13 +730,13 @@ let demRegionCache: { key: string; region: DemRegion } | null = null;
 function captureDemRegionCached(
   dem: DemRaster,
   bounds: [[number, number], [number, number], number, number],
-): DemRegion {
+): { key: string; region: DemRegion } {
   const [sw, ne, nx, ny] = bounds;
   const key = `${dem.bounds.sw}|${dem.bounds.ne}|${dem.tilesLoaded}|${sw}|${ne}|${nx}|${ny}`;
-  if (demRegionCache && demRegionCache.key === key) return demRegionCache.region;
+  if (demRegionCache && demRegionCache.key === key) return demRegionCache;
   const region = captureDemRegion(dem, sw, ne, nx, ny);
   demRegionCache = { key, region };
-  return region;
+  return demRegionCache;
 }
 
 /// SW/NE/nx/ny for a DEM region covering the grid bounds + all sources, sized
@@ -613,117 +767,185 @@ function sourcePaddedBounds(job: GridJob): [[number, number], [number, number], 
   return [sw, ne, nx, ny];
 }
 
-/// Pool of one reusable grid worker. Created lazily; survives across grid runs.
-let gridWorker: Worker | null = null;
-let gridWorkerSeq = 0;
+// ============== P2: grid worker pool ==============
+//
+// Grid tiles are independent by construction — each carries its own resolved
+// source set and writes a disjoint block of cells — so the only reason the grid
+// took 5–8 s on an 800-source site was that it ran on ONE core. The job's tiles
+// are dealt round-robin across a pool; each worker returns a full-size buffer
+// with only its own cells written, and the main thread copies each shard's tile
+// rectangles into the final grid. Round-robin rather than contiguous blocks
+// because cost per tile varies hugely with distance from the sources (near
+// tiles keep every source, far tiles collapse to a cluster), and contiguous
+// blocks would hand one worker the whole expensive middle of the site.
 
-/// The one in-flight job, if any. Tracked so a superseding run (or an explicit
-/// cancel) can settle the stale promise IMMEDIATELY instead of leaving it to
-/// hang until the dead-man timeout — and, more importantly, so a new run can
-/// terminate the stale job before posting. The worker QUEUES posted messages:
-/// without this, a burst of auto-regrids (one per settled drag) stacked
-/// multi-second solves back to back, the newest geometry's grid arrived after
-/// every stale one finished, and the machine chewed a core on results nobody
-/// would ever see.
-let activeGridJob: { id: number; cleanup(): void; reject(e: Error): void } | null = null;
+/// Leave headroom for the main thread and the point-solve lanes: saturating
+/// every core makes the UI worse, not better, which is the opposite of the
+/// point. Capped at 8 — beyond that, message and merge overhead dominates.
+const GRID_POOL_SIZE = Math.max(
+  1,
+  Math.min(8, (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency ?? 4 : 4) - 2),
+);
 
-function getGridWorker(): Worker {
-  if (!gridWorker) {
-    gridWorker = new Worker(new URL('./grid.worker.ts', import.meta.url), { type: 'module' });
-  }
-  return gridWorker;
+interface PoolWorker {
+  worker: Worker;
+  /// Region this worker already holds, so a re-run over the same extent ships
+  /// only the job. Cleared whenever the worker is terminated.
+  regionKey: string | null;
 }
 
-/// Kill the in-flight grid solve (I12). The worker is terminated rather than
+let gridPool: PoolWorker[] = [];
+let gridWorkerSeq = 0;
+
+/// The in-flight run, if any. Tracked so a superseding run (or an explicit
+/// cancel) can settle the stale promise IMMEDIATELY instead of leaving it to
+/// hang until the dead-man timeout — and, more importantly, so a new run can
+/// terminate the stale one before posting. Workers QUEUE posted messages:
+/// without this, a burst of auto-regrids (one per settled drag) stacked
+/// multi-second solves back to back, the newest geometry's grid arrived after
+/// every stale one finished, and the machine chewed cores on results nobody
+/// would ever see.
+let activeGridRun: { cleanup(): void; reject(e: Error): void } | null = null;
+
+function getPoolWorker(i: number): PoolWorker {
+  let pw = gridPool[i];
+  if (!pw) {
+    pw = {
+      worker: new Worker(new URL('./grid.worker.ts', import.meta.url), { type: 'module' }),
+      regionKey: null,
+    };
+    gridPool[i] = pw;
+  }
+  return pw;
+}
+
+/// Kill the in-flight grid solve (I12). Workers are terminated rather than
 /// asked to stop — `runBatchedGrid` is a tight synchronous loop with no
 /// yield point, so a cooperative cancel flag would not be read until it
 /// finished, which is the thing we're trying to avoid. The next run lazily
-/// builds a fresh worker.
+/// rebuilds the pool.
 ///
 /// In-flight promises reject with `GRID_CANCELLED`; callers should treat that
 /// as "no result", not an error to surface.
 export const GRID_CANCELLED = 'grid cancelled';
 
 export function cancelGridRun(): void {
-  if (gridWorker) {
-    gridWorker.terminate();
-    gridWorker = null;
-  }
-  // Bump the sequence so any late message from the dead worker is ignored.
+  for (const pw of gridPool) pw?.worker.terminate();
+  gridPool = [];
+  // Bump the sequence so any late message from a dead worker is ignored.
   gridWorkerSeq++;
-  // Settle the stale promise now rather than letting it hang for the 60 s
-  // dead-man timeout. Null the slot BEFORE settling so the job's own cleanup
-  // (guarded on identity) cannot clobber a newer job registered meanwhile.
-  if (activeGridJob) {
-    const stale = activeGridJob;
-    activeGridJob = null;
+  // Settle the stale promise now rather than letting it hang for the dead-man
+  // timeout. Null the slot BEFORE settling so the run's own cleanup (guarded on
+  // identity) cannot clobber a newer run registered meanwhile.
+  if (activeGridRun) {
+    const stale = activeGridRun;
+    activeGridRun = null;
     stale.cleanup();
     stale.reject(new Error(GRID_CANCELLED));
   }
 }
 
-function runGridJobOnWorker(
+function runGridJobOnPool(
   job: GridJob,
-  region: DemRegion | null,
+  cachedRegion: { key: string; region: DemRegion } | null,
   onProgress?: (tilesDone: number, tilesTotal: number) => void,
 ): Promise<GridResult> {
   // Newest-wins: every caller that reaches here has already superseded the
   // previous run's generation, so a still-running job's result could only be
   // discarded — letting it finish first would just delay this one by its full
-  // runtime. Terminate it (the tight wasm loop has no yield point to observe
-  // a cooperative flag) and rebuild the worker lazily.
-  if (activeGridJob) cancelGridRun();
-  const worker = getGridWorker();
-  const id = ++gridWorkerSeq;
+  // runtime.
+  if (activeGridRun) cancelGridRun();
+
+  const shards = shardTiles(job.tiles, GRID_POOL_SIZE);
+  const runId = ++gridWorkerSeq;
+  const t0 = performance.now();
+
   return new Promise<GridResult>((resolve, reject) => {
-    // The timeout is a DEAD-MAN switch, not a total budget: it's rearmed by
-    // every progress message, so a genuinely long grid that is visibly
-    // advancing is never killed, while a wedged worker still fails in 60 s.
+    const dbA = new Float32Array(job.cols * job.rows).fill(-120);
+    const doneByShard = new Array<number>(shards.length).fill(0);
+    let outstanding = shards.length;
+    let settled = false;
+
+    // The timeout is a DEAD-MAN switch, not a total budget: rearmed by every
+    // progress message, so a genuinely long grid that is visibly advancing is
+    // never killed, while a wedged pool still fails in 60 s.
     const IDLE_TIMEOUT_MS = 60000;
     let timeout = 0;
+
+    const listeners: Array<() => void> = [];
+    const cleanup = () => {
+      if (activeGridRun === handle) activeGridRun = null;
+      clearTimeout(timeout);
+      for (const off of listeners) off();
+      listeners.length = 0;
+    };
+    const fail = (e: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(e);
+    };
     const arm = () => {
       clearTimeout(timeout);
-      timeout = window.setTimeout(() => {
-        cleanup();
-        reject(new Error('grid worker stopped responding'));
-      }, IDLE_TIMEOUT_MS);
+      timeout = window.setTimeout(() => fail(new Error('grid worker stopped responding')), IDLE_TIMEOUT_MS);
     };
-    const cleanup = () => {
-      // Identity-guarded: a stale job's late cleanup (dead-man timeout) must
-      // not free a slot that a newer job now owns.
-      if (activeGridJob?.id === id) activeGridJob = null;
-      clearTimeout(timeout);
-      worker.removeEventListener('message', onMessage);
-      worker.removeEventListener('error', onError);
-    };
-    const onMessage = (ev: MessageEvent) => {
-      const data = ev.data as {
-        id: number; ok?: boolean; result?: GridResult; error?: string;
-        progress?: { tilesDone: number; tilesTotal: number };
+    const handle = { cleanup, reject: fail };
+
+    shards.forEach((shardTilesList, si) => {
+      const pw = getPoolWorker(si);
+      const { worker } = pw;
+      const onMessage = (ev: MessageEvent) => {
+        const data = ev.data as {
+          id: number; ok?: boolean; result?: GridResult; error?: string;
+          progress?: { tilesDone: number; tilesTotal: number };
+        };
+        if (data.id !== runId || settled) return;
+        if (data.progress) {
+          arm();
+          doneByShard[si] = data.progress.tilesDone;
+          onProgress?.(doneByShard.reduce((a, b) => a + b, 0), job.tiles.length);
+          return;
+        }
+        if (!data.ok || !data.result) { fail(new Error(data.error ?? 'grid worker failed')); return; }
+        mergeShard(dbA, data.result.dbA, shardTilesList, job.cols, job.rows);
+        doneByShard[si] = shardTilesList.length;
+        onProgress?.(doneByShard.reduce((a, b) => a + b, 0), job.tiles.length);
+        if (--outstanding === 0) {
+          settled = true;
+          cleanup();
+          resolve({
+            cols: job.cols, rows: job.rows, bounds: job.bounds, dbA,
+            computedMs: performance.now() - t0,
+          });
+        }
       };
-      if (data.id !== id) return;
-      if (data.progress) {
-        arm();
-        onProgress?.(data.progress.tilesDone, data.progress.tilesTotal);
-        return;
-      }
-      cleanup();
-      if (data.ok && data.result) resolve(data.result);
-      else reject(new Error(data.error ?? 'grid worker failed'));
-    };
-    // A worker module-load / runtime error fires 'error' (not a message).
-    // Drop the worker so the next call rebuilds it, and reject fast so the
-    // caller falls back to the inline path without waiting for the timeout.
-    const onError = (e: ErrorEvent) => {
-      cleanup();
-      gridWorker = null;
-      reject(new Error(`grid worker error: ${e.message || 'load failed'}`));
-    };
-    worker.addEventListener('message', onMessage);
-    worker.addEventListener('error', onError);
-    activeGridJob = { id, cleanup, reject };
+      const onError = (e: ErrorEvent) => {
+        // Drop the whole pool: a module-load failure affects every worker.
+        gridPool = [];
+        fail(new Error(`grid worker error: ${e.message || 'load failed'}`));
+      };
+      worker.addEventListener('message', onMessage);
+      worker.addEventListener('error', onError);
+      listeners.push(() => {
+        worker.removeEventListener('message', onMessage);
+        worker.removeEventListener('error', onError);
+      });
+
+      // Ship the DEM region only to workers that don't already hold it.
+      const wantKey = cachedRegion?.key ?? null;
+      const sendRegion = cachedRegion != null && pw.regionKey !== cachedRegion.key;
+      if (sendRegion) pw.regionKey = cachedRegion.key;
+      else if (cachedRegion == null) pw.regionKey = null;
+      worker.postMessage({
+        id: runId,
+        job: { ...job, tiles: shardTilesList },
+        region: sendRegion ? cachedRegion.region : null,
+        regionKey: wantKey,
+      });
+    });
+
+    activeGridRun = handle;
     arm();
-    worker.postMessage({ id, job, region });
   });
 }
 

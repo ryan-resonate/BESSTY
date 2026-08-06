@@ -168,6 +168,40 @@ function totalDbaFor(contributions: number[][], aw: number[]): number {
 /// is on, so it must be cheap — the worker just forwards a postMessage.
 export type GridProgress = (tilesDone: number, tilesTotal: number) => void;
 
+// ============== P2: tile sharding across a worker pool ==============
+//
+// Tiles are independent — each writes a disjoint block of cells — so a grid can
+// be split across workers and stitched back together exactly. These two are
+// pure so the stitching can be tested without spinning up workers.
+
+/// Deal tiles round-robin into at most `n` shards, dropping empty ones.
+///
+/// Round-robin rather than contiguous blocks: cost per tile varies hugely with
+/// distance from the sources (near tiles keep every source individually, far
+/// tiles collapse to one cluster), so contiguous blocks would hand one worker
+/// the whole expensive middle of the site while the others idled.
+export function shardTiles(tiles: GridTile[], n: number): GridTile[][] {
+  const shards: GridTile[][] = Array.from({ length: Math.max(1, n) }, () => []);
+  tiles.forEach((t, i) => shards[i % shards.length].push(t));
+  return shards.filter((s) => s.length > 0);
+}
+
+/// Copy one shard's computed cells into the combined grid. Only the cells the
+/// shard's own tiles cover are touched, so shards cannot overwrite each other —
+/// that is what makes the merge exact rather than a max/blend heuristic.
+export function mergeShard(
+  into: Float32Array, from: Float32Array, tiles: GridTile[], cols: number, rows: number,
+): void {
+  for (const t of tiles) {
+    const rowEnd = Math.min(t.row0 + t.rows, rows);
+    const colEnd = Math.min(t.col0 + t.cols, cols);
+    for (let r = Math.max(0, t.row0); r < rowEnd; r++) {
+      const base = r * cols;
+      for (let c = Math.max(0, t.col0); c < colEnd; c++) into[base + c] = from[base + c];
+    }
+  }
+}
+
 export function runBatchedGrid(
   job: GridJob,
   dem: DemRaster | null,
