@@ -42,6 +42,14 @@ Two consequences:
 
 If you have a datasheet with per-band α, use the value at the dominant band of your source rather than the NRC. If all you have is NRC, treat it as an optimistic bound and consider something lower.
 
+## Two things that decide whether a wall reflects at all
+
+**A surface has to be big enough.** ISO 9613-2 (Eq 26/27) only accepts a reflection where the facade is large enough to be specular at that wavelength — the test scales with the surface's effective size against the wavelength and the path lengths. A short wall therefore reflects the high bands and simply does not reflect the low ones, and the effect is strong: an 8 m tall wall beside a 200 m path reflects nothing below roughly 550 Hz, while a 20 m wall reflects from about 125 Hz up. This is physics, not a threshold anyone chose, but it does mean a modest acoustic barrier returns far less low-frequency energy than its length suggests.
+
+The size that counts is the wall **as you drew it**. Each straight run between the vertices you clicked is one reflecting surface, so splitting a long wall into many short segments while drawing will reduce the reflection it produces.
+
+**Reflected levels are currently under-estimated.** A known limitation: a reflected path is also being screened by the very wall it reflects off, which costs it up to 20 dB (the standard's single-edge diffraction cap) for a tall wall. Reflections are off by default and flagged provisional, so no default result is affected — but treat the *magnitude* of a reflection as a lower bound for now. The absorption behaviour described above is unaffected: it scales the reflected path correctly whatever that path's level.
+
 ## What is not modelled
 
 - **Frequency-dependent α.** The engine supports per-band absorption; BESSTY sends a single broadband value. If per-band matters for your project, say so and it can be exposed.

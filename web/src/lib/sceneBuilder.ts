@@ -244,6 +244,78 @@ export function containerFootprint(
  * Note `Barrier.baseFromGroundM` is intentionally unused, matching the previous
  * engine behaviour (walls are founded on the ground under them).
  */
+/**
+ * Reflecting facades for a barrier — **one per DRAWN edge**, not per densified
+ * sub-segment.
+ *
+ * This distinction is load-bearing, and getting it wrong is invisible in the
+ * output. Screening needs the polyline densified to [`MAX_WALL_SEGMENT_M`] so
+ * each vertex samples its own DEM elevation; reflection must NOT inherit that
+ * densification, for two reasons:
+ *
+ *  - **The Fresnel size gate.** ISO 9613-2 Eq 26/27 accepts a specular
+ *    reflection only where the facade is large enough to be specular at that
+ *    wavelength, via `leff = min(a·cos αa, h·cos αh)` over the facade's FULL
+ *    extent. Chopping a 320 m wall into 10 m pieces collapses `a` from 320 to
+ *    10, and at the grazing incidence typical of a wall running alongside a
+ *    path `cos αa` is small too — so a long, obviously-reflective wall was
+ *    silently rejected in every band but the very highest. The wall a user drew
+ *    is the surface the gate must judge.
+ *  - **The reflector budget.** The engine enumerates ≤ 100 000 paths, which is
+ *    46 surfaces at order 3 (see `reflectors.ts`). One 320 m wall was spending
+ *    32 of them, so a single long barrier could crowd out every other reflector
+ *    or force the whole scene's order down.
+ *
+ * Ground elevation still comes from the densified samples: the facade's base
+ * takes the lowest ground along the edge and its top the mean crest, so a wall
+ * over undulating ground reflects off a sensible rectangle rather than one
+ * pinned to whichever elevation its two end vertices happened to land on.
+ */
+export function facadesFromBarrier(
+  barrier: Barrier,
+  origin: [number, number],
+  dem: DemRaster | null,
+  alpha: number,
+): Facade[] {
+  const poly = barrier.polylineLatLng;
+  if (!poly || poly.length < 2) return [];
+  const h0 = barrier.topHeightsM?.[0] ?? 0;
+  const out: Facade[] = [];
+
+  for (let v = 0; v + 1 < poly.length; v++) {
+    const p0 = poly[v];
+    const p1 = poly[v + 1];
+    if (!finiteLatLng(p0) || !finiteLatLng(p1)) continue;
+    if (p0[0] === p1[0] && p0[1] === p1[1]) continue;
+    const hStart = barrier.topHeightsM?.[v] ?? h0;
+    const hEnd = barrier.topHeightsM?.[v + 1] ?? h0;
+    const [e0, n0] = latLngToLocalMetres(p0, origin);
+    const [e1, n1] = latLngToLocalMetres(p1, origin);
+
+    // Sample the ground along the edge at the screening pitch, so the facade's
+    // base and crest reflect the terrain the wall actually stands on.
+    const segLen = Math.hypot(e1 - e0, n1 - n0);
+    const nSub = Math.max(1, Math.ceil(segLen / MAX_WALL_SEGMENT_M));
+    let baseZ = Infinity;
+    let topSum = 0;
+    for (let k = 0; k <= nSub; k++) {
+      const t = k / nSub;
+      const latLng: [number, number] = [
+        p0[0] + (p1[0] - p0[0]) * t,
+        p0[1] + (p1[1] - p0[1]) * t,
+      ];
+      const g = groundAt(dem, latLng);
+      const h = Math.max(0, hStart + (hEnd - hStart) * t);
+      if (g < baseZ) baseZ = g;
+      topSum += g + h;
+    }
+    const topZ = topSum / (nSub + 1);
+    if (!Number.isFinite(baseZ) || !(topZ > baseZ)) continue;
+    out.push({ segment: [[e0, n0], [e1, n1]], base_z: baseZ, top_z: topZ, alpha });
+  }
+  return out;
+}
+
 export function wallFromBarrier(
   barrier: Barrier,
   origin: [number, number],
@@ -321,18 +393,7 @@ export function buildScene(input: SceneInput): Scene {
       const alpha = Number.isFinite(b.absorptionCoeff)
         ? Math.max(0, Math.min(1, b.absorptionCoeff))
         : 0.1;
-      for (let i = 0; i + 1 < wall.polyline.length; i++) {
-        const topA = wall.top_z?.[i] ?? wall.base_z[i];
-        const topB = wall.top_z?.[i + 1] ?? wall.base_z[i + 1];
-        candidateFacades.push({
-          segment: [wall.polyline[i], wall.polyline[i + 1]],
-          base_z: Math.min(wall.base_z[i], wall.base_z[i + 1]),
-          // A sloping wall segment reflects off a rectangle at its mean top —
-          // the engine's facade is a height band, not a trapezoid.
-          top_z: (topA + topB) / 2,
-          alpha,
-        });
-      }
+      candidateFacades.push(...facadesFromBarrier(b, origin, dem, alpha));
     }
   }
 
