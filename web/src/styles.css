@@ -271,16 +271,27 @@ header.app-header nav a:hover { background: var(--slate-1); }
   inset: 0 -4px;
 }
 
+/* Tab strip: the wrapping tab list plus the settings gear, on one row. The
+ * underline lives here rather than on `.tabs` so it runs the full width,
+ * behind the gear as well; the active tab still overlaps it via its own
+ * -1px bottom margin. */
+.tab-strip {
+  display: flex;
+  align-items: stretch;
+  background: #fff;
+  border-bottom: 1px solid var(--light);
+  flex-shrink: 0;
+}
+
 /* Top-level tabs — wrap to two rows when the panel is narrow rather than
  * forcing a horizontal scroll, which is hard to discover. */
 .tabs {
   display: flex;
   flex-wrap: wrap;
   gap: 2px;
-  background: #fff;
-  border-bottom: 1px solid var(--light);
   padding: 6px 6px 0;
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 0;
 }
 .tab {
   background: transparent;
@@ -320,18 +331,13 @@ header.app-header nav a:hover { background: var(--slate-1); }
 }
 .tab.filled .step-badge { background: var(--ink); color: var(--yellow); }
 .tab.on .step-badge { background: var(--ink); color: var(--yellow); }
-/* Settings gear: its own row at the very top of the side panel, right
- * aligned. Settings is a floating window rather than a tab because it has to
- * stay open while you work on the map. */
-.side-panel-header {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  padding: 4px 6px 0;
-  background: #fff;
-  flex-shrink: 0;
-}
+/* Settings gear: level with the FIRST row of tabs (align-self keeps it there
+ * when the tab list wraps to two rows). Settings is a floating window rather
+ * than a tab because it has to stay open while you work on the map. */
 .gear-btn {
+  align-self: flex-start;
+  margin: 4px 6px 0 2px;
+  flex: 0 0 auto;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 6px;

@@ -217,29 +217,31 @@ export function SidePanel(props: Props) {
 
   return (
     <aside className="side-panel" onClick={maybeCancelAddMode}>
-      {/* Own row above the tabs: inside the tab strip it rode the LAST wrapped
-          row, which put it at the bottom of the tab block on a narrow panel. */}
-      {props.onOpenSettings && (
-        <div className="side-panel-header">
+      {/* Tabs and the gear share one row. The gear is a SIBLING of the tab
+          list, not a member of it: inside the list it took part in the wrap,
+          so on a narrow panel it rode the last wrapped row and appeared under
+          the tabs instead of beside them. */}
+      <div className="tab-strip">
+        <div className="tabs">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              className={`tab${tab === t.id ? ' on' : ''}${filled[t.id] ? ' filled' : ''}`}
+              onClick={() => setTab(t.id)}
+            >
+              {t.numbered && <span className="step-badge">{t.numbered}</span>}
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {props.onOpenSettings && (
           <button
             className="gear-btn"
             title="Settings"
             aria-label="Settings"
             onClick={() => props.onOpenSettings?.()}
           >⚙</button>
-        </div>
-      )}
-      <div className="tabs">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            className={`tab${tab === t.id ? ' on' : ''}${filled[t.id] ? ' filled' : ''}`}
-            onClick={() => setTab(t.id)}
-          >
-            {t.numbered && <span className="step-badge">{t.numbered}</span>}
-            {t.label}
-          </button>
-        ))}
+        )}
       </div>
 
       <div className="tab-body">
