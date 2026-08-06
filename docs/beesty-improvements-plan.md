@@ -850,86 +850,52 @@ not just the engine. Each runs at θ = 0 (no clustering) and default θ.
 | P3 | Contour extraction in worker | S | **DONE** `e24bf83` |
 | P4 | Incremental regrid | L | **DONE** `e24bf83` |
 | R | Engine: reflected ray not screened by its own reflector (§7.5.2 / T19) | M | **DONE** |
-| P5 | Wall-segment pruning in the engine (approved, Ryan 2026-08-06) | M | queued |
+| P5 | Wall screening: per-tile barrier culling (+ perf harness) | M | **DONE** |
 
-### P5 — wall-segment pruning (approved, queued)
+### P5 — wall screening: measured, then culled per tile (DONE)
 
-`project_walls` runs once per source→receiver pair and does a line-intersection
-test against EVERY wall segment in the scene — segments scale as drawn-length ÷
-10 m, so 2 km of site fencing is 200 tests inside the innermost loop. Add a
-cheap spatial prune (per-wall AABB against the pair's bounding box, or a
-per-tile pre-filter at decomposition time) so distant walls skip the per-pair
-test entirely. Decision recorded: do NOT tie the 10 m densification pitch to
-DEM resolution — too many edge cases (Ryan). Profile before/after on a
-representative project so the win is a number, not a hope.
+`project_walls` tests every wall segment against every source→receiver pair,
+and segments scale with drawn length (a polyline is densified to ≤10 m so its
+crest follows the terrain; each container adds four). `tests/perf_wall_
+screening.rs` measures it — a 16×16 tile with 50 sources:
 
-## Findings from the V-item validation (2026-08-06)
+| wall segments | solve | screening share |
+|---|---|---|
+| 0 | 10 ms | — |
+| 100 | 12 ms | 7% |
+| 500 | 28 ms | 44% |
+| 1000 | 107 ms | 67% |
 
-The validation suite (`web/src/lib/reflection.wasm.test.ts`, 13 cases) checks
-the app's own wiring — `buildScene` → `solve_scene` — against hand-derivable
-quantities, using three devices: comparing two scenes so Adiv/Aatm/Agr cancel,
-the exact `(1 − α)` reflected-energy identity, and image-source equivalence.
+Superlinear, because extra crossings also enlarge the diffraction hull. Worst
+of all, 1000 segments that could screen *nothing* (a site fence off every path)
+still cost 21 ms of pure rejection.
 
-**Confirmed correct.** The direct path is exact: with G = 0 the absolute level
-reproduces `Lw − (20·log10 d + 11) + 3` to within 0.1 dB, the doubling law to
-6.02 dB, and Lw is perfectly linear. **Barrier `Dz` matches an independent
-implementation of §7.4 for BOTH editions** (1996 `3 + X`, 2024 `1 + (2 + X)`,
-each with its own `Kmet`) — so barrier attenuation is right, and a barrier that
-looks weak is either the Dz cap setting or the geometry. Absorption is exact:
-reflected energy scales as `(1 − α)` to better than 1%, and α = 1 is
-bit-identical to reflections off.
+**Two engine-side attempts failed and were reverted — recorded so nobody
+repeats them:**
 
-**Defect found and FIXED — reflector facades inherited the screening
-densification.** Barrier polylines are densified to ≤ 10 m so each vertex
-samples its own DEM elevation, which screening needs. Reflection was reusing
-that polyline, so a 320 m wall became 32 facades. Two consequences, both
-silent: the ISO Eq 26/27 size gate judged 10 m surfaces and rejected the
-reflection in every band but the highest, and one wall consumed 32 of the
-46-surface order-3 budget. Facades now come from the drawn edges
-(`facadesFromBarrier`), ground still sampled at the screening pitch.
+1. *A geometric prune* (bounding-circle distance to the S→R line) before the
+   intersection: neutral at best. The intersection it skips is two divisions;
+   the test costs about the same. A first cut using `hypot` was 15% SLOWER
+   than no prune — `hypot` is a libm call with overflow guards.
+2. *A uniform-grid spatial index* over the walls: a clear regression (142 →
+   258 ms). Walking cells along a several-hundred-metre S→R line costs more
+   per query than the linear scan it replaces.
 
-**Defect found and FIXED (engine, Ryan-approved 2026-08-06) — a reflected path
-was screened by the wall it reflects off.** BESSTY lists a barrier in both
-`obstacles` and `reflectors` (it must: the same wall screens some paths and
-reflects others), and the engine scored the reflected ray on the straight
-image→receiver segment against ALL obstacles — a segment that pierces the
-reflector at the bounce by construction. The loss grew with wall height,
-saturated at exactly the 20 dB single-edge cap, and was nearly independent of
-the wall's offset — the signature of screening, not of a longer path.
+The lesson: per-PAIR work cannot win, because the cost is the pairs × walls
+product and per-wall rejection is already ~9 cycles. The fix has to remove
+walls from the pair loop entirely.
 
-The standards ruled decisively: §7.5.2 scores reflected sound "according to the
-propagation path of the reflected sound" — the bent ray, which touches the
-reflector and never crosses it — and ISO/TR 17534-3 T19's reflected-ray tables
-(66–67) carry **no Abar term at all** (LW with the α loss, Aatm, and Agr along
-the bent path). SoundPLAN and CadnaA certify against those tables.
+**Shipped: cull once per TILE, in the web layer** (`barriersForRegion` +
+`segmentHitsBox` in `gridCore.ts`, applied in `buildGridJob`). Every
+source→cell path in a tile lies inside the bounding box of that tile's cells
+and its sources, so a wall missing that box can screen nothing there — the
+same argument Barnes-Hut makes for sources, applied to walls. Cost drops from
+O(cells × sources × walls) to O(tiles × walls) once. A 250 m margin covers the
+engine's lateral (around-the-end) diffraction, which can involve a wall whose
+body sits outside the strict path box. Skipped below 8 barriers, where the
+filter costs more than it saves. Pinned by a test asserting a culled grid is
+identical to one solved with every barrier, on a scene with a screening wall
+near the sources and a fence 3 km away.
 
-Fix: `walls_for_reflected_ray` in `scene/mod.rs` — when scoring a reflected
-ray, only wall crossings of the image→receiver segment that fall **strictly
-after the last bounce** count. Everything at or before it lies in the unfolded
-(fictitious) half of the image construction: the bounce itself, and — the case
-a bounce-point-only excusal missed, caught by adversarial review — a reflecting
-BODY's other faces. A container's image source sits behind the box whenever the
-source stands farther from the facade than the box is deep, so the segment
-crossed the REAR wall metres from the bounce and the body screened its own
-facade's reflection by ~8–10 dB. Crossings after the bounce (another wall, or
-another part of the same wall standing across the reflected leg) still screen.
-Applied to first order, higher-order chains (`ReflectionChain` now exports its
-bounce points), and cylinder tangent points.
-
-Regression-locked four ways: `t19_reflector_double_listed_as_obstacle` (the
-TR's own 42.00 reference with the barrier double-listed; broken read 40.88),
-`container_body_does_not_screen_its_own_facades_reflection` (per-band at 4 kHz
-against a free-field mirrored source, since the Fresnel gate legitimately
-silences a 2.9 m facade below ~2 kHz at that range),
-`reflected_ray_is_still_screened_by_other_walls`, and web-side V-R2d (mirrored-
-source equivalence <1.5 dB, height-independence, offset falloff = image-path
-divergence). 22/22 conformance, clippy clean, wasm rebuilt, 218/218 web.
-
-Known residuals (documented, second-order, none reachable from BEESTY today):
-ground-region factors for a reflected ray reuse the DIRECT S→R route's values
-(BEESTY sends no ground regions; core/JSON callers with region polygons get
-direct-route G on reflected paths); screening of the EARLIER legs (source →
-first bounce) by other obstacles is not modelled — the deferral that predates
-this fix; and a cylinder paired with a polygonal screening footprint still
-self-screens (inscribed-polygon sagitta exceeds the 1 cm tolerance; BEESTY
-sends no cylinders).
+Decision recorded: do NOT tie the 10 m densification pitch to DEM resolution —
+too many edge cases (Ryan, 2026-08-06).

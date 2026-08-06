@@ -87,6 +87,17 @@ export interface GridTile {
   cols: number; rows: number;   // tile size in cells
   /// Sources for this tile, catalog already resolved on the main thread.
   sources: ResolvedSource[];
+  /// P5 — barriers that could screen ANY source→cell path in this tile,
+  /// culled on the main thread. Absent ⇒ use the job's full list.
+  ///
+  /// The engine tests every wall segment against every source→receiver pair,
+  /// and segments scale with drawn length (a polyline is densified to ≤10 m so
+  /// its crest follows the terrain; each container adds four). Measured, a
+  /// 16×16 tile with 50 sources spent 67% of its time on 1000 fence segments
+  /// that could never screen anything. Per-wall rejection inside the engine
+  /// cannot fix that — it is the pairs × walls product — so the cull happens
+  /// ONCE per tile here, the same trick Barnes-Hut plays for sources.
+  barriers?: Barrier[];
 }
 
 /// Fully-resolved, serializable description of a grid computation — produced on
@@ -281,7 +292,7 @@ export function runBatchedGrid(
         origin,
         sources: withConcave(tile.sources, group.concaveBySourceId),
         receivers: [],
-        barriers,
+        barriers: tile.barriers ?? barriers,
         dem,
         terrain,
         settings,
@@ -468,4 +479,76 @@ export function planIncrementalGrid(job: GridJob, cache: GridCacheEntry | null):
     else dirty.push(job.tiles[i]);
   }
   return { dirty, reuse: { from: cache!.dbA, tiles: clean }, jobKey, tileKeys };
+}
+
+// ============== P5: per-tile barrier culling ==============
+//
+// A wall can only screen a source→cell path if it crosses that path, and every
+// such path lies inside the bounding box of (the tile's cells ∪ its sources).
+// So a wall whose segment misses that box can be dropped for the whole tile —
+// once, on the main thread, instead of being re-tested for every one of the
+// tile's (cells × sources) pairs.
+//
+// This is exactly the trick Barnes-Hut plays for sources, applied to walls.
+// It is conservative by construction: a wall that could screen anything in the
+// tile always survives, so the culled grid is identical to the unculled one.
+
+/// Does segment `p→q` intersect the axis-aligned box, or lie inside it?
+/// Liang–Barsky against the box, in plan.
+export function segmentHitsBox(
+  p: [number, number], q: [number, number],
+  minX: number, minY: number, maxX: number, maxY: number,
+): boolean {
+  // Trivial accept: either endpoint inside.
+  if ((p[0] >= minX && p[0] <= maxX && p[1] >= minY && p[1] <= maxY)
+    || (q[0] >= minX && q[0] <= maxX && q[1] >= minY && q[1] <= maxY)) return true;
+  const dx = q[0] - p[0];
+  const dy = q[1] - p[1];
+  let t0 = 0;
+  let t1 = 1;
+  const edges: Array<[number, number]> = [
+    [-dx, p[0] - minX], [dx, maxX - p[0]],
+    [-dy, p[1] - minY], [dy, maxY - p[1]],
+  ];
+  for (const [den, num] of edges) {
+    if (den === 0) {
+      if (num < 0) return false;
+      continue;
+    }
+    const t = num / den;
+    if (den < 0) {
+      if (t > t1) return false;
+      if (t > t0) t0 = t;
+    } else {
+      if (t < t0) return false;
+      if (t < t1) t1 = t;
+    }
+  }
+  return true;
+}
+
+/// Barriers that could screen any source→cell path in a tile whose cells and
+/// sources span `[minLat, maxLat] × [minLng, maxLng]`.
+///
+/// `marginDeg` guards the edges: a barrier just outside the box can still be
+/// crossed by a path to a cell ON the boundary, and the engine's own lateral
+/// (around-the-end) diffraction reaches a little further still.
+export function barriersForRegion(
+  barriers: Barrier[],
+  minLat: number, maxLat: number, minLng: number, maxLng: number,
+  marginDeg: number,
+): Barrier[] {
+  const lo0 = minLat - marginDeg;
+  const hi0 = maxLat + marginDeg;
+  const lo1 = minLng - marginDeg;
+  const hi1 = maxLng + marginDeg;
+  return barriers.filter((b) => {
+    const poly = b.polylineLatLng ?? [];
+    for (let i = 0; i + 1 < poly.length; i++) {
+      if (segmentHitsBox(poly[i], poly[i + 1], lo0, lo1, hi0, hi1)) return true;
+    }
+    // A single-vertex (degenerate) barrier can't screen, but keep it rather
+    // than silently changing what the engine is given.
+    return poly.length < 2;
+  });
 }

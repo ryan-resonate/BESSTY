@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs';
 
 import init, { solve_scene } from '../wasm/iso9613_wasm.js';
 import {
-  gridTileFingerprint, mergeShard, planIncrementalGrid, runBatchedGrid, shardTiles,
+  barriersForRegion, gridTileFingerprint, mergeShard, planIncrementalGrid, runBatchedGrid,
+  segmentHitsBox, shardTiles,
   type GridJob, type GridTile,
 } from './gridCore';
 import { buildScene } from './sceneBuilder';
@@ -509,4 +510,92 @@ test('an incrementally-solved grid is IDENTICAL to a full re-solve', () => {
   );
   cache = { jobKey: plan.jobKey, tileKeys: plan.tileKeys, dbA: incremental, cols: after.cols, rows: after.rows };
   assert.equal(planIncrementalGrid(after, cache).dirty.length, 0, 'and the new cache is reusable');
+});
+
+// ============== P5: per-tile barrier culling ==============
+
+test('segment/box overlap: inside, crossing, and missing', () => {
+  const box = [0, 0, 100, 50] as const;
+  const hit = (p: [number, number], q: [number, number]) =>
+    segmentHitsBox(p, q, box[0], box[1], box[2], box[3]);
+  assert.ok(hit([10, 10], [20, 20]), 'wholly inside');
+  assert.ok(hit([-50, 25], [150, 25]), 'crossing right through');
+  assert.ok(hit([-10, -10], [10, 10]), 'clipping a corner');
+  assert.ok(hit([50, -20], [50, 20]), 'entering from below');
+  assert.ok(!hit([-50, 200], [150, 200]), 'passing well above');
+  assert.ok(!hit([-50, -1], [-10, 60]), 'wholly to the left');
+  assert.ok(hit([0, 0], [0, 50]), 'lying exactly on an edge');
+});
+
+test('culling keeps every barrier that could screen, and drops the rest', () => {
+  const bar = (id: string, pts: Array<[number, number]>) => ({
+    id, name: id, type: 'wall' as const, polylineLatLng: pts,
+    topHeightsM: pts.map(() => 4), baseFromGroundM: 0,
+    surfaceDensityKgM2: 20, absorptionCoeff: 0.1,
+  });
+  const near = bar('near', [[-27.0, 152.0], [-27.0, 152.01]]);
+  const far = bar('far', [[-26.0, 153.0], [-26.0, 153.01]]);
+  const kept = barriersForRegion([near, far], -27.01, -26.99, 151.99, 152.02, 0.001);
+  assert.deepEqual(kept.map((b) => b.id), ['near']);
+});
+
+test('a grid culled per tile is IDENTICAL to one solved with every barrier', () => {
+  // The justification for P5: dropping barriers a tile cannot see must not
+  // move a single cell. A screening wall near the sources plus a long fence
+  // far away — the exact shape that makes culling worth doing.
+  const R = 6371008.8;
+  const at = (e: number, n: number): [number, number] => [
+    ORIGIN[0] + (n / R) * (180 / Math.PI),
+    ORIGIN[1] + (e / (R * Math.cos((ORIGIN[0] * Math.PI) / 180))) * (180 / Math.PI),
+  ];
+  const wallBar = (id: string, pts: Array<[number, number]>, h: number) => ({
+    id, name: id, type: 'wall' as const,
+    polylineLatLng: pts.map(([e, n]) => at(e, n)),
+    topHeightsM: pts.map(() => h), baseFromGroundM: 0,
+    surfaceDensityKgM2: 20, absorptionCoeff: 0.1,
+  });
+  // A screen across the middle of the modelled area, and a fence 3 km south
+  // that no source→cell path can reach.
+  const screen = wallBar('screen', [[-400, 120], [400, 120]], 6);
+  const remote = wallBar('remote', [[-2000, -3000], [2000, -3000]], 6);
+
+  const job = makeJob(48, 32, 1600, [
+    { id: 's1', latLng: at(0, 0), heightAglM: 3, lw: lw10() },
+  ], { barriers: [screen, remote] });
+
+  const withAll = runBatchedGrid(job, flatDem);
+
+  // Cull per tile exactly as buildGridJob does.
+  const marginDeg = (250 / R) * (180 / Math.PI);
+  const culled = {
+    ...job,
+    tiles: job.tiles.map((t) => {
+      let minLat = Infinity; let maxLat = -Infinity;
+      let minLng = Infinity; let maxLng = -Infinity;
+      // Tile cell footprint, approximated by its corner cells, plus sources.
+      for (const s of t.sources) {
+        minLat = Math.min(minLat, s.latLng[0]); maxLat = Math.max(maxLat, s.latLng[0]);
+        minLng = Math.min(minLng, s.latLng[1]); maxLng = Math.max(maxLng, s.latLng[1]);
+      }
+      // Whole grid bounds stand in for the cell footprint here (conservative).
+      minLat = Math.min(minLat, job.bounds.sw[0]); maxLat = Math.max(maxLat, job.bounds.ne[0]);
+      minLng = Math.min(minLng, job.bounds.sw[1]); maxLng = Math.max(maxLng, job.bounds.ne[1]);
+      return {
+        ...t,
+        barriers: barriersForRegion([screen, remote], minLat, maxLat, minLng, maxLng, marginDeg),
+      };
+    }),
+  };
+  // The remote fence must actually have been dropped, or the test proves
+  // nothing about culling.
+  assert.ok(
+    culled.tiles.every((t) => t.barriers!.length === 1 && t.barriers![0].id === 'screen'),
+    'the 3 km-distant fence should be culled from every tile',
+  );
+
+  const withCull = runBatchedGrid(culled, flatDem);
+  assert.deepEqual(
+    Array.from(withCull.dbA), Array.from(withAll.dbA),
+    'culling barriers a tile cannot see must not change any cell',
+  );
 });

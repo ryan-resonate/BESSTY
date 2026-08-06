@@ -47,6 +47,7 @@ import { buildTerrainField } from './terrainField';
 import { Diagnostics } from './diagnostics';
 import { approxDistanceM } from './geo';
 import {
+  barriersForRegion,
   concaveCorrectionMet,
   mergeShard,
   planIncrementalGrid,
@@ -718,6 +719,14 @@ function buildGridJob(
   // sat on top of the sources.)
   const tree = buildSourceTree(project, project.scenario.bandSystem, project.scenario.windSpeed);
 
+  // P5 — barrier culling inputs. Below a handful of barriers the filter costs
+  // more than the screening it saves, so it is skipped entirely.
+  const allBarriers = project.barriers ?? [];
+  /// Below this, filtering costs more than the screening it saves.
+  const BARRIER_CULL_MIN = 8;
+  const CULL_MARGIN_M = 250;
+  const cullMarginDeg = (CULL_MARGIN_M / R) * (180 / Math.PI);
+
   const tiles: GridTile[] = [];
   for (const t of gridTileLayout(ca, spacingM)) {
     const { col0, row0, cols: tcols, rows: trows, region } = t;
@@ -736,9 +745,28 @@ function buildGridJob(
           );
         }
       }
+    const tileSources = resolveTileSources(project, tileEff);
+    // P5 — cull barriers to this tile once, rather than letting the engine
+    // re-test every wall for every (cell × source) pair. Every source→cell
+    // path lies inside the bounding box of the tile's cells and its sources,
+    // so a wall missing that box can screen nothing here. The margin is
+    // generous because the engine's lateral (around-the-end) diffraction can
+    // involve a wall whose body sits outside the strict path box.
+    let bMinLat = t.region.minLat; let bMaxLat = t.region.maxLat;
+    let bMinLng = t.region.minLng; let bMaxLng = t.region.maxLng;
+    for (const src of tileSources) {
+      const [la, ln] = src.latLng;
+      if (la < bMinLat) bMinLat = la;
+      if (la > bMaxLat) bMaxLat = la;
+      if (ln < bMinLng) bMinLng = ln;
+      if (ln > bMaxLng) bMaxLng = ln;
+    }
     tiles.push({
       col0, row0, cols: tcols, rows: trows,
-      sources: resolveTileSources(project, tileEff),
+      sources: tileSources,
+      barriers: allBarriers.length > BARRIER_CULL_MIN
+        ? barriersForRegion(allBarriers, bMinLat, bMaxLat, bMinLng, bMaxLng, cullMarginDeg)
+        : undefined,
     });
   }
 
