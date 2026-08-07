@@ -157,11 +157,15 @@ test('the app entry mounts the providers the imperative APIs need', () => {
 });
 
 test('no worker is constructed outside the modules that own one', () => {
-  // Workers are expensive and each one loads its own copy of the wasm. The
-  // three that exist are pooled/laned deliberately (grid pool, scene lanes,
-  // contour tracer); a stray `new Worker` elsewhere would quietly multiply
-  // memory and CPU.
-  const owners = ['solver.ts', 'contourLines.ts'];
+  // Workers are expensive and a solver worker loads its own copy of the wasm.
+  // The ones that exist are pooled or laned deliberately (grid pool, scene
+  // lanes, contour tracer); a stray `new Worker` elsewhere would quietly
+  // multiply memory and CPU.
+  //
+  // dxfImport is the one exception, and a narrow one: it holds no wasm, spawns
+  // at most one worker per user-initiated import, and terminates it in a
+  // `finally`. Anything added here should be able to say the same.
+  const owners = ['solver.ts', 'contourLines.ts', 'dxfImport.ts'];
   const offenders = FILES
     .filter((f) => /new Worker\s*\(/.test(f.text))
     .map((f) => f.path)

@@ -424,6 +424,22 @@ header.app-header nav a:hover { background: var(--slate-1); }
    the invisible drag handles on a dimension's ends still need to be grabbable. */
 .annotation-text { cursor: move; }
 .annotation-grab { cursor: move; }
+
+/* DXF import. The units step is a comparison, so the implied site size is set
+   in the mono face and aligned right — the column the eye actually scans. */
+.dxf-units { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+.dxf-unit { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 5px; border: 1px solid transparent; font-size: 13px; cursor: pointer; }
+.dxf-unit:hover { background: var(--slate-1, #f8fafc); }
+.dxf-unit.on { border-color: var(--ink); background: var(--slate-1, #f8fafc); }
+.dxf-unit.implausible .dxf-unit-size { color: var(--red); }
+.dxf-unit-name { flex: 1; }
+.dxf-unit-size { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--mid); }
+.dxf-layers { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; max-height: 260px; overflow-y: auto; }
+.dxf-layer { border: 1px solid var(--light); border-radius: 6px; padding: 8px; }
+.dxf-layer-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; font-size: 13px; }
+.dxf-layer-opts { display: flex; align-items: center; gap: 12px; margin-top: 6px; font-size: 12px; }
+.dxf-layer-opts label { display: flex; align-items: center; gap: 5px; }
+.dxf-layer-opts input[type="number"] { width: 64px; padding: 3px 6px; border: 1px solid var(--light); border-radius: 4px; }
 .legend-foot { font-size: 10px; padding-top: 4px; border-top: 1px dashed var(--light); margin-top: 4px; text-align: center; }
 
 .catalog-screen {

@@ -14,8 +14,17 @@ export const ANNOTATION_INK = '#000000';
 /// Text size on the PDF, in points. Ryan's default for drawing annotation.
 export const ANNOTATION_PT = 9;
 
+/// Monotonic within the page session. Randomness alone is not enough: four
+/// base-36 characters is 1.7 M values, and by the birthday bound a few hundred
+/// annotations placed in one millisecond collide about 7 % of the time — two
+/// annotations sharing an id would drag, edit and delete as one.
+let annotationSeq = 0;
+
 export function newAnnotationId(): string {
-  return `an-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  annotationSeq += 1;
+  // Counter rules out collisions within a session; the timestamp and the random
+  // tail rule them out between sessions, including two tabs on one project.
+  return `an-${Date.now().toString(36)}-${annotationSeq.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
 /// What a dimension annotation reads. An explicit `label` wins so a nominal

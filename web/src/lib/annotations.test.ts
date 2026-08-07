@@ -127,6 +127,8 @@ test('a project with no annotations reads as an empty list, not undefined', () =
 });
 
 test('generated ids are unique across a rapid burst', () => {
-  const ids = new Set(Array.from({ length: 500 }, () => newAnnotationId()));
-  assert.equal(ids.size, 500);
+  // All within one millisecond, so the timestamp is identical for every id and
+  // only the sequence separates them. Randomness alone flaked here at ~7 %.
+  const ids = new Set(Array.from({ length: 5000 }, () => newAnnotationId()));
+  assert.equal(ids.size, 5000);
 });

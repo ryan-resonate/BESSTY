@@ -4,6 +4,7 @@ import type {
   Annotation, CustomContourLine, Group, Project, ProjectSettings, Source, Receiver, SourceKind,
   ReferenceLayer, ReferenceLayerStyle, ReferenceFeature, ReferencePointShape,
 } from '../lib/types';
+import { DEFAULT_REFERENCE_STYLE } from '../lib/types';
 import { annotationsOf, dimensionLabel } from '../lib/annotations';
 import { limitForPeriod, settingsOf } from '../lib/types';
 import { exceedsLimit, limitComparisonFor } from '../lib/limits';
@@ -13,6 +14,7 @@ import type { Palette } from '../lib/colormap';
 import { containerHeightFor, footprintFor, listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { ImportObjectsModal } from './ImportObjectsModal';
 import { ReferenceImportModal } from './ReferenceImportModal';
+import { DxfImportModal } from './DxfImportModal';
 import { ProjectMetaPanel } from './ProjectMetaPanel';
 import { EpsgPicker } from './EpsgPicker';
 import { NumericInput } from './NumericInput';
@@ -1036,6 +1038,7 @@ function ReceiversTab(props: Props) {
 function ImportTab(props: Props) {
   const { project, setProject, setDem, demSource } = props;
   const [importOpen, setImportOpen] = useState(false);
+  const [dxfOpen, setDxfOpen] = useState(false);
 
   // Two-step DEM upload: (1) user picks file → we sniff the CRS and stash
   // the file for confirmation; (2) user confirms / overrides the CRS and
@@ -1161,6 +1164,19 @@ function ImportTab(props: Props) {
         </button>
       </Card>
 
+      <Card title="Import a drawing (DXF)">
+        <div className="hint">
+          Takes the site layout straight from a CAD drawing. Each layer maps to
+          either <b>reference geometry</b> (drawn, never affects levels) or
+          <b> walls</b> (which screen sound). A DXF states neither its coordinate
+          system nor, reliably, its units, so the dialog asks — showing how big
+          your site would be under each reading.
+        </div>
+        <button className="btn block" onClick={() => setDxfOpen(true)}>
+          📐 Import DXF…
+        </button>
+      </Card>
+
       <Card title="Digital elevation model">
         <div className="hint">
           DEM is auto-loaded from <b>AWS Terrain Tiles</b> by default. Upload a custom
@@ -1238,6 +1254,43 @@ function ImportTab(props: Props) {
           project={project} setProject={setProject}
           onClose={() => setImportOpen(false)}
           onAfterImport={props.onAfterImport}
+        />
+      )}
+
+      {dxfOpen && (
+        <DxfImportModal
+          nextBarrierIndex={(project.barriers?.length ?? 0) + 1}
+          onClose={() => setDxfOpen(false)}
+          onImport={(result) => {
+            const layers: ReferenceLayer[] = result.referenceFeaturesByLayer.map((l, i) => ({
+              id: `rl-dxf-${Date.now().toString(36)}-${i}`,
+              name: l.layer,
+              visible: true,
+              kind: 'vector' as const,
+              style: { ...DEFAULT_REFERENCE_STYLE, showLabels: l.features.some((f) => f.label) },
+              features: l.features,
+            }));
+            setProject({
+              ...project,
+              barriers: [...(project.barriers ?? []), ...result.barriers],
+              referenceLayers: [...(project.referenceLayers ?? []), ...layers],
+            });
+            // Fly to what was imported, so a wrong CRS is visible at once
+            // rather than being discovered later as an empty map.
+            const pts = [
+              ...result.barriers.flatMap((b) => b.polylineLatLng),
+              ...result.referenceFeaturesByLayer.flatMap((l) => l.features.flatMap((f) => f.coords)),
+            ];
+            if (pts.length && props.onAfterImport) {
+              const lats = pts.map((p) => p[0]);
+              const lngs = pts.map((p) => p[1]);
+              props.onAfterImport({
+                sw: [Math.min(...lats), Math.min(...lngs)],
+                ne: [Math.max(...lats), Math.max(...lngs)],
+              });
+            }
+            notify.success(result.summary.join(' · '), { title: 'DXF imported' });
+          }}
         />
       )}
     </>
