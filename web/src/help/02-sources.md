@@ -7,6 +7,8 @@ Three kinds: **WTG** (wind turbines), **BESS** (battery enclosures with fan nois
 
 Each source references a **catalog model** supplying the per-band sound power; a **mode** picks one of several emission conditions (e.g. NRO+0, full fan speed). BESS and auxiliary units default to a 1.5 m emission height; WTGs use their hub height.
 
+A mode applies around the clock unless you switch on per-period modes, which also add an explicit **Off** — see *Modes per period*.
+
 Wind speed sets the operating-mode lookup for WTG catalog entries that report per-wind-speed spectra. Set it once at the project level — it is not a receiver-by-receiver knob.
 
 ## Source containers

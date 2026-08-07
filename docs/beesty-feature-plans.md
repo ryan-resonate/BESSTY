@@ -196,6 +196,14 @@ segment → unit → source → catalog default); `__off` drop test; fingerprint
 invalidation only on real mode differences; wizard chips show per-period
 badges ("D/E/N: NRO0 / NRO2 / Off").
 
+**Known limitation as built (2026-08-07):** `__off` drops the source AND its
+container from the scene, so a parked BESS stops screening its neighbours even
+though the box is physically still standing. This errs loud (less screening ⇒
+higher levels). Fixing it properly needs a screens-only source in the engine —
+a `SceneSourceInput` that emits its `Building` obstacle but no sound power —
+which is solver-side work, not a web change. Irrelevant to WTGs (no container),
+so it does not block idea 5.
+
 **Effort:** ~2–3 days.
 
 ---

@@ -23,6 +23,7 @@ import {
 } from '../lib/bessGroups';
 import { footprintFor, listEntriesByKind } from '../lib/catalog';
 import { ModePicker } from './ModePicker';
+import { describeModes, variesByPeriod } from '../lib/modes';
 import type {
   BessGroup,
   BessRow,
@@ -990,6 +991,12 @@ function SegmentChip(p: SegmentChipProps) {
   const label = `${current?.displayName ?? '(missing)'} × ${p.segment.count}`;
   // Available modes from the current entry; null if missing.
   const modeOptions = current?.modes?.map((m) => m.name) ?? [];
+  // A segment whose mode varies by period says so on its face: the chip is
+  // otherwise identical to one running the same mode around the clock, and the
+  // difference only shows once the editor is open.
+  const modeSummary = variesByPeriod(p.segment.modeOverride)
+    ? describeModes(p.segment.modeOverride, current?.defaultMode ?? '(default)')
+    : null;
 
   return (
     <span style={{ position: 'relative' }}>
@@ -997,7 +1004,9 @@ function SegmentChip(p: SegmentChipProps) {
         type="button"
         style={{ ...chipBase, padding: '4px 10px' }}
         onClick={() => p.setEditingKey(isEditing ? null : p.chipKey)}
-        title={current?.displayName ?? `Missing: ${p.segment.modelId}`}
+        title={modeSummary
+          ? `${current?.displayName ?? p.segment.modelId} — D/E/N: ${modeSummary}`
+          : (current?.displayName ?? `Missing: ${p.segment.modelId}`)}
       >
         {isBess ? 'B · ' : isAux ? 'A · ' : '? '}{label}
         {(() => {
@@ -1006,6 +1015,9 @@ function SegmentChip(p: SegmentChipProps) {
             <span style={{ marginLeft: 4, fontSize: 9, opacity: 0.7 }}>{rot}°</span>
           ) : null;
         })()}
+        {modeSummary && (
+          <span style={{ marginLeft: 4, fontSize: 9, opacity: 0.75 }}>D/E/N: {modeSummary}</span>
+        )}
       </button>
       {isEditing && (
         <div style={segmentMenuStyle} onClick={(e) => e.stopPropagation()}>
