@@ -1301,23 +1301,37 @@ export function MapView({
       // Dimension: a rule between two draggable endpoints, ticked at each end,
       // labelled along its own direction at the midpoint.
       const ends: Array<[number, number]> = [a.from, a.to];
+      const select = () => callbacksRef.current.onSelectAnnotation?.(a.id);
+      // A transparent, generously wide line UNDER the visible one is what makes
+      // a dimension selectable at all. Every part of it used to be
+      // `interactive: false`, and the only thing carrying a click handler — the
+      // endpoint dot — sat beneath the invisible drag handle, which swallowed
+      // the click. So a dimension could be drawn but never selected, and
+      // therefore never deleted.
+      L.polyline(ends, {
+        color: '#000000', weight: 14, opacity: 0, interactive: true,
+        bubblingMouseEvents: false,
+      }).addTo(group).on('click', select);
       L.polyline(ends, { color: '#ffffff', weight: 3.5, opacity: 0.85, interactive: false }).addTo(group);
       L.polyline(ends, {
-        color: ANNOTATION_INK, weight: 1.2, opacity: 1, interactive: false,
+        color: ANNOTATION_INK, weight: selected ? 1.8 : 1.2, opacity: 1, interactive: false,
       }).addTo(group);
       for (const [idx, end] of ends.entries()) {
         const handle = L.circleMarker(end, {
           radius: selected ? 6 : 4,
           color: ANNOTATION_INK, fillColor: selected ? '#2563eb' : '#ffffff',
           fillOpacity: 1, weight: 1.5,
+          interactive: false,
         });
-        handle.on('click', () => callbacksRef.current.onSelectAnnotation?.(a.id));
         // circleMarker has no drag of its own, so an invisible draggable marker
-        // rides on top of each end.
+        // rides on top of each end. It carries the click too — being on top, it
+        // is what the pointer actually reaches.
         const grab = L.marker(end, {
           icon: L.divIcon({ className: 'annotation-grab', html: '', iconSize: [16, 16], iconAnchor: [8, 8] }),
           draggable: true, bubblingMouseEvents: false, zIndexOffset: 910,
+          title: 'Drag to move this end · click to select',
         });
+        grab.on('click', select);
         grab.on('dragstart', () => cancelBoxSelectRef.current());
         grab.on('dragend', () => {
           const p = grab.getLatLng();
@@ -1346,9 +1360,12 @@ export function MapView({
           iconSize: [labelW, 22],
           iconAnchor: [labelW / 2 + Math.sin(rad) * lift, 11 + Math.cos(rad) * lift],
         }),
-        interactive: false,
+        // Clickable: it is the largest part of a dimension, so it is what most
+        // people aim at when they mean "this one".
+        interactive: true,
+        bubblingMouseEvents: false,
         zIndexOffset: 900,
-      }).addTo(group);
+      }).addTo(group).on('click', select);
     }
     return () => {
       for (const h of leaderZoomHandlers) map.off('zoomend', h);

@@ -2363,13 +2363,21 @@ export function SettingsTab(props: SettingsTabProps) {
                 // all, so switching on without switching the band system is
                 // almost never what was meant.
                 if (on && octave) {
+                  // The question is the ONE thing being decided, and the
+                  // buttons answer it literally. Labelling them with the two
+                  // actions instead ("Switch and turn on" / "Turn on anyway")
+                  // made both read as agreement at a glance — the wrong sort of
+                  // ambiguity when you are moving quickly. Screening turns on
+                  // either way; only the band system is in question.
                   const alsoSwitch = await notify.confirm({
-                    title: 'Tonality needs one-third-octave bands',
-                    body: 'This project solves in octave bands, where a tone is smeared '
-                      + 'across a whole band — no receiver could be assessed. Switch the '
-                      + 'project to one-third octave as well? This re-runs the solve.',
-                    confirmLabel: 'Switch and turn on',
-                    cancelLabel: 'Turn on anyway',
+                    title: 'Change to one-third octave bands?',
+                    body: 'Tonality screening only works in one-third-octave bands — in '
+                      + 'octaves a tone is smeared across a whole band, so no receiver can '
+                      + 'be assessed.\n\n'
+                      + 'Yes — change the band system and re-run the solve.\n'
+                      + 'No — keep octave bands (screening will report "not assessable").',
+                    confirmLabel: 'Yes',
+                    cancelLabel: 'No',
                   });
                   enable(alsoSwitch
                     ? { scenario: { ...project.scenario, bandSystem: 'oneThirdOctave' } }

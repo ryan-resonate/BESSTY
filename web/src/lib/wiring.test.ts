@@ -147,6 +147,35 @@ test('no result or limit label spells dB(A) into the source', () => {
   );
 });
 
+test('every annotation kind has a way to be selected on the map', () => {
+  // A dimension was drawn entirely from `interactive: false` layers, with its
+  // one click handler sitting UNDER the invisible drag handle that swallowed
+  // the click. It could be created but never selected, and therefore never
+  // deleted. The rule: each annotation branch must attach a click handler.
+  const map = FILES.find((f) => f.path.endsWith('MapView.tsx'));
+  assert.ok(map, 'MapView not found');
+  const body = map!.text;
+  // Bounded by the two comments that bracket the effect, rather than by a
+  // character count — the block is long, and a fixed window silently stopped
+  // short of the dimension branch it is meant to check.
+  const start = body.indexOf('// ---- Annotations (notes + dimensions) ----');
+  const end = body.indexOf('// Barrier mode:', start);
+  assert.ok(start > 0 && end > start, 'annotation render block not found');
+  const block = body.slice(start, end);
+
+  // The text branch selects via its marker…
+  assert.ok(/marker\.on\('click', \(\) => callbacksRef\.current\.onSelectAnnotation/.test(block),
+    'the note marker should select on click');
+  // …and the dimension branch has a shared `select` wired to more than one
+  // layer, so the line, the ends and the label all reach it.
+  const selectUses = (block.match(/select/g) ?? []).length;
+  assert.ok(selectUses >= 4, `dimension select is wired ${selectUses} times; expected the line, both ends and the label`);
+  // The hit line must be interactive — a transparent stroke is the only part
+  // wide enough to click reliably.
+  assert.ok(/weight: 14, opacity: 0, interactive: true/.test(block),
+    'the dimension needs a wide transparent hit line');
+});
+
 test('Escape is handled only through the shared stack', () => {
   // Multiple window-level Escape listeners are siblings: stopPropagation does
   // not separate them, so one keypress fires every overlay's handler at once.
