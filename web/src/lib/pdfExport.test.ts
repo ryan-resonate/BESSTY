@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { jsPDF } from 'jspdf';
 
 import {
-  beginFrameClip, chooseZoom, clipPolylineToRect, clipSegmentToRect, endFrameClip,
+  beginFrameClip, chooseZoom, clipPolylineToRect, clipSegmentToRect, drawScaleBar, endFrameClip,
   fitFrame, formatScale, niceScaleLength, PAGES, project, tileRange,
 } from './pdfExport';
 
@@ -151,6 +151,34 @@ test('every vertex of a wild multi-crossing polyline stays inside the rect', () 
       assert.ok(y >= box.y - 1e-9 && y <= box.y + box.h + 1e-9, `y ${y} escaped`);
     }
   }
+});
+
+test('the scale bar is divided and labelled, not one solid rule', () => {
+  // The surveyor's (and QGIS's) convention: alternating filled/hollow segments
+  // with every division labelled, so a reader can measure a half-length off the
+  // drawing. A single black bar with one figure at its end cannot do that.
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4', compress: false });
+  drawScaleBar(doc, fitFrame(extent, PAGES['a4-landscape'], 0));
+  const out = doc.output();
+  const labels = [...out.matchAll(/\(([^)]*)\)\s*Tj/g)].map((m) => m[1]);
+  assert.equal(labels[0], '0', 'the bar must start from a labelled zero');
+  assert.equal(labels.length, 3, `expected 0 / mid / end, got ${JSON.stringify(labels)}`);
+  // The unit appears once, on the final label.
+  assert.match(labels[2], /\s(m|km)$/);
+  assert.ok(!/\s(m|km)$/.test(labels[1]), 'the middle label should not repeat the unit');
+  // The middle label really is half of the end value.
+  const value = (s: string) => parseFloat(s.replace(/[^\d.]/g, ''));
+  assert.ok(Math.abs(value(labels[1]) * 2 - value(labels[2])) < 1e-9);
+});
+
+test('the scale bar draws a filled segment and a hollow one', () => {
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4', compress: false });
+  drawScaleBar(doc, fitFrame(extent, PAGES['a4-landscape'], 0));
+  const out = doc.output();
+  // `f` fills, `S` strokes: the alternation needs both, and the outline around
+  // the whole bar is what makes the hollow half read as part of it.
+  assert.ok(/re\s*\n?f/.test(out), 'expected a filled segment');
+  assert.ok(/re\s*\n?S/.test(out), 'expected a stroked outline');
 });
 
 test('beginFrameClip emits re→W→n — the null-style regression, pinned at the app helper', () => {

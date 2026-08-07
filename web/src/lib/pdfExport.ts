@@ -218,21 +218,55 @@ export function startPdf(page: PageSpec, extent: Extent, topPadMm: number): PdfD
 }
 
 /// Scale bar in the bottom-left of the map frame.
+///
+/// Alternating filled and hollow segments with the divisions labelled — the
+/// surveyor's convention, and QGIS's — rather than one solid bar with a single
+/// figure at the end. Two segments, so a 500 m bar reads `0 · 250 m · 500 m`:
+/// the reader can measure a half-length off the drawing without arithmetic, and
+/// the alternation makes the bar legible over any imagery beneath it.
 export function drawScaleBar(doc: jsPDF, frame: MapFrame) {
   const targetMm = Math.min(50, frame.w * 0.25);
   const lengthM = niceScaleLength(targetMm * frame.metresPerMm);
   const barMm = lengthM / frame.metresPerMm;
+  const segments = 2;
+  const segMm = barMm / segments;
+  const barH = 1.6;
+
   const x = frame.x + 4;
   const y = frame.y + frame.h - 6;
+
+  // The backing panel has to clear the end label, which is centred on the
+  // bar's right edge and so overhangs it by half its own width.
+  doc.setFontSize(6.5);
+  const endLabel = formatScale(lengthM);
+  const overhang = doc.getTextWidth(endLabel) / 2 + 1;
   doc.setFillColor(255, 255, 255);
   doc.setDrawColor(30, 30, 30);
   doc.setLineWidth(0.3);
-  doc.rect(x - 1.5, y - 5, barMm + 3, 8.5, 'FD');
+  doc.rect(x - 2.5, y - 4.6, barMm + 3 + overhang, 8.2, 'FD');
+
+  // Segments: filled, hollow, filled… all inside one outline.
   doc.setFillColor(30, 30, 30);
-  doc.rect(x, y, barMm, 1.2, 'F');
-  doc.setFontSize(7);
+  for (let i = 0; i < segments; i++) {
+    if (i % 2 === 0) doc.rect(x + i * segMm, y, segMm, barH, 'F');
+  }
+  doc.setLineWidth(0.2);
+  doc.rect(x, y, barMm, barH);
+
+  // Ticks and labels at 0, the division(s) and the full length. Each label is
+  // centred on its tick, so the figures line up with the marks they describe.
   doc.setTextColor(30, 30, 30);
-  doc.text(formatScale(lengthM), x, y - 1.2);
+  for (let i = 0; i <= segments; i++) {
+    const tx = x + i * segMm;
+    doc.line(tx, y, tx, y - 0.9);
+    // The unit rides on the final label only, as it does on a survey drawing:
+    // repeating it crowds the divisions and says nothing the last one doesn't.
+    const value = (lengthM * i) / segments;
+    const label = i === 0 ? '0'
+      : i === segments ? formatScale(value)
+        : formatScale(value).replace(/\s*(m|km)$/, '');
+    doc.text(label, tx - doc.getTextWidth(label) / 2, y - 1.6);
+  }
 }
 
 /// North arrow, top-right of the map frame. The map is always north-up, so this

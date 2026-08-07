@@ -9,7 +9,7 @@ Min and Max drive both the contour thresholds and the filled colour scale. **Aut
 
 ## Custom lines
 
-Named iso-lines at levels you choose — a night limit, a boundary criterion — each with its own colour, width and dash. They are traced in the same pass as the stepped contours, so a level off the step grid (37.5 dB) costs nothing extra and does not add a step at that level.
+Named iso-lines at levels you choose — a night limit, a boundary criterion — each with its own colour, width and dash. Eight preset colours cover most cases in one click; **…** opens the full colour picker. They are traced in the same pass as the stepped contours, so a level off the step grid (37.5 dB) costs nothing extra and does not add a step at that level.
 
 Custom lines are compliance artefacts rather than presentation, so they keep drawing when the contour grid is switched off, and they carry their name rather than their level as the label. Tick **Export** to include a line in the KML, shapefile and PDF; in the shapefile the name lands in a `LABEL` attribute beside `THRESH_DBA`, so stepped contours and named lines can be told apart downstream.
 

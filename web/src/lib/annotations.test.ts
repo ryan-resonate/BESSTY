@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 
 import {
   annotationPoints, annotationsOf, dimensionLabel, dimensionMidpoint, dimensionTiltDeg,
-  newAnnotationId, validAnnotation,
+  leaderAttachOffset, newAnnotationId, validAnnotation,
 } from './annotations';
 import type { Annotation, DimensionAnnotation } from './types';
 
@@ -94,6 +94,49 @@ test('tilt never turns text upside down', () => {
     const t = dimensionTiltDeg(dim([SITE[0] + 0.01 * Math.cos(rad), SITE[1] + 0.01 * Math.sin(rad)]));
     assert.ok(t > -90 && t <= 90, `bearing ${bearing}° gave ${t}`);
   }
+});
+
+// ---------- leader attachment ----------
+
+test('a leader attaches to the side of the note facing its target', () => {
+  const halfW = 30;
+  const halfH = 10;
+  // Straight right: exits the right edge, halfway up.
+  assert.deepEqual(leaderAttachOffset(100, 0, halfW, halfH), { dx: 30, dy: 0 });
+  // Straight down (screen y grows downward): exits the bottom edge.
+  assert.deepEqual(leaderAttachOffset(0, 100, halfW, halfH), { dx: 0, dy: 10 });
+  assert.deepEqual(leaderAttachOffset(-100, 0, halfW, halfH), { dx: -30, dy: 0 });
+  assert.deepEqual(leaderAttachOffset(0, -100, halfW, halfH), { dx: 0, dy: -10 });
+});
+
+test('the attachment lands ON the box edge, never inside or beyond it', () => {
+  const halfW = 30;
+  const halfH = 10;
+  for (let deg = 0; deg < 360; deg += 3) {
+    const rad = (deg * Math.PI) / 180;
+    const { dx, dy } = leaderAttachOffset(Math.cos(rad) * 250, Math.sin(rad) * 250, halfW, halfH);
+    // On the boundary: one coordinate is at its limit, neither is past it.
+    assert.ok(Math.abs(dx) <= halfW + 1e-9, `${deg}°: dx ${dx}`);
+    assert.ok(Math.abs(dy) <= halfH + 1e-9, `${deg}°: dy ${dy}`);
+    const onEdge = Math.abs(Math.abs(dx) - halfW) < 1e-9 || Math.abs(Math.abs(dy) - halfH) < 1e-9;
+    assert.ok(onEdge, `${deg}°: (${dx}, ${dy}) is not on the edge`);
+    // …and it is in the direction of the target, so the leader points the
+    // right way rather than out of the opposite side.
+    assert.ok(dx * Math.cos(rad) >= -1e-9 && dy * Math.sin(rad) >= -1e-9, `${deg}° points backwards`);
+  }
+});
+
+test('a wide, short note exits its long side for a shallow approach', () => {
+  // The box is 6× wider than tall, so a 45° approach leaves through the
+  // BOTTOM, not the corner — which is what stops the rule crossing the words.
+  const { dx, dy } = leaderAttachOffset(100, 100, 60, 10);
+  assert.equal(dy, 10);
+  assert.ok(dx < 60);
+});
+
+test('a target sitting on the note yields no offset rather than NaN', () => {
+  assert.deepEqual(leaderAttachOffset(0, 0, 30, 10), { dx: 0, dy: 0 });
+  assert.deepEqual(leaderAttachOffset(NaN, 5, 30, 10), { dx: 0, dy: 0 });
 });
 
 test('annotationPoints covers what the annotation occupies', () => {

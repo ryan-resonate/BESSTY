@@ -414,6 +414,14 @@ header.app-header nav a:hover { background: var(--slate-1); }
 .custom-line-row { border: 1px solid var(--light); border-radius: 6px; padding: 8px; margin-top: 8px; }
 .custom-line-style { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
 .custom-line-style input[type="color"] { width: 30px; height: 24px; padding: 0; border: 1px solid var(--light); border-radius: 4px; background: none; cursor: pointer; }
+
+/* Preset swatches lead; the OS picker appears behind the "…" toggle. */
+.color-choice { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.color-swatch { width: 20px; height: 20px; padding: 0; border: 1px solid var(--light); border-radius: 4px; cursor: pointer; font-size: 11px; line-height: 1; color: var(--mid); background: #fff; }
+.color-swatch:hover { border-color: var(--mid); }
+.color-swatch.on { border-color: var(--ink); box-shadow: 0 0 0 2px rgba(31, 41, 55, 0.18); }
+.color-swatch.more { display: flex; align-items: center; justify-content: center; }
+.color-choice input[type="color"] { width: 26px; height: 20px; padding: 0; border: 1px solid var(--light); border-radius: 4px; background: none; cursor: pointer; }
 .custom-line-style label { display: flex; align-items: center; gap: 5px; font-size: 12px; }
 .custom-line-style label .fld, .custom-line-style label input[type="text"] { width: 52px; }
 .custom-line-style .x-btn { margin-left: auto; }

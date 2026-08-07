@@ -63,6 +63,33 @@ export function dimensionTiltDeg(d: DimensionAnnotation): number {
   return deg;
 }
 
+/// Where a leader should meet its note: the point on the edge of the text box
+/// facing the target, as an offset from the box's centre.
+///
+/// Drawing the leader to the CENTRE runs it straight through the words. The
+/// attachment therefore has to move as the note moves — a fixed side would be
+/// wrong the moment the note is dragged past its target — so it is derived from
+/// the direction each time rather than stored.
+///
+/// Works in screen space (y downward), and is used for both the map, in pixels,
+/// and the PDF, in millimetres.
+export function leaderAttachOffset(
+  dx: number, dy: number, halfW: number, halfH: number,
+): { dx: number; dy: number } {
+  // Degenerate direction — target sits on the note. Nothing sensible to point
+  // at, so stay at the centre and let the caller draw nothing.
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) {
+    return { dx: 0, dy: 0 };
+  }
+  // Scale the direction until it first touches a side of the box. Whichever
+  // axis needs the smaller scale is the side it exits through, which is what
+  // makes a corner exit fall out correctly rather than needing its own case.
+  const tx = dx === 0 ? Infinity : Math.abs(halfW / dx);
+  const ty = dy === 0 ? Infinity : Math.abs(halfH / dy);
+  const t = Math.min(tx, ty);
+  return { dx: dx * t, dy: dy * t };
+}
+
 /// Every point an annotation occupies, for hit-testing and bounds.
 export function annotationPoints(a: Annotation): Array<[number, number]> {
   return a.kind === 'text'

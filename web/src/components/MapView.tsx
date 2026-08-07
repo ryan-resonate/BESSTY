@@ -8,7 +8,7 @@ import type {
 import { limitForPeriod } from '../lib/types';
 import {
   ANNOTATION_INK, annotationsOf, dimensionLabel, dimensionMidpoint, dimensionTiltDeg,
-  newAnnotationId,
+  leaderAttachOffset, newAnnotationId,
 } from '../lib/annotations';
 import { exceedsLimit, limitComparisonFor, type LimitComparison } from '../lib/limits';
 import type { ReceiverResult, GridResult } from '../lib/solver';
@@ -1155,8 +1155,12 @@ export function MapView({
   const annotationSig = JSON.stringify(annotations);
   useEffect(() => {
     const group = annotationGroupRef.current;
-    if (!group) return;
+    const map = mapRef.current;
+    if (!group || !map) return;
     group.clearLayers();
+    /// Zoom subscriptions made below, unsubscribed when this effect re-runs —
+    /// clearLayers drops the layers but not listeners bound on the map itself.
+    const leaderZoomHandlers: Array<() => void> = [];
 
     /// Black text with a white buffer, per the drawing standard. The buffer is
     /// a shadow ring rather than a filled box so it reads as drawn-on rather
@@ -1171,27 +1175,88 @@ export function MapView({
     for (const a of annotations) {
       const selected = a.id === selectedAnnotationId;
       if (a.kind === 'text') {
+        const shown = a.text || '(empty note)';
+        // The measured line count drives the box height, so a two-line note
+        // gets a leader that clears both lines rather than the first.
+        const lines = shown.split('\n');
+        const boxW = Math.max(60, Math.max(...lines.map((l) => l.length)) * 7 + 16);
+        const boxH = Math.max(20, lines.length * 15 + 6);
+
+        /// Both ends of the leader are draggable, and the line between them is
+        /// redrawn from their LIVE positions — declared up front so the redraw
+        /// can read them without either drag handler knowing about the other.
+        let textMarker: L.Marker | null = null;
+        let tipMarker: L.Marker | null = null;
+        /// Recompute where the leader meets the note and redraw just that line.
+        /// Called on every drag frame, so it must touch nothing else: rebuilding
+        /// the layer here would destroy the very marker being dragged.
+        let updateLeader: (() => void) | null = null;
+
         if (a.leaderTo) {
-          L.polyline([a.leaderTo, a.latLng], {
+          const halo = L.polyline([], {
             color: '#ffffff', weight: 3.5, opacity: 0.85, interactive: false,
           }).addTo(group);
-          L.polyline([a.leaderTo, a.latLng], {
+          const ink = L.polyline([], {
             color: ANNOTATION_INK, weight: 1.2, opacity: 1, interactive: false,
           }).addTo(group);
-          L.circleMarker(a.leaderTo, {
-            radius: 2.5, color: ANNOTATION_INK, fillColor: ANNOTATION_INK,
-            fillOpacity: 1, weight: 1, interactive: false,
-          }).addTo(group);
+          // The leader stops at the edge of the text box facing its target, so
+          // it never runs through the words — and because the attachment is
+          // derived from the direction, it follows the note around instead of
+          // being pinned to one side.
+          updateLeader = () => {
+            const noteAt = textMarker?.getLatLng() ?? L.latLng(a.latLng[0], a.latLng[1]);
+            const tipAt = tipMarker?.getLatLng() ?? L.latLng(a.leaderTo![0], a.leaderTo![1]);
+            const centrePx = map.latLngToContainerPoint(noteAt);
+            const targetPx = map.latLngToContainerPoint(tipAt);
+            const off = leaderAttachOffset(
+              targetPx.x - centrePx.x, targetPx.y - centrePx.y, boxW / 2 + 3, boxH / 2 + 3,
+            );
+            // Nothing to draw while the target sits under the note — a leader
+            // hidden beneath the words is just a smudge.
+            const reach = Math.hypot(targetPx.x - centrePx.x, targetPx.y - centrePx.y);
+            if (reach <= Math.hypot(off.dx, off.dy) + 2) {
+              halo.setLatLngs([]);
+              ink.setLatLngs([]);
+              return;
+            }
+            const attach = map.containerPointToLatLng(
+              L.point(centrePx.x + off.dx, centrePx.y + off.dy),
+            );
+            const seg: L.LatLngExpression[] = [tipAt, attach];
+            halo.setLatLngs(seg);
+            ink.setLatLngs(seg);
+          };
+          // The target end is a draggable handle: it is the point the note
+          // refers to, so it has to be placeable independently of the note.
+          const tip = L.marker(a.leaderTo, {
+            icon: L.divIcon({
+              className: 'annotation-leader-tip',
+              html: `<div style="width:9px;height:9px;border-radius:50%;background:${ANNOTATION_INK};border:1.5px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.35)${selected ? ';outline:2px solid #2563eb;outline-offset:2px' : ''}"></div>`,
+              iconSize: [9, 9],
+              iconAnchor: [4.5, 4.5],
+            }),
+            draggable: true,
+            bubblingMouseEvents: false,
+            zIndexOffset: 920,
+            title: 'Drag to point the leader',
+          });
+          tip.on('dragstart', () => cancelBoxSelectRef.current());
+          tip.on('click', () => callbacksRef.current.onSelectAnnotation?.(a.id));
+          tip.on('drag', () => updateLeader?.());
+          tip.on('dragend', () => {
+            const p = tip.getLatLng();
+            callbacksRef.current.onUpdateAnnotation?.(a.id, { leaderTo: [p.lat, p.lng] });
+          });
+          tip.addTo(group);
+          tipMarker = tip;
         }
-        const shown = a.text || '(empty note)';
         const marker = L.marker(a.latLng, {
           icon: L.divIcon({
             className: 'annotation-text',
             html: textHtml(shown, 0, selected),
-            // Sized generously and centred: a divIcon clips to iconSize, and a
-            // note wrapped onto two lines needs the room.
-            iconSize: [Math.max(60, shown.length * 7 + 16), 34],
-            iconAnchor: [Math.max(60, shown.length * 7 + 16) / 2, 17],
+            // A divIcon clips to iconSize, so the box has to fit the text.
+            iconSize: [boxW, boxH],
+            iconAnchor: [boxW / 2, boxH / 2],
           }),
           draggable: true,
           bubblingMouseEvents: false,
@@ -1199,11 +1264,24 @@ export function MapView({
         });
         marker.on('click', () => callbacksRef.current.onSelectAnnotation?.(a.id));
         marker.on('dragstart', () => cancelBoxSelectRef.current());
+        // Followed continuously rather than only at drop: the attachment point
+        // depends on where the note is, so without this the leader visibly
+        // detaches for the whole drag and snaps back on release.
+        marker.on('drag', () => updateLeader?.());
         marker.on('dragend', () => {
           const p = marker.getLatLng();
           callbacksRef.current.onUpdateAnnotation?.(a.id, { latLng: [p.lat, p.lng] });
         });
         marker.addTo(group);
+        textMarker = marker;
+        updateLeader?.();
+        // The leader also has to follow zooming: the box is a fixed pixel size,
+        // so its edge sits at a different lat/lng at every zoom level.
+        if (updateLeader) {
+          const onZoom = updateLeader;
+          map.on('zoomend', onZoom);
+          leaderZoomHandlers.push(onZoom);
+        }
         continue;
       }
 
@@ -1259,6 +1337,9 @@ export function MapView({
         zIndexOffset: 900,
       }).addTo(group);
     }
+    return () => {
+      for (const h of leaderZoomHandlers) map.off('zoomend', h);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- annotationSig stands in for annotations
   }, [annotationSig, selectedAnnotationId]);
 

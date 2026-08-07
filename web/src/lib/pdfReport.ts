@@ -14,6 +14,7 @@ import {
 } from './contourLines';
 import {
   ANNOTATION_PT, annotationsOf, dimensionLabel, dimensionMidpoint, dimensionTiltDeg,
+  leaderAttachOffset,
 } from './annotations';
 import { PDF_FONT, useHouseFont } from './pdfFont';
 import { makeBandsForRange, paletteCss, type Palette } from './colormap';
@@ -337,20 +338,32 @@ export function drawAnnotations(doc: jsPDF, project: Project, frame: MapFrame) {
       // not.
       if (!a.text && !a.leaderTo) continue;
       const [x, y] = frame.toPage(a.latLng[0], a.latLng[1]);
-      if (a.leaderTo) {
-        const [lx, ly] = frame.toPage(a.leaderTo[0], a.leaderTo[1]);
-        doc.setDrawColor(255, 255, 255);
-        doc.setLineWidth(0.55);
-        doc.line(x, y, lx, ly);
-        doc.setDrawColor(0, 0, 0);
-        doc.setLineWidth(0.25);
-        doc.line(x, y, lx, ly);
-        doc.setFillColor(0, 0, 0);
-        doc.circle(lx, ly, 0.45, 'F');
-      }
       // Multi-line notes: one buffered run per line, centred like the map's.
       const lines = a.text.split('\n');
       const lineH = ANNOTATION_PT * 0.352778 * 1.25;   // pt → mm, 1.25 leading
+      const textW = lines.reduce((m, ln) => Math.max(m, doc.getTextWidth(ln)), 0);
+      const textH = lines.length * lineH;
+
+      if (a.leaderTo) {
+        const [lx, ly] = frame.toPage(a.leaderTo[0], a.leaderTo[1]);
+        // Stops at the edge of the text rather than the centre, by the same
+        // rule the map uses — a leader through the words is unreadable in both.
+        // 0.7 mm of clearance so the rule does not touch the glyphs.
+        const off = leaderAttachOffset(lx - x, ly - y, textW / 2 + 0.7, textH / 2 + 0.7);
+        const ax = x + off.dx;
+        const ay = y + off.dy;
+        const reach = Math.hypot(lx - x, ly - y);
+        if (reach > Math.hypot(off.dx, off.dy) + 0.3) {
+          doc.setDrawColor(255, 255, 255);
+          doc.setLineWidth(0.55);
+          doc.line(ax, ay, lx, ly);
+          doc.setDrawColor(0, 0, 0);
+          doc.setLineWidth(0.25);
+          doc.line(ax, ay, lx, ly);
+        }
+        doc.setFillColor(0, 0, 0);
+        doc.circle(lx, ly, 0.45, 'F');
+      }
       lines.forEach((ln, i) => {
         const w = doc.getTextWidth(ln);
         buffered(ln, x - w / 2, y - ((lines.length - 1) / 2 - i) * lineH);

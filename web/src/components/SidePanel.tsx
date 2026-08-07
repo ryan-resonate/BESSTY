@@ -1671,6 +1671,48 @@ function LayersTab(props: Props) {
 /// survive a white halo on satellite imagery.
 const CUSTOM_LINE_COLORS = ['#dc2626', '#ea580c', '#ca8a04', '#16a34a', '#0891b2', '#2563eb', '#7c3aed', '#111827'];
 
+/// Preset swatches, plus the OS colour picker behind a toggle.
+///
+/// The presets are what almost every line wants and they are one click; the
+/// full picker is a modal OS dialog, which is a lot of ceremony to reach the
+/// same eight colours. So the presets lead and the picker is opened
+/// deliberately — and it stays open while it holds a non-preset colour, since
+/// hiding it would leave that colour unreachable.
+function ColorChoice(props: { value: string; onChange(v: string): void }) {
+  const isPreset = CUSTOM_LINE_COLORS.some((c) => c.toLowerCase() === props.value.toLowerCase());
+  const [custom, setCustom] = useState(!isPreset);
+  return (
+    <div className="color-choice">
+      {CUSTOM_LINE_COLORS.map((c) => (
+        <button
+          key={c}
+          type="button"
+          className={`color-swatch${c.toLowerCase() === props.value.toLowerCase() ? ' on' : ''}`}
+          style={{ background: c }}
+          title={c}
+          aria-label={`Use ${c}`}
+          onClick={() => { props.onChange(c); setCustom(false); }}
+        />
+      ))}
+      <button
+        type="button"
+        className={`color-swatch more${custom ? ' on' : ''}`}
+        title="More colours"
+        aria-label="More colours"
+        onClick={() => setCustom((v) => !v)}
+      >…</button>
+      {(custom || !isPreset) && (
+        <input
+          type="color"
+          value={props.value}
+          title="Pick any colour"
+          onChange={(e) => props.onChange(e.target.value)}
+        />
+      )}
+    </div>
+  );
+}
+
 /// A text input that commits on blur or Enter rather than on every keystroke.
 ///
 /// The map keys its contour redraw on the line's fields, and the redraw empties
@@ -1761,13 +1803,8 @@ function CustomContourCard(props: {
               />
             </Field>
           </div>
+          <ColorChoice value={l.color} onChange={(v) => patch(l.id, { color: v })} />
           <div className="custom-line-style">
-            <input
-              type="color"
-              value={l.color}
-              title="Line colour"
-              onChange={(e) => patch(l.id, { color: e.target.value })}
-            />
             <label title="Line width (px)">
               <span className="muted">w</span>
               <NumericInput
