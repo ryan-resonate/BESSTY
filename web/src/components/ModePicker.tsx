@@ -133,9 +133,11 @@ export function ModePicker(props: {
       {varies && (
         <button
           className="btn small"
-          title="Use the current day mode in every period"
+          title="Set evening and night to the day mode, and stop varying by period"
+          // "Same all day" read as "unchanged throughout the day" rather than
+          // "make them all the day one" — the opposite of what it does.
           onClick={() => onChange(modeForPeriod(value, 'day') ?? undefined)}
-        >Same all day</button>
+        >Use day mode for all</button>
       )}
     </div>
   );

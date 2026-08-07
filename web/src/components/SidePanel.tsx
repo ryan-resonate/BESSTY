@@ -3249,7 +3249,10 @@ function SourceItem(props: {
             </option>
           ))}
         </select>
-        {modes.length > 1 && (
+        {/* One mode used to mean nothing to choose, so the dropdown was
+            hidden. Off is a choice too — without this a single-mode BESS could
+            never be switched off for a period. */}
+        {(modes.length > 1 || perPeriodModesEnabled(project)) && (
           <ModePicker
             project={project}
             modes={modes.map((m) => m.name)}

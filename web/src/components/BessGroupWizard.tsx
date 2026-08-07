@@ -23,7 +23,7 @@ import {
 } from '../lib/bessGroups';
 import { footprintFor, listEntriesByKind } from '../lib/catalog';
 import { ModePicker } from './ModePicker';
-import { describeModes, variesByPeriod } from '../lib/modes';
+import { describeModes, perPeriodModesEnabled, variesByPeriod } from '../lib/modes';
 import type {
   BessGroup,
   BessRow,
@@ -1054,7 +1054,9 @@ function SegmentChip(p: SegmentChipProps) {
             </select>
           </label>
 
-          {modeOptions.length > 1 && (
+          {/* Shown for a single-mode model too once per-period modes are on:
+              Off is a choice, and hiding the control would make it unreachable. */}
+          {(modeOptions.length > 1 || perPeriodModesEnabled(p.project)) && (
             <div style={menuFieldStyle}>
               <span style={fieldLabelStyle}>Mode</span>
               <ModePicker
