@@ -6,6 +6,7 @@
 import { contours as d3contours } from 'd3-contour';
 import type { GridResult } from './gridCore';
 import type { CustomContourLine } from './types';
+import { safeCssColor } from './html';
 
 export interface ContourLineSet {
   /// dB(A) value of the threshold.
@@ -141,9 +142,51 @@ export function buildContourPolygons(
 // an arbitrary threshold list, so the only work is agreeing on that list and
 // attributing the results back afterwards.
 
+/// Normalise custom lines coming off a project document.
+///
+/// The display block is merged into defaults with a raw spread behind a cast,
+/// so nothing between Firestore and the renderer checks these — and a
+/// collaborator can write the document. Every field is clamped to what the
+/// editor can produce, which is also what makes the colour safe to interpolate
+/// into a style attribute downstream.
+export function sanitiseCustomContours(raw: unknown): CustomContourLine[] {
+  if (!Array.isArray(raw)) return [];
+  const out: CustomContourLine[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const c = item as Partial<CustomContourLine>;
+    if (typeof c.id !== 'string' || !Number.isFinite(c.levelDb)) continue;
+    out.push({
+      id: c.id,
+      // Labels are drawn into HTML and written into a 40-character DBF field;
+      // the cap keeps both honest and stops a pathological string from
+      // stretching the PDF legend off the page.
+      label: typeof c.label === 'string' ? c.label.slice(0, CUSTOM_LABEL_MAX) : '',
+      levelDb: c.levelDb as number,
+      color: safeCssColor(c.color, '#dc2626'),
+      widthPx: Number.isFinite(c.widthPx) ? Math.max(0.5, Math.min(12, c.widthPx as number)) : 2.5,
+      dashed: c.dashed !== false,
+      export: c.export !== false,
+    });
+  }
+  return out;
+}
+
+/// Longest custom-line name kept. Matches the shapefile's `LABEL` field width,
+/// so what the user types is what every export carries — a name silently cut in
+/// the DBF but whole in the KML would make the two disagree about the same line.
+export const CUSTOM_LABEL_MAX = 40;
+
 /// Every level that must be traced to satisfy both the stepped contours and
 /// the custom lines, deduped and finite-only. Passing a duplicated level would
 /// make d3 trace it twice and return two identical features.
+///
+/// Note the dedup is by exact value. `makeBandsForRange` accumulates by
+/// repeated addition, so at a fractional step its thresholds are not the round
+/// numbers they print as (25 + 0.3 × 5 is 26.500000000000004): a custom line the
+/// user believes sits ON a step will not match it, and both get traced. That
+/// costs one extra level and draws two coincident lines — harmless, but it is
+/// why this cannot be relied on to collapse them.
 export function unionContourLevels(
   stepped: readonly number[],
   custom: readonly CustomContourLine[] | undefined,
@@ -181,7 +224,14 @@ export function customTracesFrom(
     if (!traced?.lines.length) continue;
     out.push({
       line,
-      set: { threshold: line.levelDb, lines: traced.lines, label: line.label },
+      set: {
+        threshold: line.levelDb,
+        lines: traced.lines,
+        // Never blank: an unnamed custom line exported with an empty label is
+        // indistinguishable from a stepped contour, so a consumer filtering on
+        // LABEL to find the compliance lines would miss it entirely.
+        label: line.label || `${line.levelDb} dB`,
+      },
     });
   }
   return out;
@@ -190,12 +240,19 @@ export function customTracesFrom(
 /// The stepped sets alone — i.e. drop levels that exist only because a custom
 /// line asked for them. Without this, adding a custom line at 37.5 dB would
 /// silently add a stepped contour there too.
+///
+/// `claimed` levels are dropped as well. Export uses that for levels a custom
+/// line already covers: without it a line sitting exactly on a step is written
+/// out twice — once unnamed and once named — and a consumer counting features
+/// or dissolving areas double-counts that contour.
 export function steppedTracesFrom(
   sets: readonly ContourLineSet[],
   stepped: readonly number[],
+  claimed?: readonly number[],
 ): ContourLineSet[] {
   const wanted = new Set(stepped);
-  return sets.filter((s) => wanted.has(s.threshold));
+  const taken = new Set(claimed ?? []);
+  return sets.filter((s) => wanted.has(s.threshold) && !taken.has(s.threshold));
 }
 
 // ============== P3: tracing on a worker ==============

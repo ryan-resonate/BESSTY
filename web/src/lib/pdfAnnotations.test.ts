@@ -112,6 +112,21 @@ test('annotations land inside the map frame, not off the page', () => {
   }
 });
 
+test('a note with a leader but no text still draws its leader', () => {
+  // The empty-text guard used to skip the leader too, so the map showed a
+  // pointer the exported figure did not.
+  const out = draw([{
+    id: 'a', kind: 'text', latLng: MID, text: '', leaderTo: [-33.605, 138.705],
+  }]);
+  assert.ok((out.match(/\bl\b/g) ?? []).length > 0, 'expected the leader stroke');
+});
+
+test('a dimension whose ends coincide degrades quietly', () => {
+  const out = draw([{ id: 'd', kind: 'dimension', from: MID, to: MID }]);
+  assert.ok(out.includes('0.0 m'));
+  assert.ok(!out.includes('NaN'));
+});
+
 test('annotation text is set in the house font when it is available', async () => {
   const doc = new jsPDF({ compress: false });
   await useHouseFont(doc);

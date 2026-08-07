@@ -13,7 +13,7 @@ import {
 import { exceedsLimit, limitComparisonFor, type LimitComparison } from '../lib/limits';
 import type { ReceiverResult, GridResult } from '../lib/solver';
 import { describeBarnesHut } from '../lib/solver';
-import { escapeHtml } from '../lib/html';
+import { escapeHtml, safeCssColor } from '../lib/html';
 import { paletteRgb, paletteCss, type Palette, tForDb, makeBandsForRange } from '../lib/colormap';
 import {
   buildContourLinesAsync, customTracesFrom, steppedTracesFrom, unionContourLevels,
@@ -586,6 +586,11 @@ export function MapView({
   const annotationGroupRef = useRef<L.LayerGroup | null>(null);
   /// First click of a two-click dimension, held until the second lands.
   const dimensionStartRef = useRef<L.LatLng | null>(null);
+  /// The anchor dot drawn at that first click. Held separately from the
+  /// annotation layer group so leaving the mode can remove it: that group is
+  /// only ever cleared by the annotation repaint, which does not run when
+  /// nothing about the annotations has changed.
+  const dimensionDotRef = useRef<L.CircleMarker | null>(null);
   const measurePointsRef = useRef<L.LatLng[]>([]);
   /// Layer + draft state for the in-progress barrier draw. The layer
   /// group hosts both the persistent barrier polylines AND the live
@@ -626,6 +631,12 @@ export function MapView({
   useEffect(() => { selectedIdsRef.current = selectedIds; });
   /// Lets the marker drag handlers signal the box-select code to stand down.
   const cancelBoxSelectRef = useRef<() => void>(() => {});
+
+  /// Remove the dimension anchor dot, wherever it is in its life cycle.
+  const clearDimensionDot = () => {
+    dimensionDotRef.current?.remove();
+    dimensionDotRef.current = null;
+  };
 
   // Stash every callback in a ref so the marker render effect doesn't re-fire
   // on every prop identity change (cursor mousemove updates ProjectScreen
@@ -914,15 +925,21 @@ export function MapView({
         const start = dimensionStartRef.current;
         if (!start) {
           dimensionStartRef.current = e.latlng;
-          const g = annotationGroupRef.current;
-          if (g) {
-            L.circleMarker(e.latlng, {
-              radius: 4, color: '#F2CB00', fillColor: '#F2CB00', fillOpacity: 1, weight: 2,
-            }).addTo(g);
-          }
+          clearDimensionDot();
+          dimensionDotRef.current = L.circleMarker(e.latlng, {
+            radius: 4, color: '#F2CB00', fillColor: '#F2CB00', fillOpacity: 1, weight: 2,
+          }).addTo(map);
+          return;
+        }
+        // A double-click fires two `click`s at almost the same pixel before the
+        // `dblclick`, which would otherwise commit a zero-length dimension —
+        // the same guard the barrier draft already has.
+        if (map.latLngToContainerPoint(start)
+          .distanceTo(map.latLngToContainerPoint(e.latlng)) < 8) {
           return;
         }
         dimensionStartRef.current = null;
+        clearDimensionDot();
         onAddAnnotation?.({
           id: newAnnotationId(), kind: 'dimension',
           from: [start.lat, start.lng], to: latLng,
@@ -1120,9 +1137,14 @@ export function MapView({
   }, [addMode]);
 
   // Drop a half-placed dimension when the user leaves the mode, so returning
-  // to it later doesn't finish a line anchored somewhere they've forgotten.
+  // to it later doesn't finish a line anchored somewhere they've forgotten —
+  // and take its anchor dot with it, which used to be stranded on the map.
   useEffect(() => {
-    if (addMode !== 'dimension') dimensionStartRef.current = null;
+    if (addMode !== 'dimension') {
+      dimensionStartRef.current = null;
+      clearDimensionDot();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- clearDimensionDot is stable
   }, [addMode]);
 
   // ---- Annotations (notes + dimensions) ----
@@ -1217,12 +1239,21 @@ export function MapView({
       }
       const mid = dimensionMidpoint(a);
       const label = dimensionLabel(a);
+      const tilt = dimensionTiltDeg(a);
+      const labelW = Math.max(48, label.length * 8 + 12);
+      // Lifted clear of the line, perpendicular to it, so the map matches the
+      // PDF — which offsets by 1.1 mm. Anchoring at the midpoint put the rule
+      // straight through the text on screen while the exported figure had it
+      // sitting above, and the whole point of sharing these helpers is that the
+      // two renderings agree.
+      const rad = (tilt * Math.PI) / 180;
+      const lift = 9;                                   // px, ≈ the PDF's 1.1 mm
       L.marker(mid, {
         icon: L.divIcon({
           className: 'annotation-dimension',
-          html: textHtml(label, -dimensionTiltDeg(a), selected),
-          iconSize: [Math.max(48, label.length * 8 + 12), 22],
-          iconAnchor: [Math.max(48, label.length * 8 + 12) / 2, 11],
+          html: textHtml(label, -tilt, selected),
+          iconSize: [labelW, 22],
+          iconAnchor: [labelW / 2 + Math.sin(rad) * lift, 11 + Math.cos(rad) * lift],
         }),
         interactive: false,
         zIndexOffset: 900,
@@ -1235,10 +1266,14 @@ export function MapView({
   // when leaving barrier mode (Esc, mode toggle, etc), clear any in-flight
   // draft — vertices, dots and preview. The persistent layers are repainted
   // by the next effect.
+  //
+  // Dimension mode disables it too: both clicks of a double-click are placement
+  // clicks there, so leaving zoom on means an accidental double-click zooms the
+  // map while trying to place a line.
   useEffect(() => {
     const map = mapRef.current;
     if (map) {
-      if (addMode === 'barrier') map.doubleClickZoom.disable();
+      if (addMode === 'barrier' || addMode === 'dimension') map.doubleClickZoom.disable();
       else map.doubleClickZoom.enable();
     }
     if (addMode !== 'barrier') {
@@ -2469,10 +2504,18 @@ export function MapView({
 
   // Render contour overlay (filled raster, iso-lines, or both).
   const contourGenRef = useRef(0);
-  // Content signature rather than array identity: a fresh array holding the
-  // same lines must not re-trace the whole raster. Prop-identity churn driving
-  // redundant work is a bug this file has had before.
-  const customContourSig = JSON.stringify(customContours ?? []);
+  // Signature of what the RENDER consumes, not of the whole object: a fresh
+  // array holding the same lines must not re-trace, and neither must a change
+  // to a field the map does not draw. `label` and `export` are excluded —
+  // `export` never reaches the map at all, and re-labelling would otherwise
+  // clear and rebuild every contour layer on each keystroke, since the group is
+  // emptied synchronously and only refilled after a worker round-trip.
+  const customContourSig = (customContours ?? [])
+    .map((c) => `${c.id}:${c.levelDb}:${c.color}:${c.widthPx}:${c.dashed ? 1 : 0}`)
+    .join('|');
+  /// Labels are cheap to redraw, so they get their own signature and their own
+  /// pass rather than forcing a re-trace.
+  const customLabelSig = (customContours ?? []).map((c) => c.label).join('|');
   useEffect(() => {
     const map = mapRef.current;
     const group = overlayGroupRef.current;
@@ -2523,7 +2566,7 @@ export function MapView({
       /// Shared so a custom line's name is presented exactly as a stepped
       /// contour's level is — same box, font and placement, different text.
       const addLabel = (
-        line: Array<[number, number]>, text: string, into: L.LayerGroup, colour: string,
+        line: Array<[number, number]>, text: string, into: L.LayerGroup, rawColour: string,
       ) => {
         if (line.length < 4) return;
         const midIdx = Math.floor(line.length / 2);
@@ -2535,6 +2578,12 @@ export function MapView({
         // but a name like "Lease boundary criterion" needs the box to grow or
         // the anchor centres the wrong span.
         const widthPx = Math.max(22, text.length * 6 + 8);
+        // The colour is interpolated into a style attribute, and for a custom
+        // line it comes off the project document — which a collaborator can
+        // write. Escaping would not be enough there: inside `style` a value
+        // like `red;background:url(…)` injects a whole declaration, so it is
+        // whitelisted to a hex literal instead.
+        const colour = safeCssColor(rawColour);
         L.marker(b, {
           icon: L.divIcon({
             className: 'contour-label',
@@ -2570,15 +2619,18 @@ export function MapView({
       /// user's own colour, width and dash.
       const drawCustom = (sets: ContourLineSet[], into: L.LayerGroup) => {
         for (const { line: def, set } of customTracesFrom(sets, custom)) {
+          const colour = safeCssColor(def.color);
+          // Clamped: a persisted width of 1e6 would paint the whole viewport.
+          const weight = Math.max(0.5, Math.min(12, def.widthPx || 2.5));
           for (const line of set.lines) {
             L.polyline(line, {
-              color: '#ffffff', weight: def.widthPx + 2.5, opacity: 0.65, interactive: false,
+              color: '#ffffff', weight: weight + 2.5, opacity: 0.65, interactive: false,
             }).addTo(into);
             L.polyline(line, {
-              color: def.color, weight: def.widthPx, opacity: 1, interactive: false,
+              color: colour, weight, opacity: 1, interactive: false,
               dashArray: def.dashed ? '7 5' : undefined,
             }).addTo(into);
-            addLabel(line, def.label || `${def.levelDb} dB`, into, def.color);
+            addLabel(line, def.label || `${def.levelDb} dB`, into, colour);
           }
         }
       };
@@ -2608,8 +2660,8 @@ export function MapView({
     // `contourStepDb` was missing here: it is read above (via makeBandsForRange)
     // but changing the dB step did not redraw the lines until some other
     // dependency happened to change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- customContourSig stands in for customContours
-  }, [grid, showContours, showGridDebug, contourMode, contourOpacity, contourStepDb, customContourSig, palette, dbDomain.min, dbDomain.max]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the two sigs stand in for customContours
+  }, [grid, showContours, showGridDebug, contourMode, contourOpacity, contourStepDb, customContourSig, customLabelSig, palette, dbDomain.min, dbDomain.max]);
 
   // Grid-debug cell centres (I13). A dot at every cell centre, for diagnosing
   // alignment between the raster, the contour lines and the markers.

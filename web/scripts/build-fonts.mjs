@@ -23,7 +23,11 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 function woffToTtf(woff) {
   if (woff.readUInt32BE(0) !== 0x774f4646) throw new Error('not a WOFF (bad signature)');
   const flavor = woff.readUInt32BE(4);
+  // 'OTTO' means CFF outlines, which jsPDF cannot embed — writing one out with a
+  // .ttf name would produce a font that silently fails at export time.
+  if (flavor === 0x4f54544f) throw new Error('CFF/OpenType (OTTO) flavour; jsPDF needs TrueType outlines');
   const numTables = woff.readUInt16BE(12);
+  if (numTables === 0) throw new Error('no tables in the WOFF');
 
   const entries = [];
   for (let i = 0; i < numTables; i++) {
@@ -63,6 +67,7 @@ function woffToTtf(woff) {
   out.writeUInt16BE(numTables * 16 - pow2 * 16, 10);
 
   let dataPos = headerLen;
+  let headOffset = -1;
   tables.forEach((t, i) => {
     const rec = 12 + i * 16;
     out.writeUInt32BE(t.tag, rec);
@@ -70,8 +75,20 @@ function woffToTtf(woff) {
     out.writeUInt32BE(dataPos, rec + 8);
     out.writeUInt32BE(t.data.length, rec + 12);
     t.data.copy(out, dataPos);
+    if (t.tag === 0x68656164) headOffset = dataPos;   // 'head'
     dataPos += padded(t.data.length);      // the gap is already zero-filled
   });
+
+  // head.checkSumAdjustment covers the WHOLE file, so it only becomes valid
+  // once the tables have been laid out at their new offsets. Copying the WOFF's
+  // value leaves it stale: browsers and jsPDF ignore it, but strict validators
+  // and OS font installers do not.
+  if (headOffset >= 0) {
+    out.writeUInt32BE(0, headOffset + 8);             // zero it before summing
+    let sum = 0;
+    for (let i = 0; i + 3 < out.length; i += 4) sum = (sum + out.readUInt32BE(i)) >>> 0;
+    out.writeUInt32BE((0xb1b0afba - sum) >>> 0, headOffset + 8);
+  }
   return out;
 }
 

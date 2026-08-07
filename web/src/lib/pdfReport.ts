@@ -111,6 +111,11 @@ export async function buildPdf(input: PdfInput): Promise<jsPDF> {
   beginFrameClip(doc, frame);
   const exportedCustom = (input.customContours ?? [])
     .filter((c) => c.export && Number.isFinite(c.levelDb));
+  /// The custom lines that actually reached the page. A level the grid never
+  /// crosses draws nothing, and the legend must agree: a compliance figure
+  /// whose legend asserts a 40 dB contour that is not plotted is worse than one
+  /// with no legend at all.
+  let drawnCustom: CustomContourLine[] = [];
   if (grid && (input.showContours || exportedCustom.length > 0)) {
     const frameRect = { x: frame.x, y: frame.y, w: frame.w, h: frame.h };
     const bands = makeBandsForRange(input.dbDomain.min, input.dbDomain.max, input.contourStepDb);
@@ -146,10 +151,12 @@ export async function buildPdf(input: PdfInput): Promise<jsPDF> {
     // colour, weight and dash. Widths are authored in screen px; 0.26 mm per px
     // puts a 2.5 px line at ~0.65 mm, which reads at print size the way it does
     // on screen.
-    for (const { line: def, set } of customTracesFrom(sets, exportedCustom)) {
+    const traced = customTracesFrom(sets, exportedCustom);
+    drawnCustom = traced.map((c) => c.line);
+    for (const { line: def, set } of traced) {
       const [r, g, b] = rgb(def.color);
       doc.setDrawColor(r, g, b);
-      doc.setLineWidth(Math.max(0.15, def.widthPx * 0.26));
+      doc.setLineWidth(Math.max(0.15, Math.min(3, def.widthPx * 0.26)));
       if (def.dashed) doc.setLineDashPattern([1.8, 1.3], 0);
       for (const line of set.lines) strokeLine(line);
       if (def.dashed) doc.setLineDashPattern([], 0);
@@ -165,8 +172,8 @@ export async function buildPdf(input: PdfInput): Promise<jsPDF> {
 
   // Always drawn: the licence requires it, so it is not a dialog option.
   drawAttribution(doc, frame, input.attribution);
-  if (o.legend && grid && (input.showContours || exportedCustom.length > 0)) {
-    drawLegend(doc, input, frame, exportedCustom);
+  if (o.legend && grid && (input.showContours || drawnCustom.length > 0)) {
+    drawLegend(doc, input, frame, drawnCustom);
   }
   if (o.scaleBar) drawScaleBar(doc, frame);
   if (o.northArrow) drawNorthArrow(doc, frame);
@@ -325,7 +332,10 @@ export function drawAnnotations(doc: jsPDF, project: Project, frame: MapFrame) {
 
   for (const a of items) {
     if (a.kind === 'text') {
-      if (!a.text) continue;                    // an empty note prints nothing
+      // An empty note prints nothing — but if it has a leader, that IS the
+      // annotation, and dropping it left the map showing a pointer the PDF did
+      // not.
+      if (!a.text && !a.leaderTo) continue;
       const [x, y] = frame.toPage(a.latLng[0], a.latLng[1]);
       if (a.leaderTo) {
         const [lx, ly] = frame.toPage(a.leaderTo[0], a.leaderTo[1]);
@@ -388,13 +398,16 @@ function drawLegend(
   const rowH = 3.4;
   // A named line needs room for its label, which is not 2 digits of dB.
   doc.setFontSize(6);
-  const customW = customLines.reduce(
-    (m, c) => Math.max(m, doc.getTextWidth(`${c.label} (${c.levelDb} dB)`) + 11), 0);
-  const w = Math.max(24, customW);
-  // Custom lines get their own titled section under the bands, separated by a
-  // rule, so a compliance line is never mistaken for a palette step.
+  const rows = customLines.map((c) => `${c.label || `${c.levelDb} dB`} (${c.levelDb} dB)`);
+  const customW = rows.reduce((m, s) => Math.max(m, doc.getTextWidth(s) + 11), 0);
+  // Clamped to a third of the frame. Nothing else bounds the box: it is drawn
+  // AFTER the clip is released, so a long enough name would have pushed it over
+  // the scale bar and eventually off the page entirely.
+  const w = Math.min(Math.max(24, customW), frame.w / 3);
+  // Custom lines sit under the bands behind a rule, so a compliance line is
+  // never mistaken for a palette step.
   const customH = customLines.length ? customLines.length * rowH + 3 : 0;
-  const h = bands.length * rowH + 6 + customH;
+  const h = Math.min(bands.length * rowH + 6 + customH, frame.h - 8);
   const x = frame.x + frame.w - w - 4;
   const y = frame.y + frame.h - h - 4;
   doc.setFillColor(255, 255, 255);
@@ -422,16 +435,18 @@ function drawLegend(
     doc.line(x + 2, ry + 0.6, x + w - 2, ry + 0.6);
     ry += 2.4;
   }
-  for (const c of customLines) {
+  customLines.forEach((c, i) => {
     const [r, g, b] = rgb(c.color);
     doc.setDrawColor(r, g, b);
-    doc.setLineWidth(Math.max(0.15, c.widthPx * 0.26));
+    doc.setLineWidth(Math.max(0.15, Math.min(3, c.widthPx * 0.26)));
     if (c.dashed) doc.setLineDashPattern([1.2, 0.9], 0);
     doc.line(x + 2, ry + 1.2, x + 6, ry + 1.2);
     if (c.dashed) doc.setLineDashPattern([], 0);
     doc.setTextColor(30, 30, 30);
-    doc.text(`${c.label} (${c.levelDb} dB)`, x + 7.5, ry + 2);
+    // Clipped to the box rather than overflowing it — the width is capped
+    // above, so a long name has to lose its tail somewhere.
+    doc.text(rows[i], x + 7.5, ry + 2, { maxWidth: w - 9.5 });
     ry += rowH;
-  }
+  });
   doc.setLineWidth(0.3);
 }

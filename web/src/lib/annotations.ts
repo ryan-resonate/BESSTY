@@ -77,8 +77,18 @@ export function validAnnotation(a: Annotation | undefined | null): a is Annotati
   const ok = (p: unknown): boolean =>
     Array.isArray(p) && p.length === 2
     && Number.isFinite(p[0]) && Number.isFinite(p[1]);
-  if (a.kind === 'text') return ok(a.latLng) && (a.leaderTo === undefined || ok(a.leaderTo));
-  if (a.kind === 'dimension') return ok(a.from) && ok(a.to);
+  // The payload is checked as well as the geometry. A missing `text` makes the
+  // editor's textarea flip from controlled to uncontrolled on the first
+  // keystroke, and a non-string `label` reaches `doc.text()`, which throws and
+  // takes the whole PDF export with it.
+  if (a.kind === 'text') {
+    return typeof a.text === 'string'
+      && ok(a.latLng)
+      && (a.leaderTo === undefined || ok(a.leaderTo));
+  }
+  if (a.kind === 'dimension') {
+    return (a.label === undefined || typeof a.label === 'string') && ok(a.from) && ok(a.to);
+  }
   return false;
 }
 

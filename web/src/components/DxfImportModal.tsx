@@ -24,6 +24,10 @@ interface Props {
   /// First unused barrier number, so imported walls continue the project's
   /// numbering rather than colliding with it.
   nextBarrierIndex: number;
+  /// Local ground level at a lat/lng, for converting an absolute Z in the
+  /// drawing into the height-above-ground a barrier stores. Null when no
+  /// terrain is loaded, in which case Z mode is not offered.
+  groundAt: ((latLng: [number, number]) => number) | null;
 }
 
 function formatM(m: number): string {
@@ -34,7 +38,7 @@ function formatM(m: number): string {
   return `${m.toFixed(2)} m`;
 }
 
-export function DxfImportModal({ onClose, onImport, nextBarrierIndex }: Props) {
+export function DxfImportModal({ onClose, onImport, nextBarrierIndex, groundAt }: Props) {
   const [doc, setDoc] = useState<DxfDocument | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +51,17 @@ export function DxfImportModal({ onClose, onImport, nextBarrierIndex }: Props) {
     [doc],
   );
   const layers = useMemo(() => (doc ? dxfLayers(doc.entities) : []), [doc]);
+  /// Which layers carry a usable Z. Computed once per document rather than
+  /// per layer per render — it is a full scan of every entity, and a 40 000-
+  /// entity drawing with 60 layers spent tens of milliseconds redoing it on
+  /// every click.
+  const layersWithZ = useMemo(() => {
+    const s = new Set<string>();
+    if (doc) for (const l of dxfLayers(doc.entities)) {
+      if (layerHasZ(doc.entities, l.name)) s.add(l.name);
+    }
+    return s;
+  }, [doc]);
 
   async function onFile(file: File | null) {
     if (!file) return;
@@ -77,16 +92,23 @@ export function DxfImportModal({ onClose, onImport, nextBarrierIndex }: Props) {
   function doImport() {
     if (!doc) return;
     const place: DxfPlacement = { unitScale, epsg };
-    // Terrain is not consulted here: the caller owns the DEM, so absolute-Z
-    // resolution happens there where a height can actually be looked up.
-    const result = applyDxfPlan(doc.entities, plans, place, {
-      nextBarrierIndex, groundAt: null,
-    });
+    let result;
+    try {
+      result = applyDxfPlan(doc.entities, plans, place, { nextBarrierIndex, groundAt });
+    } catch (e) {
+      // `toWgs84` throws for a CRS proj4 does not know. Without this the modal
+      // just sat there having done nothing, with no message.
+      setError(`Could not place the drawing in EPSG:${epsg} — ${(e as Error).message ?? String(e)}`);
+      return;
+    }
     const nothing = result.barriers.length === 0
       && result.referenceFeaturesByLayer.length === 0;
     if (nothing) {
-      notify.info('Every layer is set to Skip, so there is nothing to import.',
-        { title: 'Nothing selected' });
+      notify.info(
+        'Nothing was imported. Either every layer is set to Skip, or the units '
+        + 'and coordinate system place the drawing outside the world.',
+        { title: 'Nothing imported' },
+      );
       return;
     }
     onImport(result, place, doc);
@@ -110,7 +132,13 @@ export function DxfImportModal({ onClose, onImport, nextBarrierIndex }: Props) {
               type="file"
               accept=".dxf"
               disabled={busy}
-              onChange={(e) => void onFile(e.target.files?.[0] ?? null)}
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                // Cleared so picking the SAME file again still fires a change
+                // event — otherwise retrying after an error is a dead button.
+                e.target.value = '';
+                void onFile(f);
+              }}
             />
             {busy && <div className="meta-line" style={{ marginTop: 8 }}>Reading…</div>}
           </>
@@ -172,7 +200,10 @@ export function DxfImportModal({ onClose, onImport, nextBarrierIndex }: Props) {
               {layers.map((l) => {
                 const p = plans.find((x) => x.layer === l.name);
                 if (!p) return null;
-                const hasZ = doc ? layerHasZ(doc.entities, l.name) : false;
+                // Z mode needs terrain to subtract: without a DEM there is
+                // nothing to convert an absolute level against, so the option
+                // is not offered rather than silently doing nothing.
+                const hasZ = layersWithZ.has(l.name) && groundAt != null;
                 return (
                   <div key={l.name} className="dxf-layer">
                     <div className="dxf-layer-head">

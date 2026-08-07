@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "lint": "tsc -b --noEmit",
     "build:wasm": "cd ../solver/crates/iso9613-wasm && wasm-pack build --target web --out-dir ../../../web/src/wasm",
+    "build:fonts": "node scripts/build-fonts.mjs",
     "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {

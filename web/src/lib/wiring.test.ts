@@ -84,11 +84,25 @@ test('a component that returns null without its callbacks still gets them', () =
   // catches the early return, which is what a card-sized control tends to use.
   const gated = new Map<string, string>();
   for (const { path, text } of FILES) {
-    for (const m of text.matchAll(/if\s*\(([^)]*)\)\s*return null/g)) {
+    // The condition may contain nested calls — `if (!onFoo || !ready(x))` — so
+    // it is matched by balancing parentheses rather than by `[^)]*`, which
+    // stops at the first inner one and skips the whole guard.
+    for (const m of text.matchAll(/if\s*\(/g)) {
+      const open = m.index! + m[0].length - 1;
+      let depth = 0;
+      let close = -1;
+      for (let i = open; i < text.length && i < open + 400; i++) {
+        if (text[i] === '(') depth++;
+        else if (text[i] === ')') { depth--; if (depth === 0) { close = i; break; } }
+      }
+      if (close < 0) continue;
+      if (!/^\s*return null/.test(text.slice(close + 1))) continue;
       // EVERY negated callback in the condition, not just the first: a guard
       // reading `if (!onUpdate || !onRemove)` gates on both, and capturing one
       // would let the other be dropped silently.
-      for (const n of m[1].matchAll(/!\s*((?:on|set)[A-Z]\w*)/g)) gated.set(n[1], path);
+      for (const n of text.slice(open, close).matchAll(/!\s*((?:on|set)[A-Z]\w*)/g)) {
+        gated.set(n[1], path);
+      }
     }
   }
   const missing: string[] = [];

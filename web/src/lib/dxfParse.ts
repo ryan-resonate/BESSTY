@@ -80,17 +80,30 @@ class PairReader {
 
   constructor(private readonly text: string) {}
 
+  /// How many pairs were skipped because the code line was not a number.
+  malformed = 0;
+
   /// Advance to the next pair. False at end of file.
+  ///
+  /// A line that is not a number is RESYNCED past rather than treated as the
+  /// end of the file: one stray blank line used to truncate the parse silently,
+  /// leaving the user with a plausible-looking layer list holding half their
+  /// drawing.
   next(): boolean {
-    const codeLine = this.readLine();
-    if (codeLine === null) return false;
-    const valueLine = this.readLine();
-    if (valueLine === null) return false;
-    const code = Number.parseInt(codeLine.trim(), 10);
-    if (!Number.isFinite(code)) return false;
-    this.code = code;
-    this.value = valueLine;
-    return true;
+    for (;;) {
+      const codeLine = this.readLine();
+      if (codeLine === null) return false;
+      const code = Number.parseInt(codeLine.trim(), 10);
+      if (!Number.isFinite(code)) {
+        if (codeLine.trim() !== '') this.malformed++;
+        continue;
+      }
+      const valueLine = this.readLine();
+      if (valueLine === null) return false;
+      this.code = code;
+      this.value = valueLine;
+      return true;
+    }
   }
 
   private readLine(): string | null {
@@ -126,6 +139,10 @@ export function parseDxf(text: string): DxfDocument {
   const skipped: Record<string, number> = {};
   const warnings: string[] = [];
   const blocks = new Map<string, DxfEntity[]>();
+  /// Each block's base point — the origin its geometry is drawn about, and the
+  /// point an INSERT positions. Kept per block because a drawing may use many.
+  const blockBases = new Map<string, DxfPoint>();
+  let blockBase: DxfPoint = { x: 0, y: 0 };
   let insUnits: number | null = null;
 
   /// Where entities being read right now should go: the drawing, or the block
@@ -145,14 +162,34 @@ export function parseDxf(text: string): DxfDocument {
   let a0 = 0;
   let a1 = 0;
   let label = '';
+  /// MTEXT chunks seen on group 3, held so the final group-1 chunk appends to
+  /// them rather than replacing them.
+  let labelHead = '';
   let blockRef = '';
   let scaleX = 1;
   let scaleY = 1;
   let rotation = 0;
+  /// Group 38 — the single elevation an LWPOLYLINE carries for all its
+  /// vertices. This, not a per-vertex 30, is where a 2-D polyline's height
+  /// lives, and it is what a contour or a wall crest arrives as.
+  let elevation: number | null = null;
+  /// Group 67 — 1 means the entity belongs to PAPER space: a title block,
+  /// sheet border or legend, drawn in sheet coordinates. Importing those as
+  /// site geometry wrecks the extent, and the extent is what the units step
+  /// asks the user to judge.
+  let paperSpace = false;
+  /// Group 42 — a bulge turns the following span into an arc. Not modelled,
+  /// but counted so the summary can say the shape was straightened.
+  let bulges = 0;
   /// POLYLINE collects its points from following VERTEX entities.
   let polylineOpen = false;
   let polylineLayer = '';
   let polylineClosed = false;
+  let polylinePaper = false;
+  /// Polyface / 3-D mesh (flags 64 / 16). Their VERTEX records are mesh data,
+  /// not a path: face records carry no coordinates and would otherwise inject a
+  /// vertex at the origin, dragging the drawing's extent to (0, 0).
+  let polylineMesh = false;
   let polylinePts: DxfPoint[] = [];
 
   const flushPoint = () => {
@@ -162,27 +199,46 @@ export function parseDxf(text: string): DxfDocument {
     cur = {};
   };
 
+  const note = (kind: string) => { skipped[kind] = (skipped[kind] ?? 0) + 1; };
+
   const emit = () => {
     flushPoint();
+    // Paper space is the printed SHEET — title block, border, legend, north
+    // arrow — drawn in sheet coordinates alongside the model in the same
+    // section. Importing it would put a 300 mm border next to a 6 250 000 m
+    // easting and blow the extent apart, which is exactly the measurement the
+    // units step asks the user to judge.
+    if (paperSpace && type && type !== 'SEQEND' && type !== 'VERTEX') {
+      note(`${type} (paper space)`);
+      type = '';
+    }
     switch (type) {
       case 'LINE':
         if (pts.length >= 2) sink.push({ kind: 'polyline', layer, points: pts, closed: false });
         break;
       case 'LWPOLYLINE':
         if (pts.length >= 2) {
-          sink.push({ kind: 'polyline', layer, points: pts, closed: (flags & 1) === 1 });
+          // Group 38 is the polyline's single elevation; there is no per-vertex
+          // Z on an LWPOLYLINE.
+          const withZ = elevation == null ? pts : pts.map((p) => ({ ...p, z: elevation! }));
+          sink.push({ kind: 'polyline', layer, points: withZ, closed: (flags & 1) === 1 });
+          if (bulges) note('LWPOLYLINE arc segment (bulge, straightened)');
         }
         break;
       case 'VERTEX':
-        if (polylineOpen && pts.length) polylinePts.push(pts[0]);
+        // A mesh's VERTEX records are face indices, not a path: they carry no
+        // coordinates, so taking them would add a vertex at the origin.
+        if (polylineOpen && !polylineMesh && pts.length) polylinePts.push(pts[0]);
         break;
       case 'SEQEND':
         if (polylineOpen) {
-          if (polylinePts.length >= 2) {
+          if (!polylineMesh && !polylinePaper && polylinePts.length >= 2) {
             sink.push({
               kind: 'polyline', layer: polylineLayer, points: polylinePts, closed: polylineClosed,
             });
           }
+          if (polylineMesh) note('POLYLINE mesh');
+          else if (polylinePaper) note('POLYLINE (paper space)');
           polylineOpen = false;
           polylinePts = [];
         }
@@ -201,13 +257,15 @@ export function parseDxf(text: string): DxfDocument {
         break;
       case 'INSERT':
         if (pts.length && blockRef) {
-          // Resolved against the block table after the whole file is read: a
-          // block may be defined after the INSERT that uses it.
+          // Recorded as a point for now and resolved against the block table
+          // once the whole file is read — a block may legally be defined after
+          // the INSERT that uses it. If it does resolve, this placeholder is
+          // dropped so the block's own geometry is not shadowed by a marker.
           sink.push({ kind: 'point', layer, at: pts[0], block: blockRef });
           insertTransforms.push({
             block: blockRef, layer,
             at: pts[0], scaleX, scaleY, rotation,
-            index: sink.length - 1, intoBlock: sink === entities ? null : blockName,
+            marker: sink[sink.length - 1], intoBlock: sink === entities ? null : blockName,
           });
         }
         break;
@@ -223,16 +281,20 @@ export function parseDxf(text: string): DxfDocument {
     a0 = 0;
     a1 = 0;
     label = '';
+    labelHead = '';
     blockRef = '';
     scaleX = 1;
     scaleY = 1;
     rotation = 0;
+    elevation = null;
+    paperSpace = false;
+    bulges = 0;
   };
 
   const insertTransforms: Array<{
     block: string; layer: string; at: DxfPoint;
     scaleX: number; scaleY: number; rotation: number;
-    index: number; intoBlock: string | null;
+    marker: DxfEntity; intoBlock: string | null;
   }> = [];
 
   /// Set when the previous pair was `9 / $INSUNITS`, so the following 70 is its
@@ -248,14 +310,25 @@ export function parseDxf(text: string): DxfDocument {
       if (v === 'SECTION') { section = ''; continue; }
       if (v === 'ENDSEC') { section = ''; sink = entities; continue; }
       if (v === 'EOF') break;
-      if (v === 'BLOCK') { type = 'BLOCK'; continue; }
-      if (v === 'ENDBLK') { sink = entities; blockName = ''; continue; }
+      if (v === 'BLOCK') { type = 'BLOCK'; blockBase = { x: 0, y: 0 }; continue; }
+      if (v === 'ENDBLK') { sink = entities; blockName = ''; blockBase = { x: 0, y: 0 }; continue; }
       if (section === 'ENTITIES' || section === 'BLOCKS') {
         if (HANDLED.has(v)) {
           type = v;
-          if (v === 'POLYLINE') { polylineOpen = true; polylinePts = []; }
+          if (v === 'POLYLINE') {
+            // EVERY per-polyline field is reset here. Leaving `polylineLayer`
+            // and `polylineClosed` from a previous POLYLINE put every one in
+            // the file on the first one's layer — which silently collapsed the
+            // layer list the whole mapping UI is built on.
+            polylineOpen = true;
+            polylinePts = [];
+            polylineLayer = '';
+            polylineClosed = false;
+            polylineMesh = false;
+            polylinePaper = false;
+          }
         } else {
-          skipped[v] = (skipped[v] ?? 0) + 1;
+          note(v);
         }
       }
       continue;
@@ -277,13 +350,26 @@ export function parseDxf(text: string): DxfDocument {
     }
 
     if (type === 'BLOCK') {
-      // Block definitions: name on 2, then the entities up to ENDBLK.
+      // Block definitions: name on 2, then the entities up to ENDBLK. The 10/20
+      // base point is the origin the block's own geometry is drawn about, and
+      // an INSERT places THAT point — ignoring it offsets every copy by the
+      // base, which also drags the drawing's extent and hence the unit guess.
+      //
+      // The base point follows the NAME in the header, so `type` stays 'BLOCK'
+      // until the next 0-code and the map entry is rewritten as each coordinate
+      // arrives. Clearing `type` on the name dropped the base entirely.
       if (code === 2) {
         blockName = value.trim();
         const list: DxfEntity[] = [];
         blocks.set(blockName, list);
+        blockBases.set(blockName, blockBase);
         sink = list;
-        type = '';
+      } else if (code === 10) {
+        blockBase = { ...blockBase, x: num(value) };
+        if (blockName) blockBases.set(blockName, blockBase);
+      } else if (code === 20) {
+        blockBase = { ...blockBase, y: num(value) };
+        if (blockName) blockBases.set(blockName, blockBase);
       }
       continue;
     }
@@ -302,19 +388,38 @@ export function parseDxf(text: string): DxfDocument {
       case 11: flushPoint(); cur.x = num(value); break;   // LINE end point
       case 21: cur.y = num(value); break;
       case 31: cur.z = num(value); break;
+      case 38: elevation = num(value); break;             // LWPOLYLINE elevation
       case 40: radius = num(value); break;
       case 41: scaleX = num(value) || 1; break;
-      case 42: scaleY = num(value) || 1; break;
+      case 42:
+        // 42 is a bulge on a polyline vertex and the Y scale on an INSERT.
+        if (type === 'INSERT') scaleY = num(value) || 1;
+        else if (num(value) !== 0) bulges++;
+        break;
       case 50:
         if (type === 'ARC') a0 = num(value); else rotation = num(value);
         break;
       case 51: a1 = num(value); break;
+      case 67:
+        paperSpace = Number.parseInt(value.trim(), 10) === 1;
+        if (polylineOpen && type === 'POLYLINE') polylinePaper = paperSpace;
+        break;
       case 70:
         flags = Number.parseInt(value.trim(), 10) || 0;
-        if (type === 'POLYLINE') polylineClosed = (flags & 1) === 1;
+        if (type === 'POLYLINE') {
+          polylineClosed = (flags & 1) === 1;
+          // 64 = polyface mesh, 16 = 3-D polygon mesh. Both use VERTEX records
+          // as mesh data rather than a path.
+          polylineMesh = (flags & 64) !== 0 || (flags & 16) !== 0;
+        }
         break;
-      case 1: label = mtextPlain(value); break;
-      case 3: label += mtextPlain(value); break;   // MTEXT continuation
+      // MTEXT longer than 250 characters puts its LEADING chunks on 3 and the
+      // final one on 1, so the 3s have to be kept and the 1 appended — reading
+      // 1 as the whole string keeps only the tail.
+      // Trimming happens once at the end, not per chunk: MTEXT splits mid-
+      // sentence, so trimming each piece welds the words either side together.
+      case 1: label = (labelHead + mtextPlain(value)).trim(); break;
+      case 3: labelHead += mtextPlain(value); label = labelHead.trim(); break;
       default: break;
     }
     // A block reference names its block on 2, which the section-name branch
@@ -328,16 +433,23 @@ export function parseDxf(text: string): DxfDocument {
   // a block containing another block leaves the inner reference as a point,
   // which is honest about what was and was not expanded.
   const expanded: DxfEntity[] = [];
+  /// Placeholders whose block did resolve — dropped below, so an expanded
+  /// INSERT does not also leave a marker sitting on its own geometry.
+  const consumed = new Set<DxfEntity>();
   for (const t of insertTransforms) {
     if (t.intoBlock !== null) continue;              // nested — left as a point
     const def = blocks.get(t.block);
     if (!def?.length) continue;
+    consumed.add(t.marker);
+    const base = blockBases.get(t.block) ?? { x: 0, y: 0 };
     const rad = (t.rotation * Math.PI) / 180;
     const cos = Math.cos(rad);
     const sin = Math.sin(rad);
     const place = (p: DxfPoint): DxfPoint => {
-      const sx = p.x * t.scaleX;
-      const sy = p.y * t.scaleY;
+      // Geometry is measured from the block's BASE point, then scaled, rotated
+      // and dropped at the insertion point.
+      const sx = (p.x - base.x) * t.scaleX;
+      const sy = (p.y - base.y) * t.scaleY;
       return { x: t.at.x + sx * cos - sy * sin, y: t.at.y + sx * sin + sy * cos, z: p.z };
     };
     for (const e of def) {
@@ -361,12 +473,20 @@ export function parseDxf(text: string): DxfDocument {
       }
     }
   }
-  entities.push(...expanded);
+  // Built by iteration, never by spreading: `push(...expanded)` passes one
+  // argument per element and overflows the call stack around 150 000 — well
+  // inside the range a site plan full of symbol blocks reaches.
+  const out: DxfEntity[] = [];
+  for (const e of entities) if (!consumed.has(e)) out.push(e);
+  for (const e of expanded) out.push(e);
 
   if (insUnits === null) warnings.push('The drawing does not state its units ($INSUNITS).');
-  if (!entities.length) warnings.push('No geometry this importer understands was found.');
+  if (!out.length) warnings.push('No geometry this importer understands was found.');
+  if (r.malformed) {
+    warnings.push(`${r.malformed} malformed line${r.malformed === 1 ? '' : 's'} skipped — the drawing may be truncated or corrupt.`);
+  }
 
-  return { entities, insUnits, skipped, warnings };
+  return { entities: out, insUnits, skipped, warnings };
 }
 
 /// Strip the formatting codes MTEXT wraps text in — `\P` line breaks,
@@ -375,8 +495,7 @@ function mtextPlain(s: string): string {
   return s
     .replace(/\\P/g, ' ')
     .replace(/\\[A-Za-z][^;\\]*;/g, '')
-    .replace(/[{}]/g, '')
-    .trim();
+    .replace(/[{}]/g, '');
 }
 
 /// Turn an arc or circle into a polyline whose sagitta stays within `tolerance`
@@ -385,8 +504,15 @@ function mtextPlain(s: string): string {
 export function tessellateArc(
   centre: DxfPoint, radius: number, startDeg: number, endDeg: number, tolerance: number,
 ): DxfPoint[] {
-  let sweep = endDeg - startDeg;
-  while (sweep <= 0) sweep += 360;                  // DXF arcs run counter-clockwise
+  if (!Number.isFinite(startDeg) || !Number.isFinite(endDeg) || !(radius > 0)) return [];
+  // DXF arcs run counter-clockwise from start to end. Normalised by modulo, not
+  // by adding 360 in a loop: `-1e300 + 360` is still `-1e300`, so a corrupt
+  // angle used to spin forever — on the main thread, inside the import click.
+  const raw = endDeg - startDeg;
+  let sweep = raw === 360 ? 360 : ((raw % 360) + 360) % 360;
+  // A zero sweep is a degenerate arc, not a full circle. Callers asking for a
+  // circle pass 0→360 explicitly, which the line above preserves.
+  if (sweep === 0) return [];
   const maxStep = radius > tolerance
     ? (2 * Math.acos(1 - tolerance / radius) * 180) / Math.PI
     : 45;

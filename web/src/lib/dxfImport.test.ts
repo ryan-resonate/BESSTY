@@ -10,8 +10,8 @@ import assert from 'node:assert/strict';
 
 import { parseDxf, type DxfEntity } from './dxfParse';
 import {
-  applyDxfPlan, layerHasZ, layerLabels, layerPolylines, placePoint, suggestedUnit,
-  unitCandidates, type DxfLayerPlan, type DxfPlacement,
+  applyDxfPlan, layerHasZ, layerLabels, layerPolylines, nextBarrierIndexFor, placePoint,
+  suggestedUnit, unitCandidates, type DxfLayerPlan, type DxfPlacement,
 } from './dxfImport';
 
 /// MGA Zone 54 (EPSG:28354), a South Australian wind-farm CRS. Coordinates are
@@ -79,9 +79,8 @@ test('with no header at all the most site-like reading is suggested', () => {
 // ---------- placement ----------
 
 test('a point projects through the chosen CRS and scale', () => {
-  // Two points 200 drawing-units apart in a millimetre drawing are 0.2 m apart.
-  const a = placePoint({ x: 500000, y: 6250000 }, { unitScale: 1, epsg: 28354 });
-  const b = placePoint({ x: 500200, y: 6250000 }, { unitScale: 1, epsg: 28354 });
+  const a = placePoint({ x: 500000, y: 6250000 }, { unitScale: 1, epsg: 28354 })!;
+  const b = placePoint({ x: 500200, y: 6250000 }, { unitScale: 1, epsg: 28354 })!;
   assert.ok(a[0] < 0 && a[1] > 100, `expected southern-hemisphere lat/lng, got ${a}`);
   // 200 m east: ~0.0023° of longitude at this latitude.
   const dLng = b[1] - a[1];
@@ -92,6 +91,37 @@ test('the unit scale changes the ground distance, as a mm-vs-m mix-up would', ()
   const near = placePoint({ x: 500200, y: 6250000 }, { unitScale: 0.001, epsg: 28354 });
   const far = placePoint({ x: 500200, y: 6250000 }, { unitScale: 1, epsg: 28354 });
   assert.notDeepEqual(near, far);
+});
+
+test('a placement that lands outside the world returns null, not Infinity', () => {
+  // proj4 answers far out-of-range input with Infinity rather than throwing,
+  // and a non-finite coordinate serialises to `null` in Firestore — so a
+  // barrier with no position would be discovered long after the import.
+  // Reading an MGA drawing as kilometres does exactly this.
+  assert.equal(placePoint({ x: 500200, y: 6250000 }, { unitScale: 1000, epsg: 28354 }), null);
+  assert.equal(placePoint({ x: NaN, y: 6250000 }, MGA54), null);
+  assert.equal(placePoint({ x: 500200, y: Infinity }, MGA54), null);
+});
+
+test('an unplaceable shape is dropped whole and reported, not partly imported', () => {
+  // A real MGA-coordinate drawing read as KILOMETRES: the eastings become
+  // 500 000 km, which proj4 answers with Infinity rather than an error.
+  const ents = parseDxf(entities([
+    [0, 'LWPOLYLINE'], [8, 'WALLS'], [70, 1],
+    [10, 500000], [20, 6250000],
+    [10, 500200], [20, 6250000],
+    [10, 500200], [20, 6250100],
+  ])).entities;
+  const bad: DxfPlacement = { unitScale: 1000, epsg: 28354 };
+  assert.deepEqual(layerPolylines(ents, 'WALLS', bad), []);
+  const r = applyDxfPlan(ents, [plan()], bad);
+  assert.equal(r.barriers.length, 0);
+  assert.ok(
+    r.summary.some((s) => s.includes('could not be placed')),
+    r.summary.join(' | '),
+  );
+  // The same drawing at the right scale imports cleanly.
+  assert.equal(applyDxfPlan(ents, [plan()], MGA54).barriers.length, 1);
 });
 
 // ---------- layers ----------
@@ -111,7 +141,7 @@ test('a circle becomes a ring whose radius survives the round trip', () => {
   const [ring] = layerPolylines(ents, 'TANKS', MGA54, 0.5);
   assert.ok(ring.points.length > 8, 'should be tessellated');
   // Every vertex is 25 m from the centre, within the chord tolerance.
-  const centre = placePoint({ x: 500000, y: 6250000 }, MGA54);
+  const centre = placePoint({ x: 500000, y: 6250000 }, MGA54)!;
   const mPerDegLat = 110_574;
   const mPerDegLng = 111_320 * Math.cos((centre[0] * Math.PI) / 180);
   for (const [lat, lng] of ring.points) {
@@ -221,4 +251,19 @@ test('barrier numbering continues from the project\'s existing walls', () => {
   const r = applyDxfPlan(rect(1), [plan()], MGA54, { nextBarrierIndex: 7, groundAt: null });
   assert.ok(r.barriers[0].id.endsWith('-7'), r.barriers[0].id);
   assert.ok(r.barriers[0].name.includes('7'));
+});
+
+test('the next barrier number comes from the highest id, not the count', () => {
+  // Import three, delete two, import again: a COUNT restarts inside the range
+  // already used and mints a duplicate id — and the editor then drags and
+  // deletes both barriers as one object, because every lookup matches on id.
+  const after = [{ id: 'B-dxf-3' }];
+  assert.equal(nextBarrierIndexFor(after), 4);
+  assert.equal(after.length + 1, 2, 'the count would have collided with B-dxf-3');
+
+  assert.equal(nextBarrierIndexFor([]), 1);
+  // Hand-drawn walls use a different prefix but the same trailing number.
+  assert.equal(nextBarrierIndexFor([{ id: 'B-2' }, { id: 'B-dxf-9' }, { id: 'B-4' }]), 10);
+  // An id with no trailing number must not poison the maximum.
+  assert.equal(nextBarrierIndexFor([{ id: 'barrier' }, { id: 'B-dxf-2' }]), 3);
 });

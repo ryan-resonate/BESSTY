@@ -39,6 +39,28 @@ test('the faces carry the tables a PDF embedder needs', () => {
   }
 });
 
+test('head.checkSumAdjustment matches the file as rebuilt', () => {
+  // It covers the WHOLE file, so it is only valid once the tables sit at their
+  // new offsets. Carrying the WOFF's value over leaves it stale — invisible to
+  // jsPDF and browsers, but not to strict validators or font installers.
+  for (const b64 of [ARIMO_REGULAR_B64, ARIMO_BOLD_B64]) {
+    const b = Buffer.from(b64, 'base64');
+    const numTables = b.readUInt16BE(4);
+    let headOffset = -1;
+    for (let i = 0; i < numTables; i++) {
+      const p = 12 + i * 16;
+      if (b.toString('latin1', p, p + 4) === 'head') headOffset = b.readUInt32BE(p + 8);
+    }
+    assert.ok(headOffset > 0, 'no head table');
+    const stored = b.readUInt32BE(headOffset + 8);
+    const copy = Buffer.from(b);
+    copy.writeUInt32BE(0, headOffset + 8);
+    let sum = 0;
+    for (let i = 0; i + 3 < copy.length; i += 4) sum = (sum + copy.readUInt32BE(i)) >>> 0;
+    assert.equal(stored, (0xb1b0afba - sum) >>> 0);
+  }
+});
+
 test('jsPDF registers the font and reports it as available', async () => {
   const doc = new jsPDF();
   assert.equal(await useHouseFont(doc), true);

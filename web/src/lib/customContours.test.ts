@@ -10,10 +10,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  buildContourLines, customTracesFrom, steppedTracesFrom, unionContourLevels,
-  type ContourLineSet,
+  buildContourLines, customTracesFrom, sanitiseCustomContours, steppedTracesFrom,
+  unionContourLevels, CUSTOM_LABEL_MAX, type ContourLineSet,
 } from './contourLines';
-import { escapeHtml } from './html';
+import { escapeHtml, safeCssColor } from './html';
 import { exportContoursKml, exportContoursShp } from './exporters';
 import type { CustomContourLine, Project } from './types';
 import type { GridResult } from './gridCore';
@@ -159,6 +159,81 @@ test('the shapefile carries LABEL alongside THRESH_DBA', async () => {
   assert.ok(text.includes('THRESH_DBA'));
   assert.ok(text.includes('LABEL'));
   assert.ok(text.includes('Night limit'), 'the label value should reach the DBF records');
+});
+
+// ---------- hardening against a hostile / hand-edited document ----------
+
+test('a colour is whitelisted to a hex literal, not merely escaped', () => {
+  // The colour is interpolated into a style="" attribute. Escaping is not
+  // enough there: `red;background:url(...)` injects a declaration without
+  // needing a single quote or angle bracket.
+  assert.equal(safeCssColor('#dc2626'), '#dc2626');
+  assert.equal(safeCssColor('#ABC'), '#ABC');
+  assert.equal(safeCssColor(' #dc2626 '), '#dc2626');
+  for (const hostile of [
+    'red"><img src=x onerror=alert(1)>',
+    'red;background:url(https://evil.example/x)',
+    'expression(alert(1))',
+    'rgb(1,2,3)',
+    '',
+    undefined,
+    42,
+    { toString: () => '#000000' },
+  ]) {
+    assert.equal(safeCssColor(hostile), '#1f2937', String(hostile));
+  }
+});
+
+test('custom lines off a project document are normalised before use', () => {
+  const raw = [
+    { id: 'a', label: 'Night', levelDb: 40, color: 'javascript:alert(1)', widthPx: 1e9, dashed: true, export: true },
+    { id: 'b', levelDb: 35 },                       // sparse but usable
+    { id: 'c', levelDb: 'forty' },                  // level is not a number
+    { levelDb: 40 },                                // no id
+    null,
+    'not an object',
+  ];
+  const clean = sanitiseCustomContours(raw);
+  assert.deepEqual(clean.map((c) => c.id), ['a', 'b']);
+  assert.equal(clean[0].color, '#dc2626', 'a bad colour falls back');
+  assert.ok(clean[0].widthPx <= 12, 'width is clamped');
+  assert.equal(clean[1].label, '');
+  assert.equal(clean[1].color, '#dc2626');
+  assert.equal(sanitiseCustomContours(undefined).length, 0);
+  assert.equal(sanitiseCustomContours({ nope: 1 }).length, 0);
+});
+
+test('a label is capped to the width the shapefile can actually store', () => {
+  const long = 'Night-time lease boundary criterion — LAeq,15min 40 dB(A) and more';
+  const [c] = sanitiseCustomContours([{ id: 'x', levelDb: 40, label: long }]);
+  assert.equal(c.label.length, CUSTOM_LABEL_MAX);
+  // Otherwise the KML keeps the whole name while the DBF silently truncates,
+  // and two exports of one figure disagree about what the line is called.
+});
+
+// ---------- export identity ----------
+
+test('a custom line on a stepped level is ONE feature, not two', () => {
+  const grid = coneGrid();
+  const stepped = [60, 65, 70];
+  const custom = [line({ levelDb: 65, label: 'Night limit' })];
+  const traced = buildContourLines(grid, unionContourLevels(stepped, custom));
+  const named = customTracesFrom(traced, custom).map((c) => c.set);
+  const sets = [...steppedTracesFrom(traced, stepped, named.map((s) => s.threshold)), ...named];
+  const thresholds = sets.map((s) => s.threshold).sort((a, b) => a - b);
+  assert.deepEqual(thresholds, [60, 65, 70]);
+  // The 65 that survives is the NAMED one.
+  assert.equal(sets.find((s) => s.threshold === 65)?.label, 'Night limit');
+});
+
+test('an unnamed custom line still exports as a named one', () => {
+  const grid = coneGrid();
+  const custom = [line({ label: '', levelDb: 65 })];
+  const traced = buildContourLines(grid, unionContourLevels([], custom));
+  const [only] = customTracesFrom(traced, custom);
+  // A blank LABEL is indistinguishable from a stepped contour, so a consumer
+  // filtering on it to find the compliance lines would miss this one.
+  assert.equal(only.set.label, '65 dB');
 });
 
 // ---------- label escaping ----------

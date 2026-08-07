@@ -140,8 +140,19 @@ export function suggestedUnit(candidates: UnitCandidate[]): UnitCandidate {
 }
 
 /// Drawing coordinates → WGS84, through the chosen unit scale and CRS.
-export function placePoint(p: DxfPoint, place: DxfPlacement): [number, number] {
-  return toWgs84(place.epsg, p.x * place.unitScale, p.y * place.unitScale);
+///
+/// Returns null when the result is not a real place. proj4 answers far
+/// out-of-range input with `Infinity` rather than throwing — which picking
+/// "kilometres" on an MGA drawing produces — and a non-finite coordinate
+/// serialises to `null` in Firestore, so it has to be caught here rather than
+/// discovered later as a barrier with no position.
+export function placePoint(p: DxfPoint, place: DxfPlacement): [number, number] | null {
+  if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
+  const ll = toWgs84(place.epsg, p.x * place.unitScale, p.y * place.unitScale);
+  if (!Number.isFinite(ll[0]) || !Number.isFinite(ll[1])) return null;
+  // Anything outside the WGS84 domain is a mis-set CRS or unit, not a place.
+  if (Math.abs(ll[0]) > 90 || Math.abs(ll[1]) > 180) return null;
+  return ll;
 }
 
 /// Every entity on a layer as lat/lng polylines, curves tessellated.
@@ -164,11 +175,18 @@ export function layerPolylines(
     else if (e.kind === 'arc') { pts = tessellateArc(e.centre, e.radius, e.startDeg, e.endDeg, tolUnits); }
     if (!pts || pts.length < 2) continue;
     const ring = closed && !samePoint(pts[0], pts[pts.length - 1]) ? [...pts, pts[0]] : pts;
-    out.push({
-      points: ring.map((p) => placePoint(p, place)),
-      z: ring.map((p) => (p.z ?? 0) * place.unitScale),
-      closed,
-    });
+    // A shape with any unplaceable vertex is dropped whole rather than
+    // silently losing a corner and closing across the gap.
+    const points: Array<[number, number]> = [];
+    const z: number[] = [];
+    let ok = true;
+    for (const p of ring) {
+      const ll = placePoint(p, place);
+      if (!ll) { ok = false; break; }
+      points.push(ll);
+      z.push((p.z ?? 0) * place.unitScale);
+    }
+    if (ok && points.length >= 2) out.push({ points, z, closed });
   }
   return out;
 }
@@ -194,11 +212,17 @@ export function layerLabels(
   const out: ReferenceFeature[] = [];
   for (const e of entities) {
     if ((e.layer || '0') !== layer) continue;
-    if (e.kind === 'text') {
-      out.push({ id: `dxf-t-${out.length}`, type: 'point', coords: [placePoint(e.at, place)], label: e.text });
-    } else if (e.kind === 'point') {
-      out.push({ id: `dxf-p-${out.length}`, type: 'point', coords: [placePoint(e.at, place)], label: e.block });
-    }
+    if (e.kind !== 'text' && e.kind !== 'point') continue;
+    const ll = placePoint(e.at, place);
+    if (!ll) continue;
+    out.push({
+      // Ids are unique across the whole import, not per layer, so nothing
+      // downstream can confuse two features from different layers.
+      id: `dxf-${layer}-lbl-${out.length}`,
+      type: 'point',
+      coords: [ll],
+      label: e.kind === 'text' ? e.text : e.block,
+    });
   }
   return out;
 }
@@ -208,6 +232,19 @@ export interface DxfImportResult {
   referenceFeaturesByLayer: Array<{ layer: string; features: ReferenceFeature[] }>;
   /// Human-readable account of what happened, for the summary and the log.
   summary: string[];
+}
+
+/// First barrier number that cannot collide with anything already in the
+/// project. A COUNT is not enough: import three, delete two, import again and
+/// the count restarts inside the range already used, producing two barriers
+/// with one id — which the editor then moves and deletes as a single object.
+export function nextBarrierIndexFor(barriers: ReadonlyArray<{ id: string }>): number {
+  let max = 0;
+  for (const b of barriers) {
+    const m = /(\d+)$/.exec(b.id);
+    if (m) max = Math.max(max, Number.parseInt(m[1], 10));
+  }
+  return max + 1;
 }
 
 /// Apply a set of layer plans, producing the objects to merge into the project.
@@ -232,6 +269,17 @@ export function applyDxfPlan(
   for (const plan of plans) {
     if (plan.target === 'skip') continue;
     const polys = layerPolylines(entities, plan.layer, place);
+    // Shapes the chosen CRS and unit scale cannot place at all. Usually the
+    // whole layer, and always worth saying — it means the placement is wrong.
+    const offered = entities.filter(
+      (e) => (e.layer || '0') === plan.layer && e.kind !== 'text' && e.kind !== 'point',
+    ).length;
+    if (offered > polys.length) {
+      summary.push(
+        `${plan.layer}: ${offered - polys.length} shape${offered - polys.length === 1 ? '' : 's'} `
+        + 'could not be placed — check the units and coordinate system',
+      );
+    }
 
     if (plan.target === 'barriers') {
       let made = 0;

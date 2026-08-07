@@ -15,6 +15,7 @@ import { containerHeightFor, footprintFor, listEntriesByKind, lookupEntry } from
 import { ImportObjectsModal } from './ImportObjectsModal';
 import { ReferenceImportModal } from './ReferenceImportModal';
 import { DxfImportModal } from './DxfImportModal';
+import { nextBarrierIndexFor } from '../lib/dxfImport';
 import { ProjectMetaPanel } from './ProjectMetaPanel';
 import { EpsgPicker } from './EpsgPicker';
 import { NumericInput } from './NumericInput';
@@ -42,6 +43,7 @@ import {
 import type { GridResult } from '../lib/solver';
 import {
   buildContourLines, customTracesFrom, steppedTracesFrom, unionContourLevels,
+  CUSTOM_LABEL_MAX,
 } from '../lib/contourLines';
 import { makeBandsForRange } from '../lib/colormap';
 import type { DemRaster } from '../lib/dem';
@@ -97,6 +99,10 @@ interface Props {
   /// Source of the currently-active DEM — "auto" means AWS Terrain Tiles,
   /// "upload" means a user-supplied GeoTIFF.
   demSource: 'auto' | 'upload';
+  /// The active elevation raster, for the DXF import's "Z is an absolute top
+  /// level" option: a barrier stores height ABOVE ground, so the terrain under
+  /// each vertex has to be subtracted from the drawing's level.
+  dem?: DemRaster | null;
   /// Active tab — lifted into ProjectScreen so placement can switch tabs.
   activeTab: Tab;
   setActiveTab(t: Tab): void;
@@ -1259,7 +1265,8 @@ function ImportTab(props: Props) {
 
       {dxfOpen && (
         <DxfImportModal
-          nextBarrierIndex={(project.barriers?.length ?? 0) + 1}
+          nextBarrierIndex={nextBarrierIndexFor(project.barriers ?? [])}
+          groundAt={props.dem ? (ll) => props.dem!.elevation(ll[0], ll[1]) : null}
           onClose={() => setDxfOpen(false)}
           onImport={(result) => {
             const layers: ReferenceLayer[] = result.referenceFeaturesByLayer.map((l, i) => ({
@@ -1277,17 +1284,26 @@ function ImportTab(props: Props) {
             });
             // Fly to what was imported, so a wrong CRS is visible at once
             // rather than being discovered later as an empty map.
-            const pts = [
-              ...result.barriers.flatMap((b) => b.polylineLatLng),
-              ...result.referenceFeaturesByLayer.flatMap((l) => l.features.flatMap((f) => f.coords)),
-            ];
-            if (pts.length && props.onAfterImport) {
-              const lats = pts.map((p) => p[0]);
-              const lngs = pts.map((p) => p[1]);
-              props.onAfterImport({
-                sw: [Math.min(...lats), Math.min(...lngs)],
-                ne: [Math.max(...lats), Math.max(...lngs)],
-              });
+            //
+            // Accumulated in a loop, never via `Math.min(...pts)`: spreading an
+            // array of a few hundred thousand vertices — which a drawing full
+            // of symbol blocks reaches — throws RangeError, and it would throw
+            // AFTER the project had been updated, leaving the import applied,
+            // the toast unshown and the dialog open.
+            let minLat = Infinity; let minLng = Infinity;
+            let maxLat = -Infinity; let maxLng = -Infinity;
+            const see = (p: [number, number]) => {
+              if (p[0] < minLat) minLat = p[0];
+              if (p[0] > maxLat) maxLat = p[0];
+              if (p[1] < minLng) minLng = p[1];
+              if (p[1] > maxLng) maxLng = p[1];
+            };
+            for (const b of result.barriers) for (const p of b.polylineLatLng) see(p);
+            for (const l of result.referenceFeaturesByLayer) {
+              for (const f of l.features) for (const p of f.coords) see(p);
+            }
+            if (Number.isFinite(minLat) && props.onAfterImport) {
+              props.onAfterImport({ sw: [minLat, minLng], ne: [maxLat, maxLng] });
             }
             notify.success(result.summary.join(' · '), { title: 'DXF imported' });
           }}
@@ -1339,9 +1355,13 @@ function ResultsTab(props: Props) {
     const custom = (props.customContours ?? [])
       .filter((c) => c.export && Number.isFinite(c.levelDb));
     const traced = buildContourLines(grid, unionContourLevels(thresholds, custom));
+    const named = customTracesFrom(traced, custom).map((c) => c.set);
     const sets = [
-      ...steppedTracesFrom(traced, thresholds),
-      ...customTracesFrom(traced, custom).map((c) => c.set),
+      // A level a named line already covers is not also written as a stepped
+      // contour — the geometry is identical, so it would be one contour
+      // appearing as two features.
+      ...steppedTracesFrom(traced, thresholds, named.map((s) => s.threshold)),
+      ...named,
     ];
     if (format === 'kml') {
       download(exportContoursKml(project, sets), 'contours', 'kml');
@@ -1651,6 +1671,39 @@ function LayersTab(props: Props) {
 /// survive a white halo on satellite imagery.
 const CUSTOM_LINE_COLORS = ['#dc2626', '#ea580c', '#ca8a04', '#16a34a', '#0891b2', '#2563eb', '#7c3aed', '#111827'];
 
+/// A text input that commits on blur or Enter rather than on every keystroke.
+///
+/// The map keys its contour redraw on the line's fields, and the redraw empties
+/// the overlay synchronously before refilling it from a worker — so committing
+/// per character made every contour on screen blink once per letter typed. The
+/// same shape as `NumberDraft` in the BESS wizard, for text.
+function TextDraft(props: {
+  value: string;
+  onCommit(v: string): void;
+  placeholder?: string;
+  maxLength?: number;
+}) {
+  const [draft, setDraft] = useState(props.value);
+  const [focused, setFocused] = useState(false);
+  useEffect(() => { if (!focused) setDraft(props.value); }, [props.value, focused]);
+  const commit = () => { if (draft !== props.value) props.onCommit(draft); };
+  return (
+    <input
+      type="text"
+      value={draft}
+      placeholder={props.placeholder}
+      maxLength={props.maxLength}
+      onFocus={() => setFocused(true)}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => { setFocused(false); commit(); }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') { commit(); (e.target as HTMLInputElement).blur(); }
+        if (e.key === 'Escape') { setDraft(props.value); (e.target as HTMLInputElement).blur(); }
+      }}
+    />
+  );
+}
+
 function CustomContourCard(props: {
   lines: CustomContourLine[];
   setLines?(v: CustomContourLine[]): void;
@@ -1688,10 +1741,15 @@ function CustomContourCard(props: {
         <div key={l.id} className="custom-line-row">
           <div className="grid-2">
             <Field label="Name">
-              <input
-                type="text"
+              {/* Capped to the shapefile's LABEL field width, so what is typed
+                  is what every export carries: the KML kept the full name while
+                  the DBF silently cut it at 40 characters, and the two exports
+                  of one figure disagreed about the same line. */}
+              <TextDraft
                 value={l.label}
-                onChange={(e) => patch(l.id, { label: e.target.value })}
+                maxLength={CUSTOM_LABEL_MAX}
+                placeholder="Night limit"
+                onCommit={(v) => patch(l.id, { label: v })}
               />
             </Field>
             <Field label="Level (dB)">
@@ -1796,7 +1854,12 @@ function AnnotationsCard(props: Props) {
                   type="text"
                   value={a.label ?? ''}
                   placeholder={dimensionLabel({ ...a, label: undefined })}
-                  onChange={(e) => onUpdateAnnotation(a.id, { label: e.target.value || undefined })}
+                  // Empty means "use the measurement", but `|| undefined` also
+                  // swallowed "0" — so a label could never begin with a zero,
+                  // and the keystroke visibly vanished.
+                  onChange={(e) => onUpdateAnnotation(
+                    a.id, { label: e.target.value === '' ? undefined : e.target.value },
+                  )}
                 />
               </Field>
             )}

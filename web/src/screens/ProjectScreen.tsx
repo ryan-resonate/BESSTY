@@ -38,6 +38,7 @@ import type {
   Annotation, Barrier, CustomContourLine, Project, Receiver, Source, SourceKind,
 } from '../lib/types';
 import { settingsOf } from '../lib/types';
+import { sanitiseCustomContours } from '../lib/contourLines';
 import { calcAreaCorners } from '../lib/geo';
 import { pushEscHandler } from '../lib/escStack';
 import { Diagnostics, type Diagnostic } from '../lib/diagnostics';
@@ -780,6 +781,10 @@ export function ProjectScreen() {
       const saved = sanitised.settings?.display;
       if (saved) {
         const merged = { ...DEFAULT_DISPLAY, ...saved } as DisplayState;
+        // The spread above is unchecked, and this block comes off a document a
+        // collaborator can write. Custom lines carry a colour that ends up
+        // inside a style attribute, so they are normalised rather than trusted.
+        merged.customContours = sanitiseCustomContours(saved.customContours);
         displayRef.current = merged;
         setDisplayState(merged);
       }
@@ -1574,6 +1579,7 @@ export function ProjectScreen() {
         lastSolveMs={lastSolveMs}
         setDem={setDemAndSource}
         demSource={demSource}
+        dem={dem}
         baseMap={baseMap} setBaseMap={setBaseMap}
         showContours={showContours} setShowContours={setShowContours}
         showGridDebug={showGridDebug} setShowGridDebug={setShowGridDebug}

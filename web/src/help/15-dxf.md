@@ -5,7 +5,9 @@ section: Building a model
 
 **Import → Import DXF…** reads a site layout from a CAD drawing, so walls and site context come straight from the civil drawing rather than being traced by eye.
 
-ASCII DXF only, up to 50 MB. If the file is binary, re-save it as ASCII DXF. Lines, polylines, arcs, circles, text and block references are read; block content is expanded through its rotation and scale. Everything else — splines, hatches, dimensions — is listed in the dialog and skipped, so you can see what was left behind.
+ASCII DXF only, up to 50 MB. If the file is binary, re-save it as ASCII DXF. Lines, polylines, arcs, circles, text and block references are read; block content is expanded about its base point through its rotation and scale. Everything else — splines, hatches, meshes, curved polyline segments — is listed in the dialog and skipped, so you can see what was left behind.
+
+Paper-space geometry (title blocks, sheet borders, legends) is skipped. It is drawn in sheet coordinates rather than site ones, so importing it would stretch the drawing's extent across half a continent and wreck the units step below.
 
 ## Units
 
@@ -24,7 +26,7 @@ Drawings on a local site grid (not real-world coordinates) cannot be placed auto
 Each layer maps to one of three things:
 
 - **Reference** — drawn on the map, never affects levels. The default for everything, because importing a drawing should not silently add objects that change your results.
-- **Walls** — becomes barriers, which screen sound. Give the layer a height. If its polylines carry Z values, you can instead treat Z as an absolute top level, and the terrain under each vertex is subtracted to get the height above ground.
+- **Walls** — becomes barriers, which screen sound. Give the layer a height. If its polylines carry Z values **and terrain is loaded**, you can instead treat Z as an absolute top level, and the ground under each vertex is subtracted to get the height above ground. Without terrain there is nothing to subtract, so the option is not offered.
 - **Skip** — ignored.
 
 Text on an imported layer becomes labelled points. The whole import lands as one step, so Ctrl+Z undoes all of it.

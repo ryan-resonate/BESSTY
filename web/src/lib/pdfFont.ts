@@ -22,10 +22,14 @@ let loaded: Promise<{ regular: string; bold: string }> | null = null;
 
 function load() {
   if (!loaded) {
-    loaded = import('./pdfFont.generated').then((m) => ({
-      regular: m.ARIMO_REGULAR_B64,
-      bold: m.ARIMO_BOLD_B64,
-    }));
+    loaded = import('./pdfFont.generated')
+      .then((m) => ({ regular: m.ARIMO_REGULAR_B64, bold: m.ARIMO_BOLD_B64 }))
+      // A cached REJECTED promise is permanent: the font is a separately-hashed
+      // chunk, so one transient 404 (stale deploy, flaky network) would drop
+      // every export for the rest of the session into Helvetica while the
+      // dialog still promised Arimo. Clearing the cache lets the next export
+      // try again.
+      .catch((e) => { loaded = null; throw e; });
   }
   return loaded;
 }

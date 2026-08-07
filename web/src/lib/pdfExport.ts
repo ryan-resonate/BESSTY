@@ -153,6 +153,10 @@ export async function composeBasemap(
   const r = tileRange(extent, z);
   const cols = r.x1 - r.x0 + 1;
   const rows = r.y1 - r.y0 + 1;
+  // No DOM, no basemap. The signature already promises `| null`, and every
+  // caller handles it by drawing a grey rectangle instead — throwing a
+  // ReferenceError here would take the whole export down over its backdrop.
+  if (typeof document === 'undefined') return null;
   const canvas = document.createElement('canvas');
   canvas.width = cols * 256;
   canvas.height = rows * 256;
