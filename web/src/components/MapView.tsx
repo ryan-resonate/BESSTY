@@ -14,6 +14,7 @@ import { exceedsLimit, limitComparisonFor, type LimitComparison } from '../lib/l
 import type { ReceiverResult, GridResult } from '../lib/solver';
 import { describeBarnesHut } from '../lib/solver';
 import { escapeHtml, safeCssColor } from '../lib/html';
+import { weightingFor, weightingLabel } from '../lib/weighting';
 import { paletteRgb, paletteCss, type Palette, tForDb, makeBandsForRange } from '../lib/colormap';
 import {
   buildContourLinesAsync, customTracesFrom, steppedTracesFrom, unionContourLevels,
@@ -193,6 +194,9 @@ function receiverMarker(
   groupColor: string | undefined,
   mode: LimitComparison,
   showLimit: boolean,
+  /// How the level is written — dB(A) / dB(C) / dB(Z). A marker that says
+  /// dB(A) over a C-weighted solve is a wrong number, not a wrong label.
+  unitLabel: string,
 ): L.DivIcon {
   // The pass/fail rule lives in one place (I17) — never compare inline here.
   // Note the DISPLAYED level keeps full precision: only the verdict rounds, so
@@ -212,7 +216,7 @@ function receiverMarker(
     className: 'recv-marker',
     html: `<div style="display:flex;flex-direction:column;align-items:center;gap:0;pointer-events:auto">
       <div style="background:rgba(255,255,255,0.92);backdrop-filter:blur(6px);border:${selected ? 2 : 1.5}px solid ${selected ? '#F2CB00' : '#2A2A2A'};border-radius:99px;padding:2px 9px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;color:${colour};white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,.3);text-align:center">
-        <div>${text} <span style="opacity:.6;font-weight:400">dB(A)</span></div>
+        <div>${text} <span style="opacity:.6;font-weight:400">${unitLabel}</span></div>
         ${limitLine}
       </div>
       <div style="width:0;height:8px;border-left:1.5px dashed ${colour}"></div>
@@ -1760,6 +1764,7 @@ export function MapView({
         icon: receiverMarker(
           r, dbA && isFinite(dbA) ? dbA : null, activeLimit, sel,
           groupColorById.get(r.id), limitMode, showReceiverLimits ?? false,
+          weightingLabel(weightingFor(project)),
         ),
         title: r.name,
         opacity: dimNonSelected(r.id),

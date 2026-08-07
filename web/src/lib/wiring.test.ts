@@ -121,6 +121,32 @@ test('a component that returns null without its callbacks still gets them', () =
   );
 });
 
+test('no result or limit label spells dB(A) into the source', () => {
+  // The assessment weighting is selectable, so a hardcoded "dB(A)" on anything
+  // that reports a LEVEL or a LIMIT is a label that contradicts its own number
+  // the moment a project is set to dB(C). Source sound power in the catalog is
+  // genuinely A-weighted whatever the project does, so that file is exempt.
+  const exempt = ['CatalogScreen.tsx', 'weighting.ts', 'SettingsWindow.tsx'];
+  const offenders: string[] = [];
+  for (const { path, text } of FILES) {
+    if (exempt.some((e) => path.endsWith(e))) continue;
+    // Comments explain the convention; only rendered strings matter.
+    const code = text.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const m of code.matchAll(/dB\(A\)/g)) {
+      const around = code.slice(Math.max(0, m.index! - 90), m.index! + 10);
+      // The Settings dropdown legitimately names all three weightings, and the
+      // dBC-dBA screening column is defined as that pair whatever is selected.
+      if (/value="A"|dbc_minus_dba|dB\(C\)\s*−\s*dB\(A\)|Lw /.test(around)) continue;
+      offenders.push(`${path.replace(SRC, 'src')}: …${around.replace(/\s+/g, ' ').slice(-70)}`);
+    }
+  }
+  assert.deepEqual(
+    offenders, [],
+    'these labels are pinned to dB(A) but the level they describe is not:\n  '
+    + offenders.join('\n  '),
+  );
+});
+
 test('Escape is handled only through the shared stack', () => {
   // Multiple window-level Escape listeners are siblings: stopPropagation does
   // not separate them, so one keypress fires every overlay's handler at once.

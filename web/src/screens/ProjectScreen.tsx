@@ -39,6 +39,7 @@ import type {
 } from '../lib/types';
 import { settingsOf } from '../lib/types';
 import { sanitiseCustomContours } from '../lib/contourLines';
+import { weightingFor } from '../lib/weighting';
 import { calcAreaCorners } from '../lib/geo';
 import { pushEscHandler } from '../lib/escStack';
 import { Diagnostics, type Diagnostic } from '../lib/diagnostics';
@@ -1016,6 +1017,10 @@ export function ProjectScreen() {
       // grid — without this the grid silently keeps the old terrain screening.
       topography: project.settings?.topography,
       meteorology: project.settings?.meteorology,
+      // The assessment weighting changes the number in every cell, not just
+      // its label, so a grid computed under one weighting is wrong under
+      // another and has to be recomputed rather than relabelled.
+      assessment: project.settings?.assessment,
       gridReceiverHeight: project.settings?.general.defaultReceiverHeight,
       calc: project.calculationArea,
       gridSpacingM,
@@ -1709,7 +1714,7 @@ export function ProjectScreen() {
           />
         </div>
 
-        <Legend palette={palette} domain={dbDomain} stepDb={contourStepDb} receiverDb={receiverDbList} />
+        <Legend palette={palette} domain={dbDomain} stepDb={contourStepDb} receiverDb={receiverDbList} weighting={weightingFor(project)} />
 
         {error && <div className="map-toast error">solver error: {error}</div>}
         </ErrorBoundary>

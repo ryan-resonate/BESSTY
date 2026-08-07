@@ -15,6 +15,7 @@ import { buildTerrainField } from './terrainField';
 import type { ResolvedSource, SceneSettings } from './sceneBuilder';
 import type { DemRaster } from './dem';
 import { latLngToLocalMetres } from './geo';
+import { weightsFor } from './weighting';
 
 const wasmPath = process.env.BEESTY_WASM_PATH
   ?? new URL('../wasm/iso9613_wasm_bg.wasm', import.meta.url).pathname;
@@ -22,8 +23,12 @@ await init({ module_or_path: readFileSync(wasmPath) });
 
 const ORIGIN: [number, number] = [-27.0, 152.0];
 const lw10 = () => Array.from({ length: 10 }, (_, i) => (i < 2 ? -100 : 95));
-/// IEC 61672-1 octave A-weighting, for the one-shot cross-check.
-const OCTAVE_AW_T = [-56.7, -39.4, -26.2, -16.1, -8.6, -3.2, 0.0, 1.2, 1.0, -1.1];
+/// The SAME weights the grid uses, from the shared module. A local copy here
+/// made this cross-check compare the grid against a second implementation of
+/// the weighting rather than against the one-shot solve — so it went red when
+/// the shared curve moved to exact band centres, even though both paths still
+/// agreed with each other.
+const OCTAVE_AW_T = weightsFor('octave', 'A');
 
 const SETTINGS: SceneSettings = {
   standard: 'iso9613-2:2024',

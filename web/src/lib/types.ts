@@ -408,8 +408,21 @@ export interface DisplaySettings {
   gridSpacingTouched?: boolean;
 }
 
+/// How the assessment level is formed from the solved spectrum.
+export interface AssessmentSettings {
+  /// Frequency weighting applied when the per-band levels are summed.
+  /// Absent = `'A'`, which is what every project computed with before this
+  /// existed. `'C'` is the low-frequency screening weighting; `'Z'` is
+  /// un-weighted.
+  ///
+  /// This changes the number, not just its label, so switching it invalidates
+  /// the contour grid exactly as changing the standard does.
+  weighting?: 'A' | 'C' | 'Z';
+}
+
 export interface ProjectSettings {
   ground: { defaultG: number };
+  assessment?: AssessmentSettings;
   /// Presentational state — see `DisplaySettings`. Never affects computed levels.
   display?: DisplaySettings;
   /// I18 — specular reflections off barriers and source containers.

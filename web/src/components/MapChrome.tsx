@@ -10,21 +10,24 @@ import { exceedsLimit, limitComparisonFor } from '../lib/limits';
 import type { GridResult, ReceiverResult } from '../lib/solver';
 import type { Palette } from '../lib/colormap';
 import { paletteCss, makeBandsForRange } from '../lib/colormap';
+import { weightingLabel, type Weighting } from '../lib/weighting';
 
 interface LegendProps {
   palette: Palette;
   domain: { min: number; max: number };
   stepDb?: number;
   receiverDb: number[];
+  /// Assessment weighting, so the legend cannot claim dB(A) over a dB(C) grid.
+  weighting?: Weighting;
 }
 
-export function Legend({ palette, domain, stepDb, receiverDb }: LegendProps) {
+export function Legend({ palette, domain, stepDb, receiverDb, weighting = 'A' }: LegendProps) {
   const bands = makeBandsForRange(domain.min, domain.max, stepDb);
   const count = (lo: number, hi: number) =>
     receiverDb.filter((v) => isFinite(v) && v >= lo && v < hi).length;
   return (
     <div className="map-chrome legend">
-      <div className="chrome-title">Lp <span className="muted">dB(A)</span></div>
+      <div className="chrome-title">Lp <span className="muted">{weightingLabel(weighting)}</span></div>
       {bands.slice().reverse().map((b) => {
         const tCentre = (b.lo + b.hi) / 2;
         const t = Math.max(0, Math.min(1, (tCentre - domain.min) / (domain.max - domain.min || 1)));

@@ -28,6 +28,7 @@ import type {
   Project,
 } from './types';
 import { projectDOmegaDb } from './types';
+import { weightedTotal, weightingFor, weightsFor } from './weighting';
 import { lookupEntry, resolveContainer, sourceHeightFor, spectrumFor } from './catalog';
 import { type DemRaster, type DemRegion, captureDemRegion } from './dem';
 import {
@@ -82,28 +83,18 @@ export { projectDOmegaDb };
 export function bandCount(bs: 'octave' | 'oneThirdOctave'): number {
   return bs === 'oneThirdOctave' ? 31 : 10;
 }
-// A-weighting convention used throughout BESSTY:
+// Weighting convention used throughout BESSTY:
 //
 //   - The Rust solver always works in Z-weighted (un-weighted) per-band
 //     space. Catalog `LwA per band` data is converted to `Lw per band`
 //     by `lib/catalog::spectrumFor` BEFORE the WASM call (see the
 //     `weighting` field on `CatalogModeData`).
-//   - Per-band Lp out of the solver is therefore Z-weighted; we apply
-//     the IEC 61672-1 A-weighting offsets here when energy-summing into
-//     a total LpA in dB(A).
-
-/// A-weighting offsets per IEC 61672-1 — separate tables for the two band
-/// systems so we don't hand the wrong-length weights to a downstream sum.
-const OCTAVE_AW = new Float64Array([-56.7, -39.4, -26.2, -16.1, -8.6, -3.2, 0.0, 1.2, 1.0, -1.1]);
-const THIRD_OCT_AW = new Float64Array([
-  -70.4, -63.4, -56.7, -50.5, -44.7, -39.4, -34.6,
-  -30.2, -26.2, -22.5, -19.1, -16.1, -13.4, -10.9, -8.6, -6.6, -4.8,
-  -3.2,  -1.9,  -0.8,   0.0,   0.6,   1.0,   1.2,   1.3,   1.2,
-   1.0,   0.5,  -0.1,  -1.1,  -2.5,
-]);
-function aWeights(bs: 'octave' | 'oneThirdOctave'): Float64Array {
-  return bs === 'oneThirdOctave' ? THIRD_OCT_AW : OCTAVE_AW;
-}
+//   - Per-band Lp out of the solver is therefore Z-weighted; the assessment
+//     weighting is applied here when energy-summing into a total.
+//
+// The curves live in `lib/weighting.ts` — they used to be written out by hand
+// in this file, the grid and the exporters, and the three copies had already
+// drifted apart.
 
 let initialized: Promise<void> | null = null;
 
@@ -281,18 +272,14 @@ function sourceHagl(source: Source, project: Project): number | null {
   return sourceHeightFor(entry) + (source.elevationOffset ?? 0);
 }
 
-/// Energy-sum Z-weighted per-band Lp values into one total LpA in dB(A),
-/// applying the IEC 61672-1 A-weighting offsets at sum time. Per-band Lp
-/// out of the WASM solver is Z-weighted — see the A-weighting note above.
+/// Energy-sum Z-weighted per-band Lp values into one weighted total.
+///
+/// Kept as a thin alias over `weightedTotal` so the many call sites here read
+/// unchanged; the arithmetic and the curves live in `lib/weighting.ts`.
 /// `dOmegaDb` (default 0) is added uniformly to every band as a frequency-
 /// independent solid-angle correction — see ProjectSettings.dOmegaDb.
 function aWeightedTotal(perBandLp: Float64Array, aw: Float64Array, dOmegaDb: number = 0): number {
-  let aSum = 0;
-  const n = Math.min(perBandLp.length, aw.length);
-  for (let i = 0; i < n; i++) {
-    if (isFinite(perBandLp[i])) aSum += Math.pow(10, (perBandLp[i] + aw[i] + dOmegaDb) / 10);
-  }
-  return aSum > 0 ? 10 * Math.log10(aSum) : -Infinity;
+  return weightedTotal(perBandLp, aw, dOmegaDb);
 }
 
 function energySumPerBand(perSource: Array<{ perBandLp: Float64Array }>): Float64Array {
@@ -373,7 +360,7 @@ export async function evaluateProject(
   await ensureSolverReady();
 
   const origin = projectOrigin(project);
-  const aw = aWeights(project.scenario.bandSystem);
+  const aw = weightsFor(project.scenario.bandSystem, weightingFor(project));
   const n = bandCount(project.scenario.bandSystem);
   const cutoffM = propagationSettings(project).maxContributionDistanceM;
   const dOmega = projectDOmegaDb(project);
@@ -649,7 +636,7 @@ export function describeBarnesHut(project: Project, spacingM: number): BhDebug |
   const tree = buildSourceTree(project, project.scenario.bandSystem, project.scenario.windSpeed);
   if (!tree) return null;
 
-  const aw = aWeights(project.scenario.bandSystem);
+  const aw = weightsFor(project.scenario.bandSystem, weightingFor(project));
   const tiles: BhTileDebug[] = [];
   for (const t of gridTileLayout(ca, spacingM)) {
     const eff = walkSourceTreeForRegion(tree, t.region, cfg.treeAcceptanceTheta, cfg.maxContributionDistanceM);
@@ -782,6 +769,7 @@ function buildGridJob(
   return {
     cols, rows, dxM, dyM, origin, bounds,
     nBands: bandCount(project.scenario.bandSystem),
+    weighting: weightingFor(project),
     cutoffM,
     dOmegaDb: projectDOmegaDb(project),
     rxHeightAboveGround,

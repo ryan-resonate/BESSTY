@@ -6,6 +6,7 @@ import type {
 } from '../lib/types';
 import { DEFAULT_REFERENCE_STYLE } from '../lib/types';
 import { annotationsOf, dimensionLabel } from '../lib/annotations';
+import { weightingFor, weightingLabel } from '../lib/weighting';
 import { limitForPeriod, settingsOf } from '../lib/types';
 import { exceedsLimit, limitComparisonFor } from '../lib/limits';
 import type { ReceiverResult } from '../lib/solver';
@@ -440,6 +441,10 @@ function BulkEditPanel(props: {
   onBulkUpdateReceivers(patch: Partial<Receiver>): void;
 }) {
   const { project, selectedSources, selectedReceivers, onBulkUpdateSourcesByIds, onBulkUpdateReceivers } = props;
+  // Limits are read in the project's assessment weighting, so their labels
+  // have to say which one — a "Night limit dB(A)" field over a dB(C) project
+  // is a wrong number waiting to happen.
+  const unit = weightingLabel(weightingFor(project));
 
   // Group the selection by (kind, current model) so a mixed multi-type
   // selection can retarget each type independently — e.g. all BESS → model X,
@@ -561,14 +566,14 @@ function BulkEditPanel(props: {
             {' '}— blank fields are left untouched on Apply.
           </div>
           <div className="grid-2">
-            <Field label="Day limit dB(A)">
+            <Field label={`Day limit ${unit}`}>
               <NumericInput min={20} max={80} step={1} placeholder="—"
                 value={rxDraft.limitDayDbA}
                 allowEmpty onChange={() => undefined}
                 onChangeOptional={(v) => setRx('limitDayDbA', v)}
               />
             </Field>
-            <Field label="Evening limit dB(A)">
+            <Field label={`Evening limit ${unit}`}>
               <NumericInput min={20} max={80} step={1} placeholder="—"
                 value={rxDraft.limitEveningDbA}
                 allowEmpty onChange={() => undefined}
@@ -577,7 +582,7 @@ function BulkEditPanel(props: {
             </Field>
           </div>
           <div className="grid-2">
-            <Field label="Night limit dB(A)">
+            <Field label={`Night limit ${unit}`}>
               <NumericInput min={20} max={80} step={1} placeholder="—"
                 value={rxDraft.limitNightDbA}
                 allowEmpty onChange={() => undefined}
@@ -942,6 +947,9 @@ function AreaTab(props: Props) {
 
 function ReceiversTab(props: Props) {
   const { project, setProject, results, selectedIds, onSelect, addMode, setAddMode, onSelectGroup } = props;
+  // Levels and limits are both read in the project's assessment weighting, so
+  // the label has to follow it rather than being spelled dB(A) in the source.
+  const unit = weightingLabel(weightingFor(project));
 
   function updateReceiver(id: string, patch: Partial<Receiver>) {
     setProject({
@@ -999,10 +1007,10 @@ function ReceiversTab(props: Props) {
                 />
               </div>
               <div className="item-meta">
-                limit {activeLimit} dB(A) ·{' '}
+                limit {activeLimit} {unit} ·{' '}
                 {result && isFinite(result.totalDbA) ? (
                   <span style={{ color: fail ? 'var(--red)' : 'var(--green)', fontWeight: 600 }}>
-                    {result.totalDbA.toFixed(1)} dB(A) {fail ? '✗' : '✓'}
+                    {result.totalDbA.toFixed(1)} {unit} {fail ? '✗' : '✓'}
                   </span>
                 ) : <span className="muted">— run to compute</span>}
               </div>
@@ -1016,17 +1024,17 @@ function ReceiversTab(props: Props) {
                 </span>
                 <PeriodLimitInput
                   label="D" period="day" active={project.scenario.period === 'day'}
-                  value={r.limitDayDbA}
+                  value={r.limitDayDbA} unit={unit}
                   onChange={(v) => updateReceiver(r.id, { limitDayDbA: v })}
                 />
                 <PeriodLimitInput
                   label="E" period="evening" active={project.scenario.period === 'evening'}
-                  value={r.limitEveningDbA}
+                  value={r.limitEveningDbA} unit={unit}
                   onChange={(v) => updateReceiver(r.id, { limitEveningDbA: v })}
                 />
                 <PeriodLimitInput
                   label="N" period="night" active={project.scenario.period === 'night'}
-                  value={r.limitNightDbA}
+                  value={r.limitNightDbA} unit={unit}
                   onChange={(v) => updateReceiver(r.id, { limitNightDbA: v })}
                 />
                 <button className="x-btn" onClick={() => removeReceiver(r.id)}>✕</button>
@@ -2265,6 +2273,34 @@ export function SettingsTab(props: SettingsTabProps) {
 
       {tab === 'calculation' && (
       <section className="sp-section">
+        <h3><span>Assessment weighting</span></h3>
+        <Field label="Levels are reported in">
+          <select
+            value={settings.assessment?.weighting ?? 'A'}
+            onChange={(e) => update({
+              assessment: {
+                ...settings.assessment,
+                weighting: e.target.value as 'A' | 'C' | 'Z',
+              },
+            })}
+          >
+            <option value="A">dB(A) — A-weighted (default)</option>
+            <option value="C">dB(C) — C-weighted</option>
+            <option value="Z">dB(Z) — un-weighted</option>
+          </select>
+        </Field>
+        <div className="hint">
+          Applies to every reported level, the contour grid and the receiver
+          limits, which are read in the same weighting. Changing it re-runs the
+          grid: it changes the numbers, not just the label. A <b>dB(C) − dB(A)</b>
+          column is exported whatever this is set to, as a low-frequency
+          screening indicator.
+        </div>
+      </section>
+      )}
+
+      {tab === 'calculation' && (
+      <section className="sp-section">
         <h3><span>Standard</span></h3>
         <Field label="ISO 9613-2 edition">
           <select
@@ -2736,6 +2772,8 @@ function PeriodLimitInput(props: {
   period: 'day' | 'evening' | 'night';
   active: boolean;
   value: number;
+  /// How the limit is written — the project's assessment weighting.
+  unit: string;
   onChange(v: number): void;
 }) {
   // Anything non-finite (NaN coming through from a botched import) renders
@@ -2745,7 +2783,7 @@ function PeriodLimitInput(props: {
   const safeValue = Number.isFinite(props.value) ? props.value : '';
   const fallback = props.period === 'day' ? 50 : props.period === 'evening' ? 45 : 40;
   return (
-    <span title={`${props.period} limit dB(A)`} style={{
+    <span title={`${props.period} limit ${props.unit}`} style={{
       display: 'inline-flex', alignItems: 'center', gap: 2,
       padding: '0 4px', borderRadius: 3,
       background: props.active ? 'var(--yellow)' : 'transparent',

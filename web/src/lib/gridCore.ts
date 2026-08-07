@@ -23,6 +23,7 @@ import {
 // terrain sampler can share them). Re-exported here for existing importers.
 export { latLngToLocalMetres, approxDistanceM } from './geo';
 import { latLngToLocalMetres } from './geo';
+import { weightsFor } from './weighting';
 
 /// Topography settings. Sampling resolution and ridge selection are the
 /// engine's job now — all that survives is the DEM cleanup knob.
@@ -108,6 +109,9 @@ export interface GridJob {
   origin: [number, number];
   bounds: { sw: [number, number]; ne: [number, number] };
   nBands: number;
+  /// Assessment weighting for the cell totals. Absent = A, matching every
+  /// grid computed before the setting existed.
+  weighting?: 'A' | 'C' | 'Z';
   cutoffM: number; dOmegaDb: number;
   rxHeightAboveGround: number;
   /// Drawn barriers, mapped to Wall obstacles per tile scene.
@@ -136,14 +140,6 @@ export interface GridJob {
   tiles: GridTile[];
 }
 
-/// A-weighting offsets per IEC 61672-1, indexed by band count.
-const OCTAVE_AW = [-56.7, -39.4, -26.2, -16.1, -8.6, -3.2, 0.0, 1.2, 1.0, -1.1];
-const THIRD_OCT_AW = [
-  -70.4, -63.4, -56.7, -50.5, -44.7, -39.4, -34.6,
-  -30.2, -26.2, -22.5, -19.1, -16.1, -13.4, -10.9, -8.6, -6.6, -4.8,
-  -3.2, -1.9, -0.8, 0.0, 0.6, 1.0, 1.2, 1.3, 1.2,
-  1.0, 0.5, -0.1, -1.1, -2.5,
-];
 
 /// Energy-sum the Z-weighted per-source band levels reaching one cell into a
 /// single dB(A) total, applying A-weighting at sum time. `bands` arrives per
@@ -152,7 +148,7 @@ const THIRD_OCT_AW = [
 /// `DΩ` is deliberately NOT included here — it is added after the floor test in
 /// the caller, because the −120 dB display floor is applied to the un-corrected
 /// level (otherwise a +3 dB `DΩ` would lift cells that should read as floor).
-function totalDbaFor(contributions: number[][], aw: number[]): number {
+function totalDbaFor(contributions: number[][], aw: ArrayLike<number>): number {
   let aSum = 0;
   for (const bands of contributions) {
     const n = Math.min(bands.length, aw.length);
@@ -227,7 +223,10 @@ export function runBatchedGrid(
   const R = 6371008.8;
   const lat0 = (origin[0] * Math.PI) / 180;
   const dbA = new Float32Array(cols * rows).fill(-120);
-  const aw = nBands === 31 ? THIRD_OCT_AW : OCTAVE_AW;
+  // Weighting comes from the job, not from a table in this file: the grid and
+  // the point receivers must agree, and the way they stopped agreeing before
+  // was each keeping its own copy of the curve.
+  const aw = weightsFor(nBands === 31 ? 'oneThirdOctave' : 'octave', job.weighting ?? 'A');
 
   let tilesDone = 0;
   for (const tile of tiles) {

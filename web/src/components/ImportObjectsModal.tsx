@@ -295,9 +295,9 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
         { key: 'name', label: 'Name attribute' },
         ...xy,
         { key: 'heightAboveGroundM', label: 'Height above ground (m)' },
-        { key: 'limitDayDbA', label: 'Day limit dB(A)' },
-        { key: 'limitEveningDbA', label: 'Evening limit dB(A)' },
-        { key: 'limitNightDbA', label: 'Night limit dB(A)' },
+        { key: 'limitDayDbA', label: 'Day limit (assessment weighting)' },
+        { key: 'limitEveningDbA', label: 'Evening limit (assessment weighting)' },
+        { key: 'limitNightDbA', label: 'Night limit (assessment weighting)' },
       ];
     }
     return [
@@ -422,7 +422,7 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
                         onChange={setDefaultHeight} />
                     </label>
                     <label className="fld">
-                      <span>Day limit dB(A)</span>
+                      <span>Day limit</span>
                       <NumericInput min={20} max={80}
                         value={defaultLimitDay} fallback={50}
                         onChange={setDefaultLimitDay} />
@@ -430,13 +430,13 @@ export function ImportObjectsModal({ project, setProject, initialKind = 'receive
                   </div>
                   <div className="grid-2">
                     <label className="fld">
-                      <span>Evening limit dB(A)</span>
+                      <span>Evening limit</span>
                       <NumericInput min={20} max={80}
                         value={defaultLimitEvening} fallback={45}
                         onChange={setDefaultLimitEvening} />
                     </label>
                     <label className="fld">
-                      <span>Night limit dB(A)</span>
+                      <span>Night limit</span>
                       <NumericInput min={20} max={80}
                         value={defaultLimitNight} fallback={40}
                         onChange={setDefaultLimitNight} />

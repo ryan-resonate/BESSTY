@@ -8,6 +8,11 @@ Settings open in a floating window from the **gear button in the top-right of th
 ## Calculation
 
 - **Band system** — octave (10 bands) is faster; one-third octave (31 bands) catches narrowband content. Source data held in the other band system is folded automatically: third-octave to octave by energy sum, octave to third-octave by distributing equally across the three children.
+- **Assessment weighting** — dB(A) (default), dB(C) or dB(Z). It applies to every reported level, the contour grid and the receiver limits, which are read in the same weighting; labels follow it everywhere. It changes the numbers rather than just the label, so switching re-runs the grid.
+
+  A **dB(C) − dB(A)** column is exported whatever the setting, as the usual low-frequency screening indicator: a large difference says the spectrum is low-frequency dominated and may deserve a separate look.
+
+  The weightings are computed from the IEC 61672-1 pole frequencies at each band's **exact** midband frequency — the "16 Hz" band is really 15.85 Hz, and evaluating at the label instead would shift that band by 0.3 dB.
 - **Standard** — ISO 9613-2:1996 or :2024. They differ in the ground-effect geometry factor, the barrier `Dz` bracket and `Kmet`, plus the 2024-only annexes.
 - **Solid-angle correction** — 0 dB is the default (strict ISO 9613-2, matching SoundPLAN); +3 dB matches common practice that folds in the ground-reflection boost.
 - **Cmet** — meteorological correction per section 8.

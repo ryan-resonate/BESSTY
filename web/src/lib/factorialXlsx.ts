@@ -5,6 +5,7 @@
 // the community `xlsx` build cannot write.
 
 import ExcelJS from 'exceljs';
+import { weightingFor, weightingLabel } from './weighting';
 import type { Project, Receiver } from './types';
 import { limitForPeriod } from './types';
 import { exceedsLimit, limitComparisonFor } from './limits';
@@ -61,7 +62,7 @@ export async function buildFactorialXlsx(
   for (const rx of receivers) {
     const limit = limitForPeriod(rx, period);
     const ws = wb.addWorksheet((rx.name || rx.id).slice(0, 28));
-    metaRows(ws, `Receiver: ${rx.name || rx.id} — limit ${limit} dB(A) (${period})`);
+    metaRows(ws, `Receiver: ${rx.name || rx.id} — limit ${limit} ${weightingLabel(weightingFor(project))} (${period})`);
 
     styleHeader(ws.addRow([corner, ...battery.candidates.map((c) => c.label)]));
     inverter.candidates.forEach((inv, i) => {

@@ -17,6 +17,7 @@ import {
   leaderAttachOffset,
 } from './annotations';
 import { PDF_FONT, useHouseFont } from './pdfFont';
+import { weightingFor, weightingLabel } from './weighting';
 import { makeBandsForRange, paletteCss, type Palette } from './colormap';
 import {
   beginFrameClip, clipPolylineToRect, composeBasemap, drawAttribution, drawNorthArrow,
@@ -256,6 +257,7 @@ function drawReceivers(
   showNames: boolean,
 ) {
   const mode = limitComparisonFor(project);
+  const unit = weightingLabel(weightingFor(project));
   doc.setLineWidth(0.2);
   for (const r of project.receivers) {
     if (!Number.isFinite(r.latLng[0]) || !Number.isFinite(r.latLng[1])) continue;
@@ -273,7 +275,7 @@ function drawReceivers(
     doc.circle(x, y, 1.0, 'FD');
 
     // Label box, offset up-right so the dot stays visible.
-    const label = dbA != null ? `${dbA.toFixed(1)} dB(A)` : '—';
+    const label = dbA != null ? `${dbA.toFixed(1)} ${unit}` : '—';
     doc.setFontSize(6.5);
     const w = doc.getTextWidth(label) + 2;
     const h = showLimits ? 5.6 : 3.6;
@@ -429,7 +431,10 @@ function drawLegend(
   doc.rect(x, y, w, h, 'FD');
   doc.setFontSize(6);
   doc.setTextColor(30, 30, 30);
-  doc.text(bands.length ? 'Lp dB(A)' : 'Compliance lines', x + 2, y + 4);
+  doc.text(
+    bands.length ? `Lp ${weightingLabel(weightingFor(input.project))}` : 'Compliance lines',
+    x + 2, y + 4,
+  );
   bands.forEach((b, i) => {
     const t = Math.max(0, Math.min(1,
       ((b.lo + b.hi) / 2 - input.dbDomain.min) / (input.dbDomain.max - input.dbDomain.min || 1)));

@@ -18,6 +18,7 @@ import * as XLSX from 'xlsx';
 import { buildPolylineShapefile, buildPointShapefile, buildZip } from './shapefileWriter';
 import type { Project } from './types';
 import { projectDOmegaDb } from './types';
+import { weightedTotal, weightingFor, weightingLabel, weightsFor, type Weighting } from './weighting';
 import { exceedsLimit, limitComparisonFor } from './limits';
 import type { GridResult, ReceiverResult } from './solver';
 import type { ContourLineSet } from './contourLines';
@@ -49,6 +50,11 @@ interface ReceiverRow {
   lng: number;
   heightAboveGroundM: number;
   totalDbA: number | null;
+  /// dB(C) − dB(A) at the receiver. The standard low-frequency screening
+  /// indicator, so it is exported whatever the assessment weighting is: a
+  /// large value says the spectrum is LF-dominated and may need a separate
+  /// look, and it costs one extra sum over a spectrum already in hand.
+  cMinusA: number | null;
   limitDayDbA: number;
   limitEveningDbA: number;
   limitNightDbA: number;
@@ -58,6 +64,8 @@ interface ReceiverRow {
 }
 
 function receiverRows(project: Project, results: ReceiverResult[] | null): ReceiverRow[] {
+  const bs = project.scenario.bandSystem;
+  const dOmega = projectDOmegaDb(project);
   return project.receivers.map((r) => {
     const result = results?.find((x) => x.receiverId === r.id);
     const total = result && Number.isFinite(result.totalDbA) ? result.totalDbA : null;
@@ -66,6 +74,12 @@ function receiverRows(project: Project, results: ReceiverResult[] | null): Recei
       if (total == null) return '—';
       return exceedsLimit(total, limit, mode) ? 'fail' : 'pass';
     };
+    let cMinusA: number | null = null;
+    if (result?.perBandLp) {
+      const c = weightedTotalFor(result.perBandLp, bs, 'C', dOmega);
+      const a = weightedTotalFor(result.perBandLp, bs, 'A', dOmega);
+      if (Number.isFinite(c) && Number.isFinite(a)) cMinusA = c - a;
+    }
     return {
       id: r.id,
       name: r.name,
@@ -73,6 +87,7 @@ function receiverRows(project: Project, results: ReceiverResult[] | null): Recei
       lng: r.latLng[1],
       heightAboveGroundM: r.heightAboveGroundM,
       totalDbA: total,
+      cMinusA,
       limitDayDbA: r.limitDayDbA,
       limitEveningDbA: r.limitEveningDbA,
       limitNightDbA: r.limitNightDbA,
@@ -83,16 +98,23 @@ function receiverRows(project: Project, results: ReceiverResult[] | null): Recei
   });
 }
 
-const RX_HEADERS = [
-  'id', 'name', 'lat', 'lng', 'height_above_ground_m',
-  'total_dba', 'limit_day_dba', 'limit_evening_dba', 'limit_night_dba',
-  'pass_day', 'pass_evening', 'pass_night',
-];
+/// Column names carry the weighting actually used, so a dB(C) export cannot be
+/// mistaken for a dB(A) one by anyone reading the file later.
+function rxHeaders(weighting: Weighting): string[] {
+  const w = weighting.toLowerCase();
+  return [
+    'id', 'name', 'lat', 'lng', 'height_above_ground_m',
+    `total_db${w}`, 'dbc_minus_dba',
+    `limit_day_db${w}`, `limit_evening_db${w}`, `limit_night_db${w}`,
+    'pass_day', 'pass_evening', 'pass_night',
+  ];
+}
 
 function rxRowAsArray(r: ReceiverRow): Array<string | number> {
   return [
     r.id, r.name, r.lat, r.lng, r.heightAboveGroundM,
     r.totalDbA == null ? '' : r.totalDbA,
+    r.cMinusA == null ? '' : Number(r.cMinusA.toFixed(1)),
     r.limitDayDbA, r.limitEveningDbA, r.limitNightDbA,
     r.passDay, r.passEvening, r.passNight,
   ];
@@ -100,13 +122,13 @@ function rxRowAsArray(r: ReceiverRow): Array<string | number> {
 
 export function exportReceiversCsv(project: Project, results: ReceiverResult[] | null): Blob {
   const rows = receiverRows(project, results);
-  const csv = toCsv([RX_HEADERS, ...rows.map(rxRowAsArray)]);
+  const csv = toCsv([rxHeaders(weightingFor(project)), ...rows.map(rxRowAsArray)]);
   return new Blob([csv], { type: 'text/csv;charset=utf-8' });
 }
 
 export function exportReceiversXlsx(project: Project, results: ReceiverResult[] | null): Blob {
   const rows = receiverRows(project, results);
-  const ws = XLSX.utils.aoa_to_sheet([RX_HEADERS, ...rows.map(rxRowAsArray)]);
+  const ws = XLSX.utils.aoa_to_sheet([rxHeaders(weightingFor(project)), ...rows.map(rxRowAsArray)]);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Receivers');
   // Add a small "info" sheet with the scenario context — useful when the
@@ -117,6 +139,7 @@ export function exportReceiversXlsx(project: Project, results: ReceiverResult[] 
     ['Scenario period (active)', project.scenario.period],
     ['Wind speed (m/s @ 10 m)', project.scenario.windSpeed],
     ['Band system', project.scenario.bandSystem],
+    ['Assessment weighting', weightingLabel(weightingFor(project))],
     ['Generated', new Date().toISOString()],
   ];
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(info), 'Info');
@@ -134,29 +157,22 @@ interface ContribRow {
   contribDbA: number;
 }
 
-function aWeightedTotal(
+/// Sum a Z-weighted spectrum into a total in the project's assessment
+/// weighting.
+///
+/// This module used to carry its own copy of the A-weighting table, on the
+/// grounds that it is pure JS and must not depend on WASM init — true, but
+/// `lib/weighting.ts` is pure JS too. The copy had drifted: it weighted the
+/// 16 Hz band at the NOMINAL 16 Hz (-56.4 dB) while the solver used the exact
+/// band centre of 15.85 Hz (-56.7 dB), so an exported per-source contribution
+/// disagreed slightly with the receiver total it was supposed to break down.
+function weightedTotalFor(
   perBandLp: Float64Array,
   bandSystem: 'octave' | 'oneThirdOctave',
+  weighting: Weighting,
   dOmegaDb: number = 0,
 ): number {
-  // Local A-weight tables (kept in sync with solver.ts). Duplication is
-  // intentional — this module is pure JS, doesn't depend on WASM init.
-  // Per-band Lp out of the WASM solver is Z-weighted; A-weighting offsets
-  // are applied here at sum time. `dOmegaDb` is the project-wide
-  // solid-angle correction (see ProjectSettings.dOmegaDb).
-  const octAw = [-56.4, -39.4, -26.2, -16.1, -8.6, -3.2, 0.0, 1.2, 1.0, -1.1];
-  const tocAw = [
-    -70.4, -63.4, -56.7, -50.5, -44.7, -39.4, -34.6,
-    -30.2, -26.2, -22.5, -19.1, -16.1, -13.4, -10.9, -8.6, -6.6, -4.8,
-    -3.2,  -1.9,  -0.8,   0.0,   0.6,   1.0,   1.2,   1.3,   1.2,
-     1.0,   0.5,  -0.1,  -1.1,  -2.5,
-  ];
-  const aw = bandSystem === 'oneThirdOctave' ? tocAw : octAw;
-  let s = 0;
-  for (let i = 0; i < Math.min(perBandLp.length, aw.length); i++) {
-    if (Number.isFinite(perBandLp[i])) s += Math.pow(10, (perBandLp[i] + aw[i] + dOmegaDb) / 10);
-  }
-  return s > 0 ? 10 * Math.log10(s) : -Infinity;
+  return weightedTotal(perBandLp, weightsFor(bandSystem, weighting), dOmegaDb);
 }
 
 function perSourceContribRows(
@@ -173,7 +189,9 @@ function perSourceContribRows(
     const rx = project.receivers.find((r) => r.id === rxResult.receiverId);
     if (!rx) continue;
     for (const ps of rxResult.perSource) {
-      const dbA = aWeightedTotal(ps.perBandLp, project.scenario.bandSystem, projectDOmegaDb(project));
+      const dbA = weightedTotalFor(
+        ps.perBandLp, project.scenario.bandSystem, weightingFor(project), projectDOmegaDb(project),
+      );
       rows.push({
         receiverId: rxResult.receiverId,
         receiverName: rx.name,
@@ -269,7 +287,7 @@ export function exportContoursKml(project: Project, contours: ContourLineSet[]):
       // its level to identify it.
       const title = set.label
         ? `${set.label} (${set.threshold} dB) — line ${segIdx + 1}`
-        : `${set.threshold} dB(A) — line ${segIdx + 1}`;
+        : `${set.threshold} ${weightingLabel(weightingFor(project))} — line ${segIdx + 1}`;
       placemarks.push(
         `<Placemark><name>${xmlEscape(title)}</name>` +
         `<ExtendedData><Data name="threshold_dba"><value>${set.threshold}</value></Data>` +
