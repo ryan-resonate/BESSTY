@@ -408,6 +408,15 @@ header.app-header nav a:hover { background: var(--slate-1); }
 .row-checkbox { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink); }
 .seg.block { display: flex; }
 .seg.block button { flex: 1; }
+
+/* Custom contour lines (Layers → Custom lines). One bordered block per line so
+   several rows of name / level / style controls stay visually grouped. */
+.custom-line-row { border: 1px solid var(--light); border-radius: 6px; padding: 8px; margin-top: 8px; }
+.custom-line-style { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+.custom-line-style input[type="color"] { width: 30px; height: 24px; padding: 0; border: 1px solid var(--light); border-radius: 4px; background: none; cursor: pointer; }
+.custom-line-style label { display: flex; align-items: center; gap: 5px; font-size: 12px; }
+.custom-line-style label .fld, .custom-line-style label input[type="text"] { width: 52px; }
+.custom-line-style .x-btn { margin-left: auto; }
 .legend-foot { font-size: 10px; padding-top: 4px; border-top: 1px dashed var(--light); margin-top: 4px; text-align: center; }
 
 .catalog-screen {

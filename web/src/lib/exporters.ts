@@ -17,8 +17,9 @@
 import * as XLSX from 'xlsx';
 import { buildPolylineShapefile, buildPointShapefile, buildZip } from './shapefileWriter';
 import type { Project } from './types';
+import { projectDOmegaDb } from './types';
 import { exceedsLimit, limitComparisonFor } from './limits';
-import { projectDOmegaDb, type GridResult, type ReceiverResult } from './solver';
+import type { GridResult, ReceiverResult } from './solver';
 import type { ContourLineSet } from './contourLines';
 
 // ---------- Trigger download from a Blob ----------
@@ -264,9 +265,16 @@ export function exportContoursKml(project: Project, contours: ContourLineSet[]):
     for (let segIdx = 0; segIdx < set.lines.length; segIdx++) {
       const seg = set.lines[segIdx];
       const coords = seg.map(([lat, lng]) => `${lng},${lat},0`).join(' ');
+      // A named custom line leads with its name; a stepped contour has only
+      // its level to identify it.
+      const title = set.label
+        ? `${set.label} (${set.threshold} dB) — line ${segIdx + 1}`
+        : `${set.threshold} dB(A) — line ${segIdx + 1}`;
       placemarks.push(
-        `<Placemark><name>${set.threshold} dB(A) — line ${segIdx + 1}</name>` +
-        `<ExtendedData><Data name="threshold_dba"><value>${set.threshold}</value></Data></ExtendedData>` +
+        `<Placemark><name>${xmlEscape(title)}</name>` +
+        `<ExtendedData><Data name="threshold_dba"><value>${set.threshold}</value></Data>` +
+        (set.label ? `<Data name="label"><value>${xmlEscape(set.label)}</value></Data>` : '') +
+        `</ExtendedData>` +
         `<LineString><coordinates>${coords}</coordinates></LineString></Placemark>`,
       );
     }
@@ -290,22 +298,26 @@ export function exportContoursKml(project: Project, contours: ContourLineSet[]):
 /// and ended up writing every record's threshold as the first feature's
 /// value (everything was "25.0" regardless of the line's actual dB).
 export function exportContoursShp(_project: Project, contours: ContourLineSet[]): Blob {
+  // `LABEL` carries a custom line's name and is empty for stepped contours, so
+  // one export can hold both and GIS consumers can filter on it.
+  const fields = [
+    { name: 'THRESH_DBA', type: 'N' as const, width: 8, decimals: 2 },
+    { name: 'LABEL', type: 'C' as const, width: 40 },
+  ];
   const features: { coords: Array<[number, number]>; properties: Record<string, number | string> }[] = [];
   for (const set of contours) {
     for (const seg of set.lines) {
       features.push({
         // Shapefile coords are (lng, lat) — same as GeoJSON Position.
         coords: seg.map(([lat, lng]) => [lng, lat] as [number, number]),
-        properties: { THRESH_DBA: set.threshold },
+        properties: { THRESH_DBA: set.threshold, LABEL: set.label ?? '' },
       });
     }
   }
   if (features.length === 0) {
     // Build a valid (but empty) bundle so the user gets feedback rather
     // than a crash when the grid hasn't crossed any threshold yet.
-    const bundle = buildPolylineShapefile([], [
-      { name: 'THRESH_DBA', type: 'N', width: 8, decimals: 2 },
-    ]);
+    const bundle = buildPolylineShapefile([], fields);
     return buildZip([
       { name: 'noise_contours.shp', bytes: new Uint8Array(bundle.shp) },
       { name: 'noise_contours.shx', bytes: new Uint8Array(bundle.shx) },
@@ -313,9 +325,7 @@ export function exportContoursShp(_project: Project, contours: ContourLineSet[])
       { name: 'noise_contours.prj', bytes: new TextEncoder().encode(bundle.prj) },
     ]);
   }
-  const bundle = buildPolylineShapefile(features, [
-    { name: 'THRESH_DBA', type: 'N', width: 8, decimals: 2 },
-  ]);
+  const bundle = buildPolylineShapefile(features, fields);
   return buildZip([
     { name: 'noise_contours.shp', bytes: new Uint8Array(bundle.shp) },
     { name: 'noise_contours.shx', bytes: new Uint8Array(bundle.shx) },

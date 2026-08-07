@@ -5,6 +5,7 @@
 
 import { contours as d3contours } from 'd3-contour';
 import type { GridResult } from './gridCore';
+import type { CustomContourLine } from './types';
 
 export interface ContourLineSet {
   /// dB(A) value of the threshold.
@@ -12,6 +13,10 @@ export interface ContourLineSet {
   /// One feature per line (MultiPolygon ring) at this threshold, in lat/lng.
   /// Each line is an array of `[lat, lng]` points suitable for L.polyline.
   lines: Array<Array<[number, number]>>;
+  /// Set only for a user-named custom line (see `customTracesFrom`), where it
+  /// replaces the level in labels and export attributes. Never set by the
+  /// tracer itself.
+  label?: string;
 }
 
 export function buildContourLines(
@@ -127,6 +132,70 @@ export function buildContourPolygons(
   // bands, which sit on top.
   out.sort((a, b) => a.threshold - b.threshold);
   return out;
+}
+
+// ============== Custom named lines ==============
+//
+// A custom line is traced in the SAME pass as the stepped contours rather than
+// a second one: its level is usually off the step grid (37.5 dB), but d3 takes
+// an arbitrary threshold list, so the only work is agreeing on that list and
+// attributing the results back afterwards.
+
+/// Every level that must be traced to satisfy both the stepped contours and
+/// the custom lines, deduped and finite-only. Passing a duplicated level would
+/// make d3 trace it twice and return two identical features.
+export function unionContourLevels(
+  stepped: readonly number[],
+  custom: readonly CustomContourLine[] | undefined,
+): number[] {
+  const seen = new Set<number>();
+  const out: number[] = [];
+  const push = (v: number) => {
+    if (!Number.isFinite(v) || seen.has(v)) return;
+    seen.add(v);
+    out.push(v);
+  };
+  for (const t of stepped) push(t);
+  for (const c of custom ?? []) push(c.levelDb);
+  return out;
+}
+
+/// Pick each custom line's geometry out of an already-traced set list.
+///
+/// Two custom lines at the same level legitimately share one traced geometry —
+/// the lookup is by value, and the sets carry the exact numbers that were
+/// passed to `unionContourLevels`, so equality is safe here.
+export function customTracesFrom(
+  sets: readonly ContourLineSet[],
+  custom: readonly CustomContourLine[] | undefined,
+): Array<{ line: CustomContourLine; set: ContourLineSet }> {
+  if (!custom?.length) return [];
+  const byLevel = new Map<number, ContourLineSet>();
+  for (const s of sets) if (!byLevel.has(s.threshold)) byLevel.set(s.threshold, s);
+  const out: Array<{ line: CustomContourLine; set: ContourLineSet }> = [];
+  for (const line of custom) {
+    const traced = byLevel.get(line.levelDb);
+    // d3 answers a level the grid never crosses with an EMPTY feature rather
+    // than none at all, so both cases have to be dropped here — otherwise a
+    // line the map cannot draw still appears in the PDF legend.
+    if (!traced?.lines.length) continue;
+    out.push({
+      line,
+      set: { threshold: line.levelDb, lines: traced.lines, label: line.label },
+    });
+  }
+  return out;
+}
+
+/// The stepped sets alone — i.e. drop levels that exist only because a custom
+/// line asked for them. Without this, adding a custom line at 37.5 dB would
+/// silently add a stepped contour there too.
+export function steppedTracesFrom(
+  sets: readonly ContourLineSet[],
+  stepped: readonly number[],
+): ContourLineSet[] {
+  const wanted = new Set(stepped);
+  return sets.filter((s) => wanted.has(s.threshold));
 }
 
 // ============== P3: tracing on a worker ==============

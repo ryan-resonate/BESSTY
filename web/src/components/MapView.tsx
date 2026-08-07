@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import type { Project, Receiver, Source, ReferenceLayerStyle } from '../lib/types';
+import type { CustomContourLine, Project, Receiver, Source, ReferenceLayerStyle } from '../lib/types';
 import { limitForPeriod } from '../lib/types';
 import { exceedsLimit, limitComparisonFor, type LimitComparison } from '../lib/limits';
 import type { ReceiverResult, GridResult } from '../lib/solver';
 import { describeBarnesHut } from '../lib/solver';
+import { escapeHtml } from '../lib/html';
 import { paletteRgb, paletteCss, type Palette, tForDb, makeBandsForRange } from '../lib/colormap';
-import { buildContourLinesAsync, type ContourLineSet } from '../lib/contourLines';
+import {
+  buildContourLinesAsync, customTracesFrom, steppedTracesFrom, unionContourLevels,
+  type ContourLineSet,
+} from '../lib/contourLines';
 import { footprintFor, lookupEntry, resolveContainer } from '../lib/catalog';
 
 export type ContourMode = 'filled' | 'lines' | 'both';
@@ -89,6 +93,10 @@ interface Props {
   contourOpacity: number;
   /// Step (dB) between iso-line thresholds, e.g. 5 dB.
   contourStepDb: number;
+  /// User-named compliance lines, drawn over the stepped contours in their own
+  /// colour / width / dash. Independent of `showContours`: they are deliverable
+  /// content, not part of the grid's presentation.
+  customContours?: CustomContourLine[];
   palette: Palette;
   /// dB range used as the colormap domain.
   dbDomain: { min: number; max: number };
@@ -518,7 +526,7 @@ export function MapView({
   onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
   selectedGroupId, onTranslateGroup, onRotateGroup,
   addMode, baseMap, showContours, showGridDebug, showBhDebug, gridSpacingM, showReceiverLimits, contourMode, contourOpacity, contourStepDb,
-  palette, dbDomain, onCursorMove, onReady,
+  customContours, palette, dbDomain, onCursorMove, onReady,
 }: Props) {
   // Map: object id → group color (for the small ring around the marker).
   const groupColorById = new Map<string, string>();
@@ -2298,15 +2306,24 @@ export function MapView({
 
   // Render contour overlay (filled raster, iso-lines, or both).
   const contourGenRef = useRef(0);
+  // Content signature rather than array identity: a fresh array holding the
+  // same lines must not re-trace the whole raster. Prop-identity churn driving
+  // redundant work is a bug this file has had before.
+  const customContourSig = JSON.stringify(customContours ?? []);
   useEffect(() => {
     const map = mapRef.current;
     const group = overlayGroupRef.current;
     if (!map || !group) return;
     group.clearLayers();
     const gen = ++contourGenRef.current;
-    if (!showContours || !grid) return;
+    if (!grid) return;
+    // Custom lines are compliance artefacts, so they survive the contour grid
+    // being switched off — but with neither them nor the grid there is nothing
+    // to trace at all.
+    const custom = (customContours ?? []).filter((c) => Number.isFinite(c.levelDb));
+    if (!showContours && custom.length === 0) return;
 
-    if (contourMode === 'filled' || contourMode === 'both') {
+    if (showContours && (contourMode === 'filled' || contourMode === 'both')) {
       const canvas = gridToCanvas(grid, palette, contourOpacity, dbDomain.min, dbDomain.max);
       const url = canvas.toDataURL('image/png');
       L.imageOverlay(url, [grid.bounds.sw, grid.bounds.ne], {
@@ -2314,10 +2331,17 @@ export function MapView({
       }).addTo(group);
     }
 
-    if (contourMode === 'lines' || contourMode === 'both') {
+    const wantStepped = showContours && (contourMode === 'lines' || contourMode === 'both');
+    if (wantStepped || custom.length > 0) {
       const bands = makeBandsForRange(dbDomain.min, dbDomain.max, contourStepDb);
       // Iso-line at every band boundary.
-      const thresholds = bands.map((b) => b.lo).concat([bands[bands.length - 1]?.hi ?? dbDomain.max]);
+      const thresholds = wantStepped
+        ? bands.map((b) => b.lo).concat([bands[bands.length - 1]?.hi ?? dbDomain.max])
+        : [];
+      // One trace covers both: a custom level is usually off the step grid, but
+      // d3 takes an arbitrary threshold list, so asking for the union costs one
+      // extra level rather than a second pass over the raster.
+      const levels = unionContourLevels(thresholds, custom);
       // Pass the raw grid straight through. We previously bicubic-upscaled
       // by 4× before contour generation to smooth visibly blocky lines on
       // coarse rasters — but the upscaled grid doesn't tile the bounds
@@ -2332,6 +2356,33 @@ export function MapView({
       // any display control moved — the hitch felt when a background regrid
       // completed mid-gesture. `gen` discards a trace whose inputs have already
       // been superseded, since the group it would draw into has been cleared.
+      /// One label per line at its midpoint, rotated to follow the tangent.
+      /// Shared so a custom line's name is presented exactly as a stepped
+      /// contour's level is — same box, font and placement, different text.
+      const addLabel = (
+        line: Array<[number, number]>, text: string, into: L.LayerGroup, colour: string,
+      ) => {
+        if (line.length < 4) return;
+        const midIdx = Math.floor(line.length / 2);
+        const a = line[midIdx - 1];
+        const b = line[midIdx];
+        const angle = (Math.atan2(b[0] - a[0], b[1] - a[1]) * 180) / Math.PI;
+        const tilt = angle > 90 ? angle - 180 : angle < -90 ? angle + 180 : angle;
+        // Width tracks the text: the stepped labels are always 2–3 characters,
+        // but a name like "Lease boundary criterion" needs the box to grow or
+        // the anchor centres the wrong span.
+        const widthPx = Math.max(22, text.length * 6 + 8);
+        L.marker(b, {
+          icon: L.divIcon({
+            className: 'contour-label',
+            html: `<div style="background:rgba(255,255,255,0.85);border:0.5px solid ${colour};border-radius:3px;padding:0 4px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:600;font-variant-numeric:tabular-nums;color:${colour};white-space:nowrap;transform:rotate(${-tilt}deg);transform-origin:center">${escapeHtml(text)}</div>`,
+            iconSize: [widthPx, 12],
+            iconAnchor: [widthPx / 2, 6],
+          }),
+          interactive: false,
+        }).addTo(into);
+      };
+
       const drawSets = (sets: ContourLineSet[], into: L.LayerGroup) => {
       for (const s of sets) {
         const t = Math.max(0, Math.min(1, (s.threshold - dbDomain.min) / (dbDomain.max - dbDomain.min || 1)));
@@ -2347,34 +2398,35 @@ export function MapView({
             interactive: false,
           });
           main.addTo(into);
-          // One label per line, placed at the midpoint and rotated to follow
-          // the line's tangent.
-          if (line.length >= 4) {
-            const midIdx = Math.floor(line.length / 2);
-            const a = line[midIdx - 1];
-            const b = line[midIdx];
-            const angle = (Math.atan2(b[0] - a[0], b[1] - a[1]) * 180) / Math.PI;
-            const tilt = angle > 90 ? angle - 180 : angle < -90 ? angle + 180 : angle;
-            L.marker(b, {
-              icon: L.divIcon({
-                className: 'contour-label',
-                html: `<div style="background:rgba(255,255,255,0.85);border:0.5px solid #1f2937;border-radius:3px;padding:0 4px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:600;font-variant-numeric:tabular-nums;color:#1f2937;white-space:nowrap;transform:rotate(${-tilt}deg);transform-origin:center">${s.threshold.toFixed(0)}</div>`,
-                iconSize: [22, 12],
-                iconAnchor: [11, 6],
-              }),
-              interactive: false,
-            }).addTo(into);
-          }
+          addLabel(line, s.threshold.toFixed(0), into, '#1f2937');
         }
       }
       };
 
-      void buildContourLinesAsync(grid, thresholds)
+      /// Custom lines draw last so they sit above the stepped contours, in the
+      /// user's own colour, width and dash.
+      const drawCustom = (sets: ContourLineSet[], into: L.LayerGroup) => {
+        for (const { line: def, set } of customTracesFrom(sets, custom)) {
+          for (const line of set.lines) {
+            L.polyline(line, {
+              color: '#ffffff', weight: def.widthPx + 2.5, opacity: 0.65, interactive: false,
+            }).addTo(into);
+            L.polyline(line, {
+              color: def.color, weight: def.widthPx, opacity: 1, interactive: false,
+              dashArray: def.dashed ? '7 5' : undefined,
+            }).addTo(into);
+            addLabel(line, def.label || `${def.levelDb} dB`, into, def.color);
+          }
+        }
+      };
+
+      void buildContourLinesAsync(grid, levels)
         .then((sets) => {
           if (gen !== contourGenRef.current) return;      // superseded
           const g = overlayGroupRef.current;
           if (!g) return;
-          drawSets(sets, g);
+          if (wantStepped) drawSets(steppedTracesFrom(sets, thresholds), g);
+          drawCustom(sets, g);
           // Keep markers above the freshly-added lines.
           const m = mapRef.current;
           if (markersGroupRef.current && m) {
@@ -2393,7 +2445,8 @@ export function MapView({
     // `contourStepDb` was missing here: it is read above (via makeBandsForRange)
     // but changing the dB step did not redraw the lines until some other
     // dependency happened to change.
-  }, [grid, showContours, showGridDebug, contourMode, contourOpacity, contourStepDb, palette, dbDomain.min, dbDomain.max]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- customContourSig stands in for customContours
+  }, [grid, showContours, showGridDebug, contourMode, contourOpacity, contourStepDb, customContourSig, palette, dbDomain.min, dbDomain.max]);
 
   // Grid-debug cell centres (I13). A dot at every cell centre, for diagnosing
   // alignment between the raster, the contour lines and the markers.

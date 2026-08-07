@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { notify } from '../lib/notify';
 import type {
-  Group, Project, ProjectSettings, Source, Receiver, SourceKind,
+  CustomContourLine, Group, Project, ProjectSettings, Source, Receiver, SourceKind,
   ReferenceLayer, ReferenceLayerStyle, ReferenceFeature, ReferencePointShape,
 } from '../lib/types';
 import { limitForPeriod, settingsOf } from '../lib/types';
@@ -37,7 +37,9 @@ import {
   triggerDownload,
 } from '../lib/exporters';
 import type { GridResult } from '../lib/solver';
-import { buildContourLines } from '../lib/contourLines';
+import {
+  buildContourLines, customTracesFrom, steppedTracesFrom, unionContourLevels,
+} from '../lib/contourLines';
 import { makeBandsForRange } from '../lib/colormap';
 import type { DemRaster } from '../lib/dem';
 import { paletteCss } from '../lib/colormap';
@@ -157,6 +159,9 @@ interface Props {
   /// Setting the user can edit in the Layers tab to override the
   /// auto-computed contour bounds. `min`/`max`/`step` are in dB.
   contourBounds: { min: number; max: number; step: number };
+  /// User-named compliance lines (Layers → Custom lines).
+  customContours?: CustomContourLine[];
+  setCustomContours?(v: CustomContourLine[]): void;
   setContourBounds(b: { min: number; max: number; step: number }): void;
   demStatus: 'idle' | 'loading' | 'ready' | 'error';
   demTilesLoaded: number | null;
@@ -1269,7 +1274,15 @@ function ResultsTab(props: Props) {
     // viewing so the export matches the on-screen contours exactly.
     const bands = makeBandsForRange(contourBounds.min, contourBounds.max, contourBounds.step);
     const thresholds = bands.map((b) => b.lo);
-    const sets = buildContourLines(grid, thresholds);
+    // Custom lines ride along when their own export flag is set, tagged with
+    // their name so a consumer can tell a compliance line from a palette step.
+    const custom = (props.customContours ?? [])
+      .filter((c) => c.export && Number.isFinite(c.levelDb));
+    const traced = buildContourLines(grid, unionContourLevels(thresholds, custom));
+    const sets = [
+      ...steppedTracesFrom(traced, thresholds),
+      ...customTracesFrom(traced, custom).map((c) => c.set),
+    ];
     if (format === 'kml') {
       download(exportContoursKml(project, sets), 'contours', 'kml');
     } else {
@@ -1544,6 +1557,11 @@ function LayersTab(props: Props) {
         </Field>
       </Card>
 
+      <CustomContourCard
+        lines={props.customContours ?? []}
+        setLines={props.setCustomContours}
+      />
+
       <Card title="Terrain">
         <div className="meta-line">
           DEM:{' '}
@@ -1561,6 +1579,108 @@ function LayersTab(props: Props) {
         onAfterImport={props.onAfterImport}
       />
     </>
+  );
+}
+
+// -------------------- Custom contour lines --------------------
+
+/// Colours offered for a new line. Compliance lines want to read as
+/// deliberate against any palette, so these are saturated and dark enough to
+/// survive a white halo on satellite imagery.
+const CUSTOM_LINE_COLORS = ['#dc2626', '#ea580c', '#ca8a04', '#16a34a', '#0891b2', '#2563eb', '#7c3aed', '#111827'];
+
+function CustomContourCard(props: {
+  lines: CustomContourLine[];
+  setLines?(v: CustomContourLine[]): void;
+}) {
+  const { lines, setLines } = props;
+  if (!setLines) return null;
+
+  const patch = (id: string, p: Partial<CustomContourLine>) =>
+    setLines(lines.map((l) => (l.id === id ? { ...l, ...p } : l)));
+  const remove = (id: string) => setLines(lines.filter((l) => l.id !== id));
+  const add = () => {
+    const n = lines.length;
+    setLines([...lines, {
+      id: `cl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      label: 'Limit',
+      levelDb: 40,
+      color: CUSTOM_LINE_COLORS[n % CUSTOM_LINE_COLORS.length],
+      widthPx: 2.5,
+      dashed: true,
+      export: true,
+    }]);
+  };
+
+  return (
+    <Card title="Custom lines">
+      <div className="hint">
+        Named iso-lines at levels you choose — a night limit, a boundary
+        criterion. Drawn over the stepped contours in their own style, and
+        they stay visible when the contour grid is switched off.
+      </div>
+      {lines.length === 0 && (
+        <div className="meta-line muted">None yet.</div>
+      )}
+      {lines.map((l) => (
+        <div key={l.id} className="custom-line-row">
+          <div className="grid-2">
+            <Field label="Name">
+              <input
+                type="text"
+                value={l.label}
+                onChange={(e) => patch(l.id, { label: e.target.value })}
+              />
+            </Field>
+            <Field label="Level (dB)">
+              <NumericInput
+                step={0.5}
+                value={l.levelDb}
+                fallback={40}
+                onChange={(v) => patch(l.id, { levelDb: v })}
+              />
+            </Field>
+          </div>
+          <div className="custom-line-style">
+            <input
+              type="color"
+              value={l.color}
+              title="Line colour"
+              onChange={(e) => patch(l.id, { color: e.target.value })}
+            />
+            <label title="Line width (px)">
+              <span className="muted">w</span>
+              <NumericInput
+                step={0.5}
+                value={l.widthPx}
+                fallback={2.5}
+                onChange={(v) => patch(l.id, { widthPx: Math.max(0.5, Math.min(10, v)) })}
+              />
+            </label>
+            <label className="row-checkbox">
+              <input
+                type="checkbox"
+                checked={l.dashed}
+                onChange={(e) => patch(l.id, { dashed: e.target.checked })}
+              />
+              <span>Dashed</span>
+            </label>
+            <label className="row-checkbox" title="Include in KML / shapefile / PDF exports">
+              <input
+                type="checkbox"
+                checked={l.export}
+                onChange={(e) => patch(l.id, { export: e.target.checked })}
+              />
+              <span>Export</span>
+            </label>
+            <button className="x-btn" title="Remove this line" onClick={() => remove(l.id)}>✕</button>
+          </div>
+        </div>
+      ))}
+      <div className="add-row">
+        <button className="btn small" onClick={add}>+ Custom line</button>
+      </div>
+    </Card>
   );
 }
 

@@ -27,6 +27,7 @@ import type {
   Source,
   Project,
 } from './types';
+import { projectDOmegaDb } from './types';
 import { lookupEntry, resolveContainer, sourceHeightFor, spectrumFor } from './catalog';
 import { type DemRaster, type DemRegion, captureDemRegion } from './dem';
 import {
@@ -71,9 +72,9 @@ export { latLngToLocalMetres } from './gridCore';
 /// un-weighted Lw and you want the +3 dB hemispherical ground-reflection
 /// boost added on top. Centralised so every site that adds DΩ uses
 /// the same fallback.
-export function projectDOmegaDb(project: Project): number {
-  return project.settings?.dOmegaDb ?? 0;
-}
+// Defined in `types.ts` alongside the other settings accessors; re-exported
+// here because the solver is where callers expect to find it.
+export { projectDOmegaDb };
 
 /// Band count for the solver, given a scenario's band system.
 /// Matches the Rust crate's `OCTAVE_CENTRES_HZ.len()` (10) and

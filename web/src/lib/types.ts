@@ -332,6 +332,15 @@ export function settingsOf(project: Project): ProjectSettings {
   };
 }
 
+/// The project's solid-angle correction DΩ (dB), defaulting to strict ISO
+/// 9613-2's 0. Lives here beside the other settings accessors rather than in
+/// `solver.ts`: the exporters need it, and reaching into the solver for one
+/// field pulled the whole engine — and Firebase behind it — into anything that
+/// merely writes a CSV.
+export function projectDOmegaDb(project: Project): number {
+  return project.settings?.dOmegaDb ?? 0;
+}
+
 /// Pick the right limit for a receiver given the active scenario period.
 export function limitForPeriod(r: Receiver, period: Period): number {
   switch (period) {
@@ -358,6 +367,27 @@ export interface CalculationArea {
 ///
 /// `showGridDebug` is deliberately absent — it's a diagnostic, and a project
 /// that reopens covered in pink dots looks broken.
+/// A user-named iso-line at a level of the user's choosing, drawn and exported
+/// distinctly from the regular stepped contours: "Night limit 40 dB", "Lease
+/// boundary criterion". Compliance artefacts rather than decoration, which is
+/// why they keep rendering when the contour grid is switched off.
+///
+/// The level is read in the project's assessment weighting, exactly like the
+/// stepped contours it sits among.
+export interface CustomContourLine {
+  id: string;
+  /// Drawn along the line in place of the level a stepped contour would show.
+  label: string;
+  levelDb: number;
+  /// Stroke colour as `#rrggbb`.
+  color: string;
+  /// Stroke width in px on the map; converted to mm for the PDF.
+  widthPx: number;
+  dashed: boolean;
+  /// Include this line in the KML / shapefile / PDF exports.
+  export: boolean;
+}
+
 export interface DisplaySettings {
   baseMap?: 'satellite' | 'osm';
   showContours?: boolean;
@@ -369,6 +399,9 @@ export interface DisplaySettings {
   domainMode?: 'auto' | 'fixed';
   fixedDomain?: { min: number; max: number };
   showReceiverLimits?: boolean;
+  /// User-named compliance lines. Absent / empty = none, which is every
+  /// project saved before this existed.
+  customContours?: CustomContourLine[];
   gridSpacingM?: number;
   /// Whether the user has explicitly chosen a grid spacing. Persisted so
   /// reopening doesn't re-run the auto-pick over a deliberate choice.

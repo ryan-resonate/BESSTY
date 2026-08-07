@@ -4,12 +4,14 @@
 // needs the DOM for tile fetching and touches project types.
 
 import type { jsPDF } from 'jspdf';
-import type { Project } from './types';
+import type { CustomContourLine, Project } from './types';
 import { limitForPeriod } from './types';
 import { calcAreaCorners } from './geo';
 import { exceedsLimit, limitComparisonFor } from './limits';
 import type { GridResult, ReceiverResult } from './solver';
-import { buildContourLines } from './contourLines';
+import {
+  buildContourLines, customTracesFrom, steppedTracesFrom, unionContourLevels,
+} from './contourLines';
 import { makeBandsForRange, paletteCss, type Palette } from './colormap';
 import {
   beginFrameClip, clipPolylineToRect, composeBasemap, drawAttribution, drawNorthArrow,
@@ -45,6 +47,9 @@ export interface PdfInput {
   palette: Palette;
   dbDomain: { min: number; max: number };
   contourStepDb: number;
+  /// User-named compliance lines. Only those with `export` set are drawn, and
+  /// like on the map they are drawn whether or not the stepped contours are.
+  customContours?: CustomContourLine[];
   showContours: boolean;
   tileUrl(z: number, x: number, y: number): string;
   /// Basemap credit — REQUIRED by both providers, so it is not optional.
@@ -91,29 +96,52 @@ export async function buildPdf(input: PdfInput): Promise<jsPDF> {
   // The clip region alone was tried first and silently did nothing — see
   // `beginFrameClip` for the jsPDF trap involved. Hence both guards.
   beginFrameClip(doc, frame);
-  if (input.showContours && grid) {
+  const exportedCustom = (input.customContours ?? [])
+    .filter((c) => c.export && Number.isFinite(c.levelDb));
+  if (grid && (input.showContours || exportedCustom.length > 0)) {
     const frameRect = { x: frame.x, y: frame.y, w: frame.w, h: frame.h };
     const bands = makeBandsForRange(input.dbDomain.min, input.dbDomain.max, input.contourStepDb);
-    const thresholds = bands.map((b) => b.lo)
-      .concat([bands[bands.length - 1]?.hi ?? input.dbDomain.max]);
+    const thresholds = input.showContours
+      ? bands.map((b) => b.lo).concat([bands[bands.length - 1]?.hi ?? input.dbDomain.max])
+      : [];
+    // One trace for both, as on the map: custom levels rarely sit on the step
+    // grid, and tracing twice would double the cost of the export.
+    const sets = buildContourLines(grid, unionContourLevels(thresholds, exportedCustom));
+
+    /// Emit one path per clipped run — keeps the PDF vector and small.
+    const strokeLine = (line: Array<[number, number]>) => {
+      if (line.length < 2) return;
+      const pts = line.map(([lat, lng]) => frame.toPage(lat, lng));
+      for (const run of clipPolylineToRect(pts, frameRect)) {
+        doc.lines(
+          run.slice(1).map((p, i) => [p[0] - run[i][0], p[1] - run[i][1]] as [number, number]),
+          run[0][0], run[0][1],
+        );
+      }
+    };
+
     doc.setLineWidth(0.25);
-    for (const set of buildContourLines(grid, thresholds)) {
+    for (const set of steppedTracesFrom(sets, thresholds)) {
       const t = Math.max(0, Math.min(1,
         (set.threshold - input.dbDomain.min) / (input.dbDomain.max - input.dbDomain.min || 1)));
       const [r, g, b] = rgb(paletteCss(input.palette, t));
       doc.setDrawColor(r, g, b);
-      for (const line of set.lines) {
-        if (line.length < 2) continue;
-        const pts = line.map(([lat, lng]) => frame.toPage(lat, lng));
-        // One path per clipped run keeps the PDF vector and small.
-        for (const run of clipPolylineToRect(pts, frameRect)) {
-          doc.lines(
-            run.slice(1).map((p, i) => [p[0] - run[i][0], p[1] - run[i][1]] as [number, number]),
-            run[0][0], run[0][1],
-          );
-        }
-      }
+      for (const line of set.lines) strokeLine(line);
     }
+
+    // Custom lines last so they sit over the stepped contours, in their own
+    // colour, weight and dash. Widths are authored in screen px; 0.26 mm per px
+    // puts a 2.5 px line at ~0.65 mm, which reads at print size the way it does
+    // on screen.
+    for (const { line: def, set } of customTracesFrom(sets, exportedCustom)) {
+      const [r, g, b] = rgb(def.color);
+      doc.setDrawColor(r, g, b);
+      doc.setLineWidth(Math.max(0.15, def.widthPx * 0.26));
+      if (def.dashed) doc.setLineDashPattern([1.8, 1.3], 0);
+      for (const line of set.lines) strokeLine(line);
+      if (def.dashed) doc.setLineDashPattern([], 0);
+    }
+    doc.setLineWidth(0.25);
   }
   drawBarriers(doc, project, frame);
   drawSources(doc, project, frame);
@@ -123,7 +151,9 @@ export async function buildPdf(input: PdfInput): Promise<jsPDF> {
 
   // Always drawn: the licence requires it, so it is not a dialog option.
   drawAttribution(doc, frame, input.attribution);
-  if (o.legend && input.showContours && grid) drawLegend(doc, input, frame);
+  if (o.legend && grid && (input.showContours || exportedCustom.length > 0)) {
+    drawLegend(doc, input, frame, exportedCustom);
+  }
   if (o.scaleBar) drawScaleBar(doc, frame);
   if (o.northArrow) drawNorthArrow(doc, frame);
   if (o.titleBlock) drawTitle(doc, project, page.marginMm);
@@ -249,12 +279,23 @@ function drawReceivers(
   }
 }
 
-function drawLegend(doc: jsPDF, input: PdfInput, frame: MapFrame) {
-  const bands = makeBandsForRange(input.dbDomain.min, input.dbDomain.max, input.contourStepDb)
-    .slice().reverse();
+function drawLegend(
+  doc: jsPDF, input: PdfInput, frame: MapFrame, customLines: CustomContourLine[],
+) {
+  const bands = input.showContours
+    ? makeBandsForRange(input.dbDomain.min, input.dbDomain.max, input.contourStepDb)
+      .slice().reverse()
+    : [];
   const rowH = 3.4;
-  const w = 24;
-  const h = bands.length * rowH + 6;
+  // A named line needs room for its label, which is not 2 digits of dB.
+  doc.setFontSize(6);
+  const customW = customLines.reduce(
+    (m, c) => Math.max(m, doc.getTextWidth(`${c.label} (${c.levelDb} dB)`) + 11), 0);
+  const w = Math.max(24, customW);
+  // Custom lines get their own titled section under the bands, separated by a
+  // rule, so a compliance line is never mistaken for a palette step.
+  const customH = customLines.length ? customLines.length * rowH + 3 : 0;
+  const h = bands.length * rowH + 6 + customH;
   const x = frame.x + frame.w - w - 4;
   const y = frame.y + frame.h - h - 4;
   doc.setFillColor(255, 255, 255);
@@ -263,7 +304,7 @@ function drawLegend(doc: jsPDF, input: PdfInput, frame: MapFrame) {
   doc.rect(x, y, w, h, 'FD');
   doc.setFontSize(6);
   doc.setTextColor(30, 30, 30);
-  doc.text('Lp dB(A)', x + 2, y + 4);
+  doc.text(bands.length ? 'Lp dB(A)' : 'Compliance lines', x + 2, y + 4);
   bands.forEach((b, i) => {
     const t = Math.max(0, Math.min(1,
       ((b.lo + b.hi) / 2 - input.dbDomain.min) / (input.dbDomain.max - input.dbDomain.min || 1)));
@@ -274,4 +315,24 @@ function drawLegend(doc: jsPDF, input: PdfInput, frame: MapFrame) {
     doc.setTextColor(30, 30, 30);
     doc.text(b.label, x + 7.5, ry + 2);
   });
+  if (!customLines.length) return;
+  let ry = y + 6 + bands.length * rowH;
+  if (bands.length) {
+    doc.setDrawColor(150, 150, 150);
+    doc.setLineWidth(0.2);
+    doc.line(x + 2, ry + 0.6, x + w - 2, ry + 0.6);
+    ry += 2.4;
+  }
+  for (const c of customLines) {
+    const [r, g, b] = rgb(c.color);
+    doc.setDrawColor(r, g, b);
+    doc.setLineWidth(Math.max(0.15, c.widthPx * 0.26));
+    if (c.dashed) doc.setLineDashPattern([1.2, 0.9], 0);
+    doc.line(x + 2, ry + 1.2, x + 6, ry + 1.2);
+    if (c.dashed) doc.setLineDashPattern([], 0);
+    doc.setTextColor(30, 30, 30);
+    doc.text(`${c.label} (${c.levelDb} dB)`, x + 7.5, ry + 2);
+    ry += rowH;
+  }
+  doc.setLineWidth(0.3);
 }

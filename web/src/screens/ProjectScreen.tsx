@@ -34,7 +34,7 @@ import {
   type CatalogLookup,
 } from '../lib/bessGroups';
 import type { BessGroup } from '../lib/types';
-import type { Barrier, Project, Receiver, Source, SourceKind } from '../lib/types';
+import type { Barrier, CustomContourLine, Project, Receiver, Source, SourceKind } from '../lib/types';
 import { settingsOf } from '../lib/types';
 import { calcAreaCorners } from '../lib/geo';
 import { pushEscHandler } from '../lib/escStack';
@@ -429,6 +429,7 @@ export function ProjectScreen() {
     domainMode: 'auto' as 'auto' | 'fixed',
     fixedDomain: { min: 25, max: 60 },
     showReceiverLimits: false,             // I1
+    customContours: [] as CustomContourLine[],
     gridSpacingM: 100,
     gridSpacingTouched: false,
   };
@@ -456,7 +457,7 @@ export function ProjectScreen() {
   // changes shape.
   const { baseMap, showContours, contourMode, contourOpacity, contourStepDb,
     contourBounds, palette, domainMode, fixedDomain, showReceiverLimits,
-    gridSpacingM } = display;
+    customContours, gridSpacingM } = display;
   const setBaseMap = (v: BaseMap) => patchDisplay({ baseMap: v });
   const setShowContours = (v: boolean) => patchDisplay({ showContours: v });
   const setContourMode = (v: ContourMode) => patchDisplay({ contourMode: v });
@@ -468,6 +469,7 @@ export function ProjectScreen() {
   const setDomainMode = (v: 'auto' | 'fixed') => patchDisplay({ domainMode: v });
   const setFixedDomain = (v: { min: number; max: number }) => patchDisplay({ fixedDomain: v });
   const setShowReceiverLimits = (v: boolean) => patchDisplay({ showReceiverLimits: v });
+  const setCustomContours = (v: CustomContourLine[]) => patchDisplay({ customContours: v });
 
   // Diagnostic only — never persisted (a project reopening covered in pink
   // dots looks broken).
@@ -1540,6 +1542,7 @@ export function ProjectScreen() {
         contourMode={contourMode} setContourMode={setContourMode}
         contourOpacity={contourOpacity} setContourOpacity={setContourOpacity}
         contourStepDb={contourStepDb} setContourStepDb={setContourStepDb}
+        customContours={customContours} setCustomContours={setCustomContours}
         contourBounds={contourBounds} setContourBounds={setContourBounds}
         palette={palette} setPalette={setPalette}
         domainMode={domainMode} setDomainMode={setDomainMode}
@@ -1601,6 +1604,7 @@ export function ProjectScreen() {
           contourMode={contourMode}
           contourOpacity={contourOpacity}
           contourStepDb={contourStepDb}
+          customContours={customContours}
           palette={palette}
           dbDomain={dbDomain}
           onAddSource={handleAddSource}
@@ -1667,6 +1671,7 @@ export function ProjectScreen() {
           palette={palette}
           dbDomain={dbDomain}
           contourStepDb={contourStepDb}
+          customContours={customContours}
           showContours={showContours}
           tileUrl={(z, x, y) => tileUrlFor(baseMap, z, x, y)}
           attribution={attributionFor(baseMap)}
