@@ -77,6 +77,36 @@ test('every optional prop that GATES a control is actually passed by a parent', 
   );
 });
 
+test('a component that returns null without its callbacks still gets them', () => {
+  // The same failure as the gear, one step further out: a card whose whole body
+  // is behind `if (!onFoo) return null` disappears silently when a parent stops
+  // passing the prop. `{props.onFoo && …}` above catches the inline form; this
+  // catches the early return, which is what a card-sized control tends to use.
+  const gated = new Map<string, string>();
+  for (const { path, text } of FILES) {
+    for (const m of text.matchAll(/if\s*\(([^)]*)\)\s*return null/g)) {
+      // EVERY negated callback in the condition, not just the first: a guard
+      // reading `if (!onUpdate || !onRemove)` gates on both, and capturing one
+      // would let the other be dropped silently.
+      for (const n of m[1].matchAll(/!\s*((?:on|set)[A-Z]\w*)/g)) gated.set(n[1], path);
+    }
+  }
+  const missing: string[] = [];
+  for (const [prop, where] of gated) {
+    // Same file counts here, unlike the check above: a card like
+    // CustomContourCard is rendered by a sibling component in its own module,
+    // and that is a real parent. The gear bug is still caught, because nothing
+    // anywhere passed the prop it gated on.
+    const passed = FILES.some((f) => new RegExp(`(^|\\s)${prop}=\\{`).test(f.text));
+    if (!passed) missing.push(`${prop} (gates a component in ${where.replace(SRC, 'src')})`);
+  }
+  assert.deepEqual(
+    missing, [],
+    'these props gate a whole component but no parent passes them, so it never '
+    + 'renders:\n  ' + missing.join('\n  '),
+  );
+});
+
 test('Escape is handled only through the shared stack', () => {
   // Multiple window-level Escape listeners are siblings: stopPropagation does
   // not separate them, so one keypress fires every overlay's handler at once.

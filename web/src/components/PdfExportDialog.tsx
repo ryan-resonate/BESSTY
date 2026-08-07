@@ -49,7 +49,8 @@ export function PdfExportDialog(props: Props) {
         <div className="hint" style={{ marginBottom: 10 }}>
           A snapshot of the current map view. The basemap goes in as an image;
           contours, receivers, sources and barriers are drawn as vectors, so
-          they stay sharp and the level text stays selectable.
+          they stay sharp and the level text stays selectable. Text is set in
+          Arimo, metrically identical to Arial.
         </div>
 
         <label className="fld" style={{ display: 'block', marginBottom: 8 }}>
@@ -72,6 +73,7 @@ export function PdfExportDialog(props: Props) {
         {check('northArrow', 'North arrow')}
         {check('showReceiverNames', 'Receiver names')}
         {check('showReceiverLimits', 'Show limits under receiver levels')}
+        {check('annotations', 'Notes and dimensions')}
 
         {!props.grid && (
           <div className="hint" style={{ marginTop: 8 }}>

@@ -417,6 +417,13 @@ header.app-header nav a:hover { background: var(--slate-1); }
 .custom-line-style label { display: flex; align-items: center; gap: 5px; font-size: 12px; }
 .custom-line-style label .fld, .custom-line-style label input[type="text"] { width: 52px; }
 .custom-line-style .x-btn { margin-left: auto; }
+.custom-line-row.selected { border-color: var(--ink); box-shadow: 0 0 0 2px rgba(31, 41, 55, 0.08); }
+.custom-line-row textarea { width: 100%; resize: vertical; font: inherit; padding: 5px 7px; border: 1px solid var(--light); border-radius: 5px; }
+
+/* Annotations are drawn furniture, not UI: no pointer cursor on the label, and
+   the invisible drag handles on a dimension's ends still need to be grabbable. */
+.annotation-text { cursor: move; }
+.annotation-grab { cursor: move; }
 .legend-foot { font-size: 10px; padding-top: 4px; border-top: 1px dashed var(--light); margin-top: 4px; text-align: center; }
 
 .catalog-screen {

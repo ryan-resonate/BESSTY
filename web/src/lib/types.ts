@@ -666,6 +666,40 @@ export interface Project {
   /// they live outside `sources`/`barriers` so terrain/propagation can't be
   /// affected. Imported from shapefiles for now.
   referenceLayers?: ReferenceLayer[];
+
+  /// Figure annotations — notes and dimensions drawn on the map and carried
+  /// into the PDF. Absent on every project saved before they existed.
+  annotations?: Annotation[];
+}
+
+// =============== Annotations ===============
+
+/// Drawing furniture: a note explaining something on the figure, or a
+/// dimension showing how far apart two things are. Deliverable content, so it
+/// lives on the project (shared with collaborators, undoable through the normal
+/// project history) rather than in display settings.
+///
+/// The solver never sees these — they carry no height and screen nothing.
+export type Annotation = TextAnnotation | DimensionAnnotation;
+
+export interface TextAnnotation {
+  id: string;
+  kind: 'text';
+  /// Where the text sits.
+  latLng: [number, number];
+  text: string;
+  /// Optional leader: a line from the text to the thing it describes.
+  leaderTo?: [number, number];
+}
+
+export interface DimensionAnnotation {
+  id: string;
+  kind: 'dimension';
+  from: [number, number];
+  to: [number, number];
+  /// Overrides the measured distance when set — for a nominal figure ("6 m
+  /// min.") rather than what the geometry happens to measure.
+  label?: string;
 }
 
 // =============== Reference (non-solver) layers ===============

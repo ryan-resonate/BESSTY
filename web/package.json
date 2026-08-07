@@ -29,6 +29,7 @@
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
+    "@fontsource/arimo": "^5.3.0",
     "@types/d3-contour": "^3.0.6",
     "@types/leaflet": "^1.9.12",
     "@types/proj4": "^2.5.5",

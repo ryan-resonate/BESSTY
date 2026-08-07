@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import type { CustomContourLine, Project, Receiver, Source, ReferenceLayerStyle } from '../lib/types';
+import type {
+  Annotation, CustomContourLine, DimensionAnnotation, Project, Receiver, Source,
+  ReferenceLayerStyle, TextAnnotation,
+} from '../lib/types';
 import { limitForPeriod } from '../lib/types';
+import {
+  ANNOTATION_INK, annotationsOf, dimensionLabel, dimensionMidpoint, dimensionTiltDeg,
+  newAnnotationId,
+} from '../lib/annotations';
 import { exceedsLimit, limitComparisonFor, type LimitComparison } from '../lib/limits';
 import type { ReceiverResult, GridResult } from '../lib/solver';
 import { describeBarnesHut } from '../lib/solver';
@@ -73,7 +80,16 @@ interface Props {
   /// an incremental angle in degrees (rotation-handle drag).
   onTranslateGroup?(groupId: string, dLat: number, dLng: number): void;
   onRotateGroup?(groupId: string, deltaDeg: number): void;
-  addMode: 'none' | 'wtg' | 'bess' | 'auxiliary' | 'receiver' | 'measure' | 'barrier';
+  addMode: 'none' | 'wtg' | 'bess' | 'auxiliary' | 'receiver' | 'measure' | 'barrier'
+    | 'annotation' | 'dimension';
+  /// Figure annotations. `onAddAnnotation` fires once the user has finished
+  /// placing one (a text needs one click, a dimension two); `onUpdateAnnotation`
+  /// carries a drag to its new position.
+  onAddAnnotation?(a: Annotation): void;
+  onUpdateAnnotation?(id: string, patch: Partial<TextAnnotation> & Partial<DimensionAnnotation>): void;
+  /// Selecting an annotation opens its editor in the side panel.
+  selectedAnnotationId?: string | null;
+  onSelectAnnotation?(id: string | null): void;
   baseMap: BaseMap;
   showContours: boolean;
   /// Debug overlay — paints a small dot at every grid cell centre so the
@@ -527,6 +543,7 @@ export function MapView({
   selectedGroupId, onTranslateGroup, onRotateGroup,
   addMode, baseMap, showContours, showGridDebug, showBhDebug, gridSpacingM, showReceiverLimits, contourMode, contourOpacity, contourStepDb,
   customContours, palette, dbDomain, onCursorMove, onReady,
+  onAddAnnotation, onUpdateAnnotation, selectedAnnotationId, onSelectAnnotation,
 }: Props) {
   // Map: object id → group color (for the small ring around the marker).
   const groupColorById = new Map<string, string>();
@@ -565,6 +582,10 @@ export function MapView({
   /// interactive so it can't intercept selection / drawing.
   const referenceGroupRef = useRef<L.LayerGroup | null>(null);
   const measureGroupRef = useRef<L.LayerGroup | null>(null);
+  /// Figure annotations (notes + dimensions).
+  const annotationGroupRef = useRef<L.LayerGroup | null>(null);
+  /// First click of a two-click dimension, held until the second lands.
+  const dimensionStartRef = useRef<L.LatLng | null>(null);
   const measurePointsRef = useRef<L.LatLng[]>([]);
   /// Layer + draft state for the in-progress barrier draw. The layer
   /// group hosts both the persistent barrier polylines AND the live
@@ -615,6 +636,7 @@ export function MapView({
     onEditCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
     onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
     onTranslateGroup, onRotateGroup,
+    onAddAnnotation, onUpdateAnnotation, onSelectAnnotation,
   });
   useEffect(() => {
     callbacksRef.current = {
@@ -622,6 +644,7 @@ export function MapView({
       onEditCalcArea, onCursorMove, onSelect, onBoxSelect, addMode,
       onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
       onTranslateGroup, onRotateGroup,
+      onAddAnnotation, onUpdateAnnotation, onSelectAnnotation,
     };
   });
   // ProjectScreen needs to know the lat/lng of every source/receiver to
@@ -657,6 +680,7 @@ export function MapView({
     bhDebugGroupRef.current = L.layerGroup().addTo(map);
     barriersGroupRef.current = L.layerGroup().addTo(map);
     measureGroupRef.current = L.layerGroup().addTo(map);
+    annotationGroupRef.current = L.layerGroup().addTo(map);
     // BESS-group overlays render UNDER the source markers (so the
     // handles draw on top of the bounding rect, and unit markers stay
     // clickable). Add to map BEFORE the markers layer.
@@ -876,8 +900,35 @@ export function MapView({
     });
 
     map.on('click', (e: L.LeafletMouseEvent) => {
-      const { addMode, onAddSource, onAddReceiver } = callbacksRef.current;
+      const { addMode, onAddSource, onAddReceiver, onAddAnnotation } = callbacksRef.current;
       const latLng: [number, number] = [e.latlng.lat, e.latlng.lng];
+      if (addMode === 'annotation') {
+        onAddAnnotation?.({
+          id: newAnnotationId(), kind: 'text', latLng, text: '',
+        });
+        return;
+      }
+      if (addMode === 'dimension') {
+        // Two clicks: the first anchors, the second completes and hands the
+        // finished dimension over.
+        const start = dimensionStartRef.current;
+        if (!start) {
+          dimensionStartRef.current = e.latlng;
+          const g = annotationGroupRef.current;
+          if (g) {
+            L.circleMarker(e.latlng, {
+              radius: 4, color: '#F2CB00', fillColor: '#F2CB00', fillOpacity: 1, weight: 2,
+            }).addTo(g);
+          }
+          return;
+        }
+        dimensionStartRef.current = null;
+        onAddAnnotation?.({
+          id: newAnnotationId(), kind: 'dimension',
+          from: [start.lat, start.lng], to: latLng,
+        });
+        return;
+      }
       if (addMode === 'barrier') {
         const group = barriersGroupRef.current;
         if (!group) return;
@@ -1067,6 +1118,118 @@ export function MapView({
       measurePointsRef.current = [];
     }
   }, [addMode]);
+
+  // Drop a half-placed dimension when the user leaves the mode, so returning
+  // to it later doesn't finish a line anchored somewhere they've forgotten.
+  useEffect(() => {
+    if (addMode !== 'dimension') dimensionStartRef.current = null;
+  }, [addMode]);
+
+  // ---- Annotations (notes + dimensions) ----
+  //
+  // Repainted whole on any change: there are a handful per figure, so the
+  // bookkeeping of incremental updates would cost more than it saves.
+  const annotations = annotationsOf(project);
+  const annotationSig = JSON.stringify(annotations);
+  useEffect(() => {
+    const group = annotationGroupRef.current;
+    if (!group) return;
+    group.clearLayers();
+
+    /// Black text with a white buffer, per the drawing standard. The buffer is
+    /// a shadow ring rather than a filled box so it reads as drawn-on rather
+    /// than a UI chip, and stays legible over satellite imagery.
+    const textHtml = (text: string, tilt: number, selected: boolean) =>
+      `<div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.25;`
+      + `color:${ANNOTATION_INK};white-space:pre;text-align:center;`
+      + `text-shadow:-2px 0 #fff,2px 0 #fff,0 -2px #fff,0 2px #fff,-1.4px -1.4px #fff,1.4px -1.4px #fff,-1.4px 1.4px #fff,1.4px 1.4px #fff;`
+      + `${selected ? 'outline:1px dashed #2563eb;outline-offset:3px;' : ''}`
+      + `transform:rotate(${tilt}deg);transform-origin:center">${escapeHtml(text)}</div>`;
+
+    for (const a of annotations) {
+      const selected = a.id === selectedAnnotationId;
+      if (a.kind === 'text') {
+        if (a.leaderTo) {
+          L.polyline([a.leaderTo, a.latLng], {
+            color: '#ffffff', weight: 3.5, opacity: 0.85, interactive: false,
+          }).addTo(group);
+          L.polyline([a.leaderTo, a.latLng], {
+            color: ANNOTATION_INK, weight: 1.2, opacity: 1, interactive: false,
+          }).addTo(group);
+          L.circleMarker(a.leaderTo, {
+            radius: 2.5, color: ANNOTATION_INK, fillColor: ANNOTATION_INK,
+            fillOpacity: 1, weight: 1, interactive: false,
+          }).addTo(group);
+        }
+        const shown = a.text || '(empty note)';
+        const marker = L.marker(a.latLng, {
+          icon: L.divIcon({
+            className: 'annotation-text',
+            html: textHtml(shown, 0, selected),
+            // Sized generously and centred: a divIcon clips to iconSize, and a
+            // note wrapped onto two lines needs the room.
+            iconSize: [Math.max(60, shown.length * 7 + 16), 34],
+            iconAnchor: [Math.max(60, shown.length * 7 + 16) / 2, 17],
+          }),
+          draggable: true,
+          bubblingMouseEvents: false,
+          zIndexOffset: 900,
+        });
+        marker.on('click', () => callbacksRef.current.onSelectAnnotation?.(a.id));
+        marker.on('dragstart', () => cancelBoxSelectRef.current());
+        marker.on('dragend', () => {
+          const p = marker.getLatLng();
+          callbacksRef.current.onUpdateAnnotation?.(a.id, { latLng: [p.lat, p.lng] });
+        });
+        marker.addTo(group);
+        continue;
+      }
+
+      // Dimension: a rule between two draggable endpoints, ticked at each end,
+      // labelled along its own direction at the midpoint.
+      const ends: Array<[number, number]> = [a.from, a.to];
+      L.polyline(ends, { color: '#ffffff', weight: 3.5, opacity: 0.85, interactive: false }).addTo(group);
+      L.polyline(ends, {
+        color: ANNOTATION_INK, weight: 1.2, opacity: 1, interactive: false,
+      }).addTo(group);
+      for (const [idx, end] of ends.entries()) {
+        const handle = L.circleMarker(end, {
+          radius: selected ? 6 : 4,
+          color: ANNOTATION_INK, fillColor: selected ? '#2563eb' : '#ffffff',
+          fillOpacity: 1, weight: 1.5,
+        });
+        handle.on('click', () => callbacksRef.current.onSelectAnnotation?.(a.id));
+        // circleMarker has no drag of its own, so an invisible draggable marker
+        // rides on top of each end.
+        const grab = L.marker(end, {
+          icon: L.divIcon({ className: 'annotation-grab', html: '', iconSize: [16, 16], iconAnchor: [8, 8] }),
+          draggable: true, bubblingMouseEvents: false, zIndexOffset: 910,
+        });
+        grab.on('dragstart', () => cancelBoxSelectRef.current());
+        grab.on('dragend', () => {
+          const p = grab.getLatLng();
+          callbacksRef.current.onUpdateAnnotation?.(
+            a.id, idx === 0 ? { from: [p.lat, p.lng] } : { to: [p.lat, p.lng] },
+          );
+        });
+        handle.addTo(group);
+        grab.addTo(group);
+      }
+      const mid = dimensionMidpoint(a);
+      const label = dimensionLabel(a);
+      L.marker(mid, {
+        icon: L.divIcon({
+          className: 'annotation-dimension',
+          html: textHtml(label, -dimensionTiltDeg(a), selected),
+          iconSize: [Math.max(48, label.length * 8 + 12), 22],
+          iconAnchor: [Math.max(48, label.length * 8 + 12) / 2, 11],
+        }),
+        interactive: false,
+        zIndexOffset: 900,
+      }).addTo(group);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- annotationSig stands in for annotations
+  }, [annotationSig, selectedAnnotationId]);
 
   // Barrier mode: disable double-click-zoom (dblclick commits the wall) and,
   // when leaving barrier mode (Esc, mode toggle, etc), clear any in-flight

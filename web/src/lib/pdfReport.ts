@@ -12,6 +12,10 @@ import type { GridResult, ReceiverResult } from './solver';
 import {
   buildContourLines, customTracesFrom, steppedTracesFrom, unionContourLevels,
 } from './contourLines';
+import {
+  ANNOTATION_PT, annotationsOf, dimensionLabel, dimensionMidpoint, dimensionTiltDeg,
+} from './annotations';
+import { PDF_FONT, useHouseFont } from './pdfFont';
 import { makeBandsForRange, paletteCss, type Palette } from './colormap';
 import {
   beginFrameClip, clipPolylineToRect, composeBasemap, drawAttribution, drawNorthArrow,
@@ -27,6 +31,8 @@ export interface PdfOptions {
   showReceiverLimits: boolean;
   /// Draw the receiver name under each marker.
   showReceiverNames: boolean;
+  /// Draw the project's notes and dimension lines.
+  annotations: boolean;
 }
 
 export const DEFAULT_PDF_OPTIONS: PdfOptions = {
@@ -37,6 +43,7 @@ export const DEFAULT_PDF_OPTIONS: PdfOptions = {
   northArrow: true,
   showReceiverLimits: false,
   showReceiverNames: true,
+  annotations: true,
 };
 
 export interface PdfInput {
@@ -71,6 +78,12 @@ export async function buildPdf(input: PdfInput): Promise<jsPDF> {
   const page = PAGES[o.pageId] ?? PAGES['a4-landscape'];
   const topPad = o.titleBlock ? 16 : 0;
   const { doc, frame } = startPdf(page, extent, topPad);
+
+  // House typeface for EVERY string on the page, not just annotations — a
+  // figure set half in Arial and half in Helvetica reads as a mistake.
+  // `useHouseFont` leaves it as the active face, so every later `doc.text`
+  // picks it up; it falls back to Helvetica if registration fails.
+  const family = (await useHouseFont(doc)) ? PDF_FONT : 'helvetica';
 
   // ---- basemap ----
   const base = await composeBasemap(extent, input.tileUrl);
@@ -147,6 +160,7 @@ export async function buildPdf(input: PdfInput): Promise<jsPDF> {
   drawSources(doc, project, frame);
   drawCalcArea(doc, project, frame);
   drawReceivers(doc, project, results, frame, o.showReceiverLimits, o.showReceiverNames);
+  if (o.annotations) drawAnnotations(doc, project, frame);
   endFrameClip(doc);
 
   // Always drawn: the licence requires it, so it is not a dialog option.
@@ -156,15 +170,17 @@ export async function buildPdf(input: PdfInput): Promise<jsPDF> {
   }
   if (o.scaleBar) drawScaleBar(doc, frame);
   if (o.northArrow) drawNorthArrow(doc, frame);
-  if (o.titleBlock) drawTitle(doc, project, page.marginMm);
+  if (o.titleBlock) drawTitle(doc, project, page.marginMm, family);
 
   return doc;
 }
 
-function drawTitle(doc: jsPDF, project: Project, margin: number) {
+function drawTitle(doc: jsPDF, project: Project, margin: number, family: string) {
   doc.setTextColor(20, 20, 20);
   doc.setFontSize(13);
+  doc.setFont(family, 'bold');
   doc.text(project.name || 'Untitled project', margin, margin + 5);
+  doc.setFont(family, 'normal');
   doc.setFontSize(8);
   doc.setTextColor(90, 90, 90);
   const sc = project.scenario;
@@ -276,6 +292,89 @@ function drawReceivers(
       doc.setTextColor(20, 20, 20);
       doc.text(nm, x + 1.6, y + 2.6);
     }
+  }
+}
+
+/// Notes and dimensions, in the house typeface at 9 pt.
+///
+/// Exported for test: the rest of `buildPdf` needs a DOM to fetch basemap
+/// tiles, and what is worth checking here — that the note's words and the
+/// dimension's measurement actually reach the page — needs no DOM at all.
+///
+/// Text is drawn with a white buffer — eight offset copies behind the black
+/// glyphs — because black on aerial imagery is unreadable about half the time.
+/// The same trick the receiver names use, at annotation size.
+export function drawAnnotations(doc: jsPDF, project: Project, frame: MapFrame) {
+  const items = annotationsOf(project);
+  if (!items.length) return;
+  doc.setFontSize(ANNOTATION_PT);
+  // 9 pt ≈ 3.18 mm; a 0.22 mm buffer is the same visual weight the map uses.
+  const halo = 0.22;
+  const ring: Array<[number, number]> = [
+    [-halo, 0], [halo, 0], [0, -halo], [0, halo],
+    [-halo * 0.72, -halo * 0.72], [halo * 0.72, -halo * 0.72],
+    [-halo * 0.72, halo * 0.72], [halo * 0.72, halo * 0.72],
+  ];
+  const buffered = (text: string, x: number, y: number, angle = 0) => {
+    const opts = angle ? { angle } : undefined;
+    doc.setTextColor(255, 255, 255);
+    for (const [ox, oy] of ring) doc.text(text, x + ox, y + oy, opts);
+    doc.setTextColor(0, 0, 0);
+    doc.text(text, x, y, opts);
+  };
+
+  for (const a of items) {
+    if (a.kind === 'text') {
+      if (!a.text) continue;                    // an empty note prints nothing
+      const [x, y] = frame.toPage(a.latLng[0], a.latLng[1]);
+      if (a.leaderTo) {
+        const [lx, ly] = frame.toPage(a.leaderTo[0], a.leaderTo[1]);
+        doc.setDrawColor(255, 255, 255);
+        doc.setLineWidth(0.55);
+        doc.line(x, y, lx, ly);
+        doc.setDrawColor(0, 0, 0);
+        doc.setLineWidth(0.25);
+        doc.line(x, y, lx, ly);
+        doc.setFillColor(0, 0, 0);
+        doc.circle(lx, ly, 0.45, 'F');
+      }
+      // Multi-line notes: one buffered run per line, centred like the map's.
+      const lines = a.text.split('\n');
+      const lineH = ANNOTATION_PT * 0.352778 * 1.25;   // pt → mm, 1.25 leading
+      lines.forEach((ln, i) => {
+        const w = doc.getTextWidth(ln);
+        buffered(ln, x - w / 2, y - ((lines.length - 1) / 2 - i) * lineH);
+      });
+      continue;
+    }
+
+    const [x1, y1] = frame.toPage(a.from[0], a.from[1]);
+    const [x2, y2] = frame.toPage(a.to[0], a.to[1]);
+    doc.setDrawColor(255, 255, 255);
+    doc.setLineWidth(0.55);
+    doc.line(x1, y1, x2, y2);
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.25);
+    doc.line(x1, y1, x2, y2);
+    // End ticks perpendicular to the run, so the extent being dimensioned is
+    // unambiguous.
+    const len = Math.hypot(x2 - x1, y2 - y1) || 1;
+    const nx = -((y2 - y1) / len) * 0.9;
+    const ny = ((x2 - x1) / len) * 0.9;
+    doc.line(x1 - nx, y1 - ny, x1 + nx, y1 + ny);
+    doc.line(x2 - nx, y2 - ny, x2 + nx, y2 + ny);
+
+    const label = dimensionLabel(a);
+    const [mLat, mLng] = dimensionMidpoint(a);
+    const [mx, my] = frame.toPage(mLat, mLng);
+    const w = doc.getTextWidth(label);
+    const tilt = dimensionTiltDeg(a);
+    const rad = (tilt * Math.PI) / 180;
+    // Rotate about the midpoint: shift back along the text direction by half
+    // its width, and lift it clear of the line.
+    const ox = -Math.cos(rad) * (w / 2) - Math.sin(rad) * 1.1;
+    const oy = Math.sin(rad) * (w / 2) - Math.cos(rad) * 1.1;
+    buffered(label, mx + ox, my + oy, tilt);
   }
 }
 

@@ -34,7 +34,9 @@ import {
   type CatalogLookup,
 } from '../lib/bessGroups';
 import type { BessGroup } from '../lib/types';
-import type { Barrier, CustomContourLine, Project, Receiver, Source, SourceKind } from '../lib/types';
+import type {
+  Annotation, Barrier, CustomContourLine, Project, Receiver, Source, SourceKind,
+} from '../lib/types';
 import { settingsOf } from '../lib/types';
 import { calcAreaCorners } from '../lib/geo';
 import { pushEscHandler } from '../lib/escStack';
@@ -208,6 +210,9 @@ export function ProjectScreen() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [addMode, setAddMode] = useState<AddMode>('none');
+  /// Which annotation the side-panel editor is showing. Session state — it is
+  /// a selection, not part of the document.
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [show3D, setShow3D] = useState(false);
   /// I10: floating settings window.
   const [showSettings, setShowSettings] = useState(false);
@@ -241,6 +246,7 @@ export function ProjectScreen() {
     setAddMode('none');
     setSelectedIds(new Set());
     setSelectedGroupId(null);
+    setSelectedAnnotationId(null);
   }), []);
 
   // I5 — Ctrl/Cmd+C / Ctrl/Cmd+V for map objects. Same skip-when-in-a-text-field
@@ -1141,8 +1147,11 @@ export function ProjectScreen() {
   }
 
   function handleAddSource(latLng: [number, number]) {
-    if (!project || addMode === 'none' || addMode === 'receiver' || addMode === 'measure') return;
-    const kind = addMode as SourceKind;
+    // Allow-list rather than deny-list: every mode added to AddMode since
+    // (barrier, annotation, dimension) would otherwise fall through this guard
+    // and be cast to a SourceKind it is not.
+    if (!project || (addMode !== 'wtg' && addMode !== 'bess' && addMode !== 'auxiliary')) return;
+    const kind: SourceKind = addMode;
     const def = defaultModelFor(project, kind);
     if (!def) {
       setError(`No catalog entry available for ${kind}. Add one in the Catalog screen first.`);
@@ -1209,6 +1218,40 @@ export function ProjectScreen() {
     setProject({ ...project, barriers: [...project.barriers, newBarrier] });
     setActiveTab('barriers');
     selectOne(id);
+  }
+
+  // ---- Annotations ----
+  //
+  // Deliberately on `setProject` (not the quiet path): annotations are
+  // deliverable content, so placing or moving one belongs in undo history.
+
+  function handleAddAnnotation(a: Annotation) {
+    if (!project) return;
+    setProject({ ...project, annotations: [...(project.annotations ?? []), a] });
+    setSelectedAnnotationId(a.id);
+    setActiveTab('layers');
+    // One note per click; staying in the mode would drop a second note the
+    // moment the user clicks the one they just made to type into it.
+    setAddMode('none');
+  }
+
+  function handleUpdateAnnotation(id: string, patch: Partial<Annotation>) {
+    if (!project) return;
+    setProject({
+      ...project,
+      annotations: (project.annotations ?? []).map(
+        (a) => (a.id === id ? { ...a, ...patch } as Annotation : a),
+      ),
+    });
+  }
+
+  function handleRemoveAnnotation(id: string) {
+    if (!project) return;
+    setProject({
+      ...project,
+      annotations: (project.annotations ?? []).filter((a) => a.id !== id),
+    });
+    setSelectedAnnotationId((cur) => (cur === id ? null : cur));
   }
 
   function handleAddReceiver(latLng: [number, number]) {
@@ -1543,6 +1586,10 @@ export function ProjectScreen() {
         contourOpacity={contourOpacity} setContourOpacity={setContourOpacity}
         contourStepDb={contourStepDb} setContourStepDb={setContourStepDb}
         customContours={customContours} setCustomContours={setCustomContours}
+        selectedAnnotationId={selectedAnnotationId}
+        onSelectAnnotation={setSelectedAnnotationId}
+        onUpdateAnnotation={handleUpdateAnnotation}
+        onRemoveAnnotation={handleRemoveAnnotation}
         contourBounds={contourBounds} setContourBounds={setContourBounds}
         palette={palette} setPalette={setPalette}
         domainMode={domainMode} setDomainMode={setDomainMode}
@@ -1607,6 +1654,10 @@ export function ProjectScreen() {
           customContours={customContours}
           palette={palette}
           dbDomain={dbDomain}
+          onAddAnnotation={handleAddAnnotation}
+          onUpdateAnnotation={handleUpdateAnnotation}
+          selectedAnnotationId={selectedAnnotationId}
+          onSelectAnnotation={(id) => { setSelectedAnnotationId(id); if (id) setActiveTab('layers'); }}
           onAddSource={handleAddSource}
           onAddReceiver={handleAddReceiver}
           onAddBarrierPolyline={handleAddBarrierPolyline}

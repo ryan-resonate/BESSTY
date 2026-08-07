@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { notify } from '../lib/notify';
 import type {
-  CustomContourLine, Group, Project, ProjectSettings, Source, Receiver, SourceKind,
+  Annotation, CustomContourLine, Group, Project, ProjectSettings, Source, Receiver, SourceKind,
   ReferenceLayer, ReferenceLayerStyle, ReferenceFeature, ReferencePointShape,
 } from '../lib/types';
+import { annotationsOf, dimensionLabel } from '../lib/annotations';
 import { limitForPeriod, settingsOf } from '../lib/types';
 import { exceedsLimit, limitComparisonFor } from '../lib/limits';
 import type { ReceiverResult } from '../lib/solver';
@@ -59,7 +60,8 @@ function scopeSuffix(scope: 'global' | 'local' | 'personal'): string {
   return '';
 }
 
-export type AddMode = 'none' | 'wtg' | 'bess' | 'auxiliary' | 'receiver' | 'measure' | 'barrier';
+export type AddMode = 'none' | 'wtg' | 'bess' | 'auxiliary' | 'receiver' | 'measure' | 'barrier'
+  | 'annotation' | 'dimension';
 
 /// No 'settings' tab: settings live in the floating window, opened from the
 /// ⚙ in this panel's tab row.
@@ -162,6 +164,11 @@ interface Props {
   /// User-named compliance lines (Layers → Custom lines).
   customContours?: CustomContourLine[];
   setCustomContours?(v: CustomContourLine[]): void;
+  /// Figure annotations (Layers → Annotations).
+  selectedAnnotationId?: string | null;
+  onSelectAnnotation?(id: string | null): void;
+  onUpdateAnnotation?(id: string, patch: Partial<Annotation>): void;
+  onRemoveAnnotation?(id: string): void;
   setContourBounds(b: { min: number; max: number; step: number }): void;
   demStatus: 'idle' | 'loading' | 'ready' | 'error';
   demTilesLoaded: number | null;
@@ -1562,6 +1569,8 @@ function LayersTab(props: Props) {
         setLines={props.setCustomContours}
       />
 
+      <AnnotationsCard {...props} />
+
       <Card title="Terrain">
         <div className="meta-line">
           DEM:{' '}
@@ -1680,6 +1689,96 @@ function CustomContourCard(props: {
       <div className="add-row">
         <button className="btn small" onClick={add}>+ Custom line</button>
       </div>
+    </Card>
+  );
+}
+
+// -------------------- Annotations --------------------
+
+function AnnotationsCard(props: Props) {
+  const {
+    project, addMode, setAddMode, selectedAnnotationId,
+    onSelectAnnotation, onUpdateAnnotation, onRemoveAnnotation,
+  } = props;
+  if (!onUpdateAnnotation || !onRemoveAnnotation) return null;
+  const annotations = annotationsOf(project);
+
+  return (
+    <Card title="Annotations">
+      <div className="hint">
+        Notes and dimensions drawn on the figure and carried into the PDF at
+        9 pt. They are drawing furniture — the solver never sees them.
+      </div>
+      <div className="add-row">
+        <button
+          className={`btn small${addMode === 'annotation' ? ' active' : ''}`}
+          onClick={() => setAddMode(addMode === 'annotation' ? 'none' : 'annotation')}
+        >{addMode === 'annotation' ? 'Click the map…' : '+ Note'}</button>
+        <button
+          className={`btn small${addMode === 'dimension' ? ' active' : ''}`}
+          onClick={() => setAddMode(addMode === 'dimension' ? 'none' : 'dimension')}
+        >{addMode === 'dimension' ? 'Click two points…' : '+ Dimension'}</button>
+      </div>
+      {annotations.length === 0 && <div className="meta-line muted">None yet.</div>}
+      {annotations.map((a) => {
+        const sel = a.id === selectedAnnotationId;
+        return (
+          <div
+            key={a.id}
+            className={`custom-line-row${sel ? ' selected' : ''}`}
+            onClick={() => onSelectAnnotation?.(a.id)}
+          >
+            {a.kind === 'text' ? (
+              <Field label="Note text">
+                <textarea
+                  rows={2}
+                  value={a.text}
+                  placeholder="e.g. Substation under separate assessment"
+                  onChange={(e) => onUpdateAnnotation(a.id, { text: e.target.value })}
+                />
+              </Field>
+            ) : (
+              <Field label="Dimension label">
+                <input
+                  type="text"
+                  value={a.label ?? ''}
+                  placeholder={dimensionLabel({ ...a, label: undefined })}
+                  onChange={(e) => onUpdateAnnotation(a.id, { label: e.target.value || undefined })}
+                />
+              </Field>
+            )}
+            <div className="custom-line-style">
+              <span className="muted">
+                {a.kind === 'text'
+                  ? (a.leaderTo ? 'note with leader' : 'note')
+                  : `measures ${dimensionLabel({ ...a, label: undefined })}`}
+              </span>
+              {a.kind === 'text' && (
+                <button
+                  className="btn small"
+                  title={a.leaderTo
+                    ? 'Remove the leader line'
+                    : 'Add a leader line, then drag its end to what it points at'}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (a.leaderTo) { onUpdateAnnotation(a.id, { leaderTo: undefined }); return; }
+                    // Start the leader a short way off so both ends are
+                    // separately grabbable straight away.
+                    onUpdateAnnotation(a.id, {
+                      leaderTo: [a.latLng[0] - 0.0004, a.latLng[1] + 0.0006],
+                    });
+                  }}
+                >{a.leaderTo ? 'Drop leader' : 'Add leader'}</button>
+              )}
+              <button
+                className="x-btn"
+                title="Remove this annotation"
+                onClick={(e) => { e.stopPropagation(); onRemoveAnnotation(a.id); }}
+              >✕</button>
+            </div>
+          </div>
+        );
+      })}
     </Card>
   );
 }
