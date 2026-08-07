@@ -10,7 +10,7 @@ import { calcAreaCorners } from './geo';
 import { assessedLevel, exceedsLimit, limitComparisonFor } from './limits';
 import type { GridResult, ReceiverResult } from './solver';
 import {
-  buildContourLines, customTracesFrom, steppedTracesFrom, unionContourLevels,
+  buildContourLines, clampLineWidth, customTracesFrom, steppedTracesFrom, unionContourLevels,
 } from './contourLines';
 import {
   ANNOTATION_PT, annotationsOf, dimensionLabel, dimensionMidpoint, dimensionTiltDeg,
@@ -158,8 +158,11 @@ export async function buildPdf(input: PdfInput): Promise<jsPDF> {
     for (const { line: def, set } of traced) {
       const [r, g, b] = rgb(def.color);
       doc.setDrawColor(r, g, b);
-      doc.setLineWidth(Math.max(0.15, Math.min(3, def.widthPx * 0.26)));
-      if (def.dashed) doc.setLineDashPattern([1.8, 1.3], 0);
+      const mm = Math.max(0.15, Math.min(3, clampLineWidth(def.widthPx) * 0.26));
+      doc.setLineWidth(mm);
+      // Scaled with the stroke, as on the map: a fixed pattern turns solid
+      // once the line is heavier than the gap between dashes.
+      if (def.dashed) doc.setLineDashPattern([mm * 2.8, mm * 2], 0);
       for (const line of set.lines) strokeLine(line);
       if (def.dashed) doc.setLineDashPattern([], 0);
     }
@@ -463,8 +466,9 @@ function drawLegend(
   customLines.forEach((c, i) => {
     const [r, g, b] = rgb(c.color);
     doc.setDrawColor(r, g, b);
-    doc.setLineWidth(Math.max(0.15, Math.min(3, c.widthPx * 0.26)));
-    if (c.dashed) doc.setLineDashPattern([1.2, 0.9], 0);
+    const mm = Math.max(0.15, Math.min(3, clampLineWidth(c.widthPx) * 0.26));
+    doc.setLineWidth(mm);
+    if (c.dashed) doc.setLineDashPattern([mm * 2.4, mm * 1.8], 0);
     doc.line(x + 2, ry + 1.2, x + 6, ry + 1.2);
     if (c.dashed) doc.setLineDashPattern([], 0);
     doc.setTextColor(30, 30, 30);

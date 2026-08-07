@@ -8,7 +8,10 @@ Drawing furniture for the figure: notes explaining something, and dimensions sho
 Add them from **Layers → Annotations**.
 
 - **Note** — click the map to place it, then type the text in the side panel. Drag it anywhere. **Add leader** gives it a pointer line with a draggable dot at its far end: put the dot on whatever the note describes. The leader meets the note at whichever edge faces the dot, so it never runs through the words, and that attachment follows the note as you drag it. Notes may span several lines.
+
 - **Dimension** — click two points. It reads the distance between them automatically, to one decimal below a kilometre. Drag either end to adjust. Type in the label field to override the measurement with a nominal figure such as "6 m min."; clear the field to go back to the measured value.
+
+Click a note or a dimension to select it; **Delete** or **Backspace** removes it. Esc clears the selection.
 
 Text is black with a white buffer so it stays readable over satellite imagery, and dimension labels rotate to lie along their own line.
 

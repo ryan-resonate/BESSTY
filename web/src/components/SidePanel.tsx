@@ -8,8 +8,8 @@ import { DEFAULT_REFERENCE_STYLE } from '../lib/types';
 import { annotationsOf, dimensionLabel } from '../lib/annotations';
 import { weightingFor, weightingLabel } from '../lib/weighting';
 import {
-  DEFAULT_TONALITY_PENALTY_DB, describeTonalBands, tonalityMethodInfo, tonalityMethods,
-  tonalitySettingsFor,
+  DEFAULT_TONALITY_PENALTY_DB, describeTonalBands, tonalityBlocked, tonalityMethodInfo,
+  tonalityMethods, tonalitySettingsFor,
   type TonalityMethod,
 } from '../lib/tonality';
 import { limitForPeriod, settingsOf } from '../lib/types';
@@ -48,7 +48,7 @@ import {
 } from '../lib/exporters';
 import type { GridResult } from '../lib/solver';
 import {
-  buildContourLines, customTracesFrom, steppedTracesFrom, unionContourLevels,
+  buildContourLines, clampLineWidth, customTracesFrom, steppedTracesFrom, unionContourLevels,
   CUSTOM_LABEL_MAX,
 } from '../lib/contourLines';
 import { makeBandsForRange } from '../lib/colormap';
@@ -1414,6 +1414,14 @@ function ResultsTab(props: Props) {
         )}
       </Card>
 
+      {tonalityBlocked(project.scenario.bandSystem, tonalitySettingsFor(project)) && (
+        <Card title="Tonality">
+          <div className="hint" style={{ color: 'var(--red)', fontStyle: 'normal' }}>
+            ⚠ {tonalityBlocked(project.scenario.bandSystem, tonalitySettingsFor(project))}
+          </div>
+        </Card>
+      )}
+
       <Card title="Receiver pass / fail">
         <div className="meta-line">
           {project.receivers.length - exceedances.length} of {project.receivers.length} compliant
@@ -1841,10 +1849,12 @@ function CustomContourCard(props: {
             <label title="Line width (px)">
               <span className="muted">w</span>
               <NumericInput
+                min={0.5}
+                max={12}
                 step={0.5}
                 value={l.widthPx}
                 fallback={2.5}
-                onChange={(v) => patch(l.id, { widthPx: Math.max(0.5, Math.min(10, v)) })}
+                onChange={(v) => patch(l.id, { widthPx: clampLineWidth(v) })}
               />
             </label>
             <label className="row-checkbox">
@@ -2328,8 +2338,58 @@ export function SettingsTab(props: SettingsTabProps) {
       {tab === 'calculation' && (
       <section className="sp-section">
         <h3><span>Tonality</span></h3>
+        <Field label="">
+          <label className="row-checkbox">
+            <input
+              type="checkbox"
+              checked={tonality.enabled}
+              onChange={async (e) => {
+                const on = e.target.checked;
+                const octave = project.scenario.bandSystem !== 'oneThirdOctave';
+                const enable = (extra?: Partial<Project>) => setProject({
+                  ...project,
+                  ...extra,
+                  settings: {
+                    ...settings,
+                    assessment: {
+                      ...settings.assessment,
+                      tonality: { ...settings.assessment?.tonality, enabled: on },
+                    },
+                  },
+                });
+                // Asked HERE, at the moment the user wants the feature, rather
+                // than reported afterwards as "not assessable" on every
+                // receiver. In octave bands the screen cannot say anything at
+                // all, so switching on without switching the band system is
+                // almost never what was meant.
+                if (on && octave) {
+                  const alsoSwitch = await notify.confirm({
+                    title: 'Tonality needs one-third-octave bands',
+                    body: 'This project solves in octave bands, where a tone is smeared '
+                      + 'across a whole band — no receiver could be assessed. Switch the '
+                      + 'project to one-third octave as well? This re-runs the solve.',
+                    confirmLabel: 'Switch and turn on',
+                    cancelLabel: 'Turn on anyway',
+                  });
+                  enable(alsoSwitch
+                    ? { scenario: { ...project.scenario, bandSystem: 'oneThirdOctave' } }
+                    : undefined);
+                  return;
+                }
+                enable();
+              }}
+            />
+            <span>Screen receivers for tonality</span>
+          </label>
+        </Field>
+        {tonalityBlocked(project.scenario.bandSystem, tonality) && (
+          <div className="hint" style={{ color: 'var(--red)', fontStyle: 'normal' }}>
+            ⚠ {tonalityBlocked(project.scenario.bandSystem, tonality)}
+          </div>
+        )}
         <Field label="Screening method">
           <select
+            disabled={!tonality.enabled}
             value={tonality.method}
             onChange={(e) => update({
               assessment: {
@@ -2355,6 +2415,7 @@ export function SettingsTab(props: SettingsTabProps) {
           <label className="row-checkbox">
             <input
               type="checkbox"
+              disabled={!tonality.enabled}
               checked={tonality.applyPenalty}
               onChange={(e) => update({
                 assessment: {
@@ -2366,7 +2427,7 @@ export function SettingsTab(props: SettingsTabProps) {
             <span>Add a penalty to flagged receivers</span>
           </label>
         </Field>
-        {tonality.applyPenalty && (
+        {tonality.enabled && tonality.applyPenalty && (
           <Field label="Penalty (dB)">
             <NumericInput
               min={0} max={20} step={1}

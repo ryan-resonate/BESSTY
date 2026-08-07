@@ -264,7 +264,14 @@ const THIRD_OCTAVE_CENTRES = [
 ];
 
 function spectrumRows(project: Project, results: ReceiverResult[] | null): { headers: Array<string | number>; rows: Array<Array<string | number>> } {
-  const centres = project.scenario.bandSystem === 'oneThirdOctave' ? THIRD_OCTAVE_CENTRES : OCTAVE_CENTRES;
+  // Headers come from the DATA, not from the project setting. Taking them from
+  // the setting produced 31 third-octave columns over a 10-band octave result
+  // — 21 empty columns and no clue that the results were stale — whenever a
+  // band-system change had not been re-solved yet.
+  const solvedBands = results?.[0]?.perBandLp.length;
+  const centres = solvedBands === THIRD_OCTAVE_CENTRES.length ? THIRD_OCTAVE_CENTRES
+    : solvedBands === OCTAVE_CENTRES.length ? OCTAVE_CENTRES
+      : project.scenario.bandSystem === 'oneThirdOctave' ? THIRD_OCTAVE_CENTRES : OCTAVE_CENTRES;
   const headers: Array<string | number> = ['receiver_id', 'receiver_name', ...centres.map((c) => `${c} Hz`)];
   const rows: Array<Array<string | number>> = [];
   if (!results) return { headers, rows };

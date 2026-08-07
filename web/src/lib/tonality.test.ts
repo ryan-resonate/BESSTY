@@ -9,7 +9,8 @@ import assert from 'node:assert/strict';
 
 import {
   assessmentLevel, describeTonalBands, DEFAULT_TONALITY_PENALTY_DB, screenTonality,
-  formatBandHz, tonalityMethodInfo, tonalityMethods, tonalityPenaltyDb, tonalitySettingsFor,
+  formatBandHz, tonalityBlocked, tonalityMethodInfo, tonalityMethods, tonalityPenaltyDb,
+  tonalitySettingsFor,
 } from './tonality';
 import { THIRD_OCTAVE_CENTRES_HZ } from './weighting';
 
@@ -150,6 +151,17 @@ test('no penalty is applied unless the user switches it on', () => {
   assert.equal(tonalityPenaltyDb(flagged(), undefined), 0);
   assert.equal(tonalityPenaltyDb(flagged(), { applyPenalty: false, penaltyDb: 5 }), 0);
   assert.equal(tonalityPenaltyDb(flagged(), { applyPenalty: true, penaltyDb: 5 }), 5);
+  // …and never when screening itself is off.
+  assert.equal(tonalityPenaltyDb(flagged(), { enabled: false, applyPenalty: true, penaltyDb: 5 }), 0);
+});
+
+test('the blocked state is reported before a solve, not after', () => {
+  // Nothing to warn about while screening is off.
+  assert.equal(tonalityBlocked('octave', { enabled: false }), null);
+  assert.equal(tonalityBlocked('octave', undefined), null);
+  // On + octave is the trap: every receiver would come back "not assessable".
+  assert.match(tonalityBlocked('octave', { enabled: true }) ?? '', /one-third octave/);
+  assert.equal(tonalityBlocked('oneThirdOctave', { enabled: true }), null);
 });
 
 test('a clean or unassessable receiver never picks up a penalty', () => {
@@ -173,8 +185,9 @@ test('the assessment level is the solved level plus the penalty', () => {
 
 // ---------- settings + registry ----------
 
-test('settings default to the first method, penalty off, 5 dB', () => {
+test('settings default to screening OFF, the first method, penalty off, 5 dB', () => {
   const s = tonalitySettingsFor({});
+  assert.equal(s.enabled, false, 'screening is opt-in');
   assert.equal(s.method, 'iso1996-2-annexJ');
   assert.equal(s.applyPenalty, false);
   assert.equal(s.penaltyDb, 5);

@@ -8,7 +8,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { assessedLevel, exceedsLimit } from './limits';
-import { exportReceiversCsv } from './exporters';
+import { exportReceiversCsv, exportSpectraCsv } from './exporters';
+
+/// CSV rows, whichever line ending the writer used.
+const SPLIT_LINES = new RegExp('\r?\n');
 import type { ReceiverResult } from './solver';
 import type { Project } from './types';
 import { screenTonality, tonalityPenaltyDb, tonalitySettingsFor } from './tonality';
@@ -61,8 +64,17 @@ function resultFor(project: Project): ReceiverResult {
   };
 }
 
+test('a penalty needs screening switched ON, not just the penalty box ticked', () => {
+  // Screening is opt-in, so a penalty from a screen the user never enabled
+  // would be the most surprising number in the app.
+  const project = projectWith({ applyPenalty: true, penaltyDb: 5 });
+  const r = resultFor(project);
+  assert.equal(r.tonalityPenaltyDb, 0);
+  assert.equal(assessedLevel(r), 38.5);
+});
+
 test('with the penalty off, a tonal receiver still passes on its own level', () => {
-  const project = projectWith(undefined);
+  const project = projectWith({ enabled: true });
   const r = resultFor(project);
   assert.equal(r.tonality?.tonal, true, 'the tone should still be REPORTED');
   assert.equal(r.tonalityPenaltyDb, 0);
@@ -71,7 +83,7 @@ test('with the penalty off, a tonal receiver still passes on its own level', () 
 });
 
 test('switching the penalty on turns the same receiver red', () => {
-  const project = projectWith({ applyPenalty: true, penaltyDb: 5 });
+  const project = projectWith({ enabled: true, applyPenalty: true, penaltyDb: 5 });
   const r = resultFor(project);
   assert.equal(r.tonalityPenaltyDb, 5);
   assert.equal(assessedLevel(r), 43.5);
@@ -79,7 +91,7 @@ test('switching the penalty on turns the same receiver red', () => {
 });
 
 test('the export agrees with the badge, and shows its working', async () => {
-  const project = projectWith({ applyPenalty: true, penaltyDb: 5 });
+  const project = projectWith({ enabled: true, applyPenalty: true, penaltyDb: 5 });
   const csv = await exportReceiversCsv(project, [resultFor(project)]).text();
   const [header, row] = csv.trim().split(/\r?\n/);
   const cols = header.split(',');
@@ -96,7 +108,7 @@ test('the export agrees with the badge, and shows its working', async () => {
 });
 
 test('with the penalty off the export passes and records no penalty', async () => {
-  const project = projectWith(undefined);
+  const project = projectWith({ enabled: true });
   const csv = await exportReceiversCsv(project, [resultFor(project)]).text();
   const [header, row] = csv.trim().split(/\r?\n/);
   const cols = header.split(',');
@@ -104,6 +116,35 @@ test('with the penalty off the export passes and records no penalty', async () =
   assert.equal(vals[cols.indexOf('tonal')], 'yes', 'still reported');
   assert.equal(vals[cols.indexOf('tonality_penalty_db')], '0');
   assert.equal(vals[cols.indexOf('pass_night')], 'pass');
+});
+
+test('the spectra export never writes more columns than the data fills', async () => {
+  // The reported symptom: 31 third-octave headers over a 10-band octave
+  // result, leaving 21 empty columns and no hint the results were stale. The
+  // headers now follow the DATA, so a project mid-switch exports a coherent
+  // octave sheet rather than a third-octave one with holes in it.
+  const project = projectWith({ enabled: true });          // says oneThirdOctave
+  const staleOctave: ReceiverResult = {
+    receiverId: 'R1',
+    perBandLp: new Float64Array(10).fill(60),              // solved at octave
+    totalDbA: 60,
+    perSource: [],
+  };
+  const csv = await exportSpectraCsv(project, [staleOctave]).text();
+  const [header, row] = csv.trim().split(SPLIT_LINES);
+  const cols = header.split(',');
+  const vals = row.split(',');
+  assert.equal(cols.length, vals.length, 'header and row must be the same width');
+  // id + name + 10 octave bands.
+  assert.equal(cols.length, 12, header);
+  assert.equal(vals.filter((v) => v === '').length, 0, 'no empty columns');
+
+  // Once the solve catches up, the same export is 31 bands wide.
+  const fresh: ReceiverResult = {
+    receiverId: 'R1', perBandLp: new Float64Array(31).fill(60), totalDbA: 60, perSource: [],
+  };
+  const csv2 = await exportSpectraCsv(project, [fresh]).text();
+  assert.equal(csv2.trim().split(SPLIT_LINES)[0].split(',').length, 33);
 });
 
 test('a result from before tonality existed is judged on its own level', () => {

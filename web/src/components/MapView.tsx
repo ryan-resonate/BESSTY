@@ -17,8 +17,8 @@ import { escapeHtml, safeCssColor } from '../lib/html';
 import { weightingFor, weightingLabel } from '../lib/weighting';
 import { paletteRgb, paletteCss, type Palette, tForDb, makeBandsForRange } from '../lib/colormap';
 import {
-  buildContourLinesAsync, customTracesFrom, steppedTracesFrom, unionContourLevels,
-  type ContourLineSet,
+  buildContourLinesAsync, clampLineWidth, customTracesFrom, dashArrayFor, steppedTracesFrom,
+  unionContourLevels, type ContourLineSet,
 } from '../lib/contourLines';
 import { footprintFor, lookupEntry, resolveContainer } from '../lib/catalog';
 
@@ -2720,14 +2720,14 @@ export function MapView({
         for (const { line: def, set } of customTracesFrom(sets, custom)) {
           const colour = safeCssColor(def.color);
           // Clamped: a persisted width of 1e6 would paint the whole viewport.
-          const weight = Math.max(0.5, Math.min(12, def.widthPx || 2.5));
+          const weight = clampLineWidth(def.widthPx);
           for (const line of set.lines) {
             L.polyline(line, {
               color: '#ffffff', weight: weight + 2.5, opacity: 0.65, interactive: false,
             }).addTo(into);
             L.polyline(line, {
               color: colour, weight, opacity: 1, interactive: false,
-              dashArray: def.dashed ? '7 5' : undefined,
+              dashArray: def.dashed ? dashArrayFor(weight) : undefined,
             }).addTo(into);
             addLabel(line, def.label || `${def.levelDb} dB`, into, colour);
           }

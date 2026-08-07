@@ -284,13 +284,33 @@ export function ProjectScreen() {
   /// (the state setter is stable) but never pushed an undo step, and one
   /// Ctrl+Z after a paste jumped back two conceptual edits.
   const setProjectRef = useRef<(p: Project) => void>(() => {});
+  /// Mirrored so the once-mounted key handler sees the current selection and
+  /// the current remover without re-subscribing on every change.
+  const selectedAnnotationIdRef = useRef<string | null>(null);
+  const handleRemoveAnnotationRef = useRef<(id: string) => void>(() => {});
   useEffect(() => {
     async function onKey(ev: KeyboardEvent) {
+      const t = ev.target as HTMLElement | null;
+      const typing = !!t
+        && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+
+      // Delete / Backspace removes the selected annotation. Not gated on a
+      // modifier — a note or dimension is selected by clicking it on the map,
+      // and Delete is what anyone reaches for next. Skipped while typing, or
+      // editing that note's own text would delete it mid-word.
+      if (!typing && (ev.key === 'Delete' || ev.key === 'Backspace')) {
+        const id = selectedAnnotationIdRef.current;
+        if (id) {
+          ev.preventDefault();
+          handleRemoveAnnotationRef.current(id);
+        }
+        return;
+      }
+
       if (!(ev.ctrlKey || ev.metaKey)) return;
       const k = ev.key.toLowerCase();
       if (k !== 'c' && k !== 'v') return;
-      const t = ev.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (typing) return;
 
       const p = projectRef.current;
       if (!p) return;
@@ -1263,6 +1283,8 @@ export function ProjectScreen() {
     });
   }
 
+  useEffect(() => { selectedAnnotationIdRef.current = selectedAnnotationId; }, [selectedAnnotationId]);
+
   function handleRemoveAnnotation(id: string) {
     if (!project) return;
     setProject({
@@ -1271,6 +1293,7 @@ export function ProjectScreen() {
     });
     setSelectedAnnotationId((cur) => (cur === id ? null : cur));
   }
+  useEffect(() => { handleRemoveAnnotationRef.current = handleRemoveAnnotation; });
 
   function handleAddReceiver(latLng: [number, number]) {
     if (!project) return;

@@ -418,9 +418,13 @@ export interface AssessmentSettings {
   /// This changes the number, not just its label, so switching it invalidates
   /// the contour grid exactly as changing the standard does.
   weighting?: 'A' | 'C' | 'Z';
-  /// Tonality screening at the receiver. The screen always reports; the
-  /// penalty is opt-in. See `lib/tonality.ts`.
+  /// Tonality screening at the receiver. See `lib/tonality.ts`.
   tonality?: {
+    /// Absent = OFF. Screening only means anything at one-third-octave
+    /// resolution, so it is opt-in: switching it on is what prompts the
+    /// conversation about the band system, instead of every receiver quietly
+    /// reporting "not assessable".
+    enabled?: boolean;
     /// Which screening method. A union rendered from a registry, so adding a
     /// jurisdiction's method later needs no UI change.
     method?: 'iso1996-2-annexJ';

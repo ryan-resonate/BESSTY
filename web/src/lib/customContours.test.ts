@@ -10,8 +10,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  buildContourLines, customTracesFrom, sanitiseCustomContours, steppedTracesFrom,
-  unionContourLevels, CUSTOM_LABEL_MAX, type ContourLineSet,
+  buildContourLines, clampLineWidth, customTracesFrom, dashArrayFor, sanitiseCustomContours,
+  steppedTracesFrom, unionContourLevels, CUSTOM_LABEL_MAX, CUSTOM_LINE_WIDTH_MAX,
+  CUSTOM_LINE_WIDTH_MIN, type ContourLineSet,
 } from './contourLines';
 import { escapeHtml, safeCssColor } from './html';
 import { exportContoursKml, exportContoursShp } from './exporters';
@@ -211,6 +212,34 @@ test('a label is capped to the width the shapefile can actually store', () => {
   assert.equal(c.label.length, CUSTOM_LABEL_MAX);
   // Otherwise the KML keeps the whole name while the DBF silently truncates,
   // and two exports of one figure disagree about what the line is called.
+});
+
+// ---------- line weight and dashes ----------
+
+test('the line width is clamped, so a negative value cannot make a line vanish', () => {
+  // The field accepted anything: Leaflet draws a negative weight as nothing at
+  // all, so the line silently disappeared with no clue why.
+  assert.equal(clampLineWidth(-3), CUSTOM_LINE_WIDTH_MIN);
+  assert.equal(clampLineWidth(0), CUSTOM_LINE_WIDTH_MIN);
+  assert.equal(clampLineWidth(1e6), CUSTOM_LINE_WIDTH_MAX);
+  assert.equal(clampLineWidth(NaN), 2.5);
+  assert.equal(clampLineWidth(3), 3);
+  // …and the same clamp applies to whatever is already stored on a project.
+  const [c] = sanitiseCustomContours([{ id: 'x', levelDb: 40, widthPx: -5 }]);
+  assert.equal(c.widthPx, CUSTOM_LINE_WIDTH_MIN);
+});
+
+test('dashes stay visible at every weight', () => {
+  // A fixed "7 5" pattern merges into a solid line once the stroke is heavier
+  // than the gap — the dashed box appears to do nothing at 8 px.
+  for (const w of [0.5, 1, 2.5, 5, 8, 12]) {
+    const [dash, gap] = dashArrayFor(w).split(' ').map(Number);
+    assert.ok(dash > w, `${w}px: dash ${dash} is not longer than the stroke`);
+    assert.ok(gap > w, `${w}px: gap ${gap} would be swallowed by the stroke`);
+  }
+  // Out-of-range widths still produce a usable pattern rather than "NaN NaN".
+  assert.match(dashArrayFor(-1), /^[\d.]+ [\d.]+$/);
+  assert.match(dashArrayFor(NaN), /^[\d.]+ [\d.]+$/);
 });
 
 // ---------- export identity ----------

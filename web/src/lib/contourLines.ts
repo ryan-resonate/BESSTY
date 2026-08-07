@@ -164,12 +164,34 @@ export function sanitiseCustomContours(raw: unknown): CustomContourLine[] {
       label: typeof c.label === 'string' ? c.label.slice(0, CUSTOM_LABEL_MAX) : '',
       levelDb: c.levelDb as number,
       color: safeCssColor(c.color, '#dc2626'),
-      widthPx: Number.isFinite(c.widthPx) ? Math.max(0.5, Math.min(12, c.widthPx as number)) : 2.5,
+      widthPx: clampLineWidth(c.widthPx as number),
       dashed: c.dashed !== false,
       export: c.export !== false,
     });
   }
   return out;
+}
+
+/// Stroke width bounds for a custom line. The field accepted anything, so a
+/// pasted or fat-fingered value could go negative — which Leaflet draws as
+/// nothing at all — or large enough to fill the viewport.
+export const CUSTOM_LINE_WIDTH_MIN = 0.5;
+export const CUSTOM_LINE_WIDTH_MAX = 12;
+
+export function clampLineWidth(v: number): number {
+  if (!Number.isFinite(v)) return 2.5;
+  return Math.max(CUSTOM_LINE_WIDTH_MIN, Math.min(CUSTOM_LINE_WIDTH_MAX, v));
+}
+
+/// Dash pattern for a stroke of this width.
+///
+/// A fixed "7 5" pattern disappears once the stroke is heavier than the gap:
+/// at 8 px the dashes merge into a solid line, and the user is left wondering
+/// why the dashed box does nothing. Scaling both with the width keeps the
+/// rhythm recognisable at every weight.
+export function dashArrayFor(widthPx: number): string {
+  const w = clampLineWidth(widthPx);
+  return `${(w * 2.8).toFixed(1)} ${(w * 2).toFixed(1)}`;
 }
 
 /// Longest custom-line name kept. Matches the shapefile's `LABEL` field width,

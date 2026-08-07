@@ -137,6 +137,20 @@ export function tonalityMethodInfo(id: TonalityMethod): TonalityMethodInfo {
   return METHODS[id]?.info ?? METHODS[DEFAULT_TONALITY_METHOD].info;
 }
 
+/// Is the screen going to be able to say anything? Used by the UI to warn at
+/// the moment the mismatch is created rather than after a solve.
+export function tonalityBlocked(
+  bandSystem: BandSystem,
+  settings: { enabled?: boolean } | undefined,
+): string | null {
+  if (settings?.enabled !== true) return null;
+  if (bandSystem !== 'oneThirdOctave') {
+    return 'Tonality screening is on, but the project solves in octave bands — '
+      + 'no receiver can be assessed. Switch to one-third octave in Settings.';
+  }
+  return null;
+}
+
 /// Run the screen over one receiver's received spectrum.
 export function screenTonality(
   perBandLp: ArrayLike<number> | null | undefined,
@@ -172,8 +186,12 @@ export function screenTonality(
 /// Zero unless the user has switched the penalty on AND a tone was found.
 export function tonalityPenaltyDb(
   result: TonalityResult,
-  settings: { applyPenalty?: boolean; penaltyDb?: number } | undefined,
+  settings: { enabled?: boolean; applyPenalty?: boolean; penaltyDb?: number } | undefined,
 ): number {
+  // `enabled` is checked here as well as at the call site: a penalty from a
+  // screen the user never switched on would be the most surprising number in
+  // the app.
+  if (settings?.enabled === false) return 0;
   if (!settings?.applyPenalty || !result.assessable || !result.tonal) return 0;
   const db = settings.penaltyDb;
   return Number.isFinite(db) ? Math.max(0, db as number) : DEFAULT_TONALITY_PENALTY_DB;
@@ -206,6 +224,11 @@ export function assessmentLevel(levelDb: number | null, penaltyDb: number): numb
 
 /// Settings shape, mirrored on `ProjectSettings.assessment.tonality`.
 export interface TonalitySettings {
+  /// Screening is OFF until asked for. It only means anything at one-third-
+  /// octave resolution, so making it opt-in is what forces the conversation
+  /// about the band system at the moment the user wants the feature — rather
+  /// than silently reporting "not assessable" on every receiver forever.
+  enabled?: boolean;
   method?: TonalityMethod;
   /// Default false: the screen reports, but nothing is added to the level
   /// unless the user asks for it.
@@ -218,6 +241,7 @@ export function tonalitySettingsFor(project: {
 }): Required<TonalitySettings> {
   const t = project.settings?.assessment?.tonality;
   return {
+    enabled: t?.enabled === true,
     method: t?.method && t.method in METHODS ? t.method : DEFAULT_TONALITY_METHOD,
     applyPenalty: t?.applyPenalty === true,
     penaltyDb: Number.isFinite(t?.penaltyDb) ? (t!.penaltyDb as number) : DEFAULT_TONALITY_PENALTY_DB,

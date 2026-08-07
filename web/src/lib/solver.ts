@@ -117,6 +117,10 @@ export function ensureSolverReady(): Promise<void> {
 export interface ReceiverResult {
   receiverId: string;
   perBandLp: Float64Array;
+  /// The band system this result was SOLVED in. Kept on the result because the
+  /// project's setting can change without a re-solve, and a consumer that
+  /// assumes they agree writes 31 headers over 10 numbers.
+  bandSystem?: 'octave' | 'oneThirdOctave';
   /// The solved level, in the project's assessment weighting. What the user is
   /// shown as "the level".
   totalDbA: number;
@@ -496,11 +500,14 @@ export async function evaluateProject(
       // badge, the PDF and the exports — judges the same number against the
       // limit. A penalty computed independently at each site is a penalty that
       // eventually disagrees with itself.
-      const tonality = screenTonality(summed, project.scenario.bandSystem, tonalityCfg.method);
-      const penaltyDb = tonalityPenaltyDb(tonality, tonalityCfg);
+      const tonality = tonalityCfg.enabled
+        ? screenTonality(summed, project.scenario.bandSystem, tonalityCfg.method)
+        : undefined;
+      const penaltyDb = tonality ? tonalityPenaltyDb(tonality, tonalityCfg) : 0;
       results.set(rr.receiver_id, {
         receiverId: rr.receiver_id,
         perBandLp: summed,
+        bandSystem: project.scenario.bandSystem,
         totalDbA: total,
         tonality,
         tonalityPenaltyDb: penaltyDb,
