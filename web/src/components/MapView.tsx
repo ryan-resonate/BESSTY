@@ -21,6 +21,7 @@ import {
   unionContourLevels, type ContourLineSet,
 } from '../lib/contourLines';
 import { footprintFor, lookupEntry, resolveContainer } from '../lib/catalog';
+import { sourceIsOff } from '../lib/modes';
 
 export type ContourMode = 'filled' | 'lines' | 'both';
 
@@ -142,8 +143,17 @@ function sourceMarker(
   /// (fix #7) so each unit's rectangle rotates with the parent group
   /// rather than staying axis-aligned. WTGs ignore this.
   groupYawDeg?: number,
+  /// Switched off for the period being assessed — not in the scene at all, so
+  /// it is drawn as absent rather than merely quiet: greyed, and struck
+  /// through. A unit contributing nothing must not look like one contributing
+  /// a little.
+  off?: boolean,
 ): L.DivIcon {
-  const colour = SOURCE_KIND_COLOR[s.kind] ?? '#2A2A2A';
+  const colour = off ? '#9aa0a6' : (SOURCE_KIND_COLOR[s.kind] ?? '#2A2A2A');
+  const ink = off ? '#6b7075' : '#2A2A2A';
+  const strike = off
+    ? `<line x1="-11" y1="11" x2="11" y2="-11" stroke="#d32f2f" stroke-width="2.2" stroke-linecap="round" opacity="0.85"/>`
+    : '';
   // Selection ring: bright yellow halo when selected.
   // Group ring: small coloured arc on the upper-left of the icon.
   const selRing = selected
@@ -158,11 +168,12 @@ function sourceMarker(
       html: `<svg width="36" height="36" viewBox="-18 -18 36 36" style="filter:drop-shadow(0 1px 1px rgba(0,0,0,.4))">
         ${selRing}
         ${groupRing}
-        <circle cx="0" cy="0" r="10" fill="rgba(255,255,255,.7)" stroke="#2A2A2A" stroke-width="0.6"/>
-        <line x1="0" y1="-1" x2="0" y2="-13" stroke="#2A2A2A" stroke-width="2.4" stroke-linecap="round"/>
-        <line x1="-1" y1="1" x2="-11" y2="9" stroke="#2A2A2A" stroke-width="2.4" stroke-linecap="round"/>
-        <line x1="1" y1="1" x2="11" y2="9" stroke="#2A2A2A" stroke-width="2.4" stroke-linecap="round"/>
-        <circle cx="0" cy="0" r="3.2" fill="#F2CB00" stroke="#2A2A2A" stroke-width="1.2"/>
+        <circle cx="0" cy="0" r="10" fill="rgba(255,255,255,.7)" stroke="${ink}" stroke-width="0.6"/>
+        <line x1="0" y1="-1" x2="0" y2="-13" stroke="${ink}" stroke-width="2.4" stroke-linecap="round"/>
+        <line x1="-1" y1="1" x2="-11" y2="9" stroke="${ink}" stroke-width="2.4" stroke-linecap="round"/>
+        <line x1="1" y1="1" x2="11" y2="9" stroke="${ink}" stroke-width="2.4" stroke-linecap="round"/>
+        <circle cx="0" cy="0" r="3.2" fill="${off ? '#c9ccd0' : '#F2CB00'}" stroke="${ink}" stroke-width="1.2"/>
+        ${strike}
       </svg>`,
       iconSize: [36, 36],
       iconAnchor: [18, 18],
@@ -180,6 +191,7 @@ function sourceMarker(
       ${selRing}
       ${groupRing}
       <rect${rectTransform} x="-9" y="-6" width="18" height="12" rx="1" fill="${colour}" stroke="#fff" stroke-width="1.4"/>
+      ${strike}
     </svg>`,
     iconSize: [28, 28],
     iconAnchor: [14, 14],
@@ -1591,6 +1603,9 @@ export function MapView({
       // them at NaN (which silently breaks every subsequent group op).
       if (!validLatLng(s.latLng)) continue;
       const sel = isSelected(s.id);
+      // Off for the period being assessed: the solver leaves it out of the
+      // scene entirely, so the map has to say so.
+      const off = sourceIsOff(s, project.scenario.period);
 
       // ===== Metre-true footprint polygon for BESS / Auxiliary =====
       //
@@ -1645,17 +1660,21 @@ export function MapView({
             s.latLng[1] + (wx / (R * cosLat)) * (180 / Math.PI),
           ];
         });
-        const kindColor = s.kind === 'bess' ? '#5e35b1' : '#1565c0';
+        // An off unit's box is dropped from the scene along with its emission,
+        // so it is drawn as an outline: still there for placement, plainly not
+        // part of the calculation.
+        const kindColor = off ? '#9aa0a6' : (s.kind === 'bess' ? '#5e35b1' : '#1565c0');
         const fpPoly = L.polygon(polyLatLngs, {
           color: sel ? '#F2CB00' : kindColor,
           weight: sel ? 2.5 : 1.2,
-          opacity: 0.95,
+          opacity: off ? 0.7 : 0.95,
+          dashArray: off ? '4 3' : undefined,
           fillColor: kindColor,
           // Mild fill so the polygon is visible at high zoom without
           // visually drowning the centred marker icon. A modelled container
           // reads heavier — the rectangle is now an acoustic obstacle, not
           // just a scale reference.
-          fillOpacity: box ? 0.55 : 0.35,
+          fillOpacity: off ? 0.12 : (box ? 0.55 : 0.35),
           // Click + select; clicks pass through the marker icon as
           // well, so either target selects the source.
           interactive: true,
@@ -1685,8 +1704,8 @@ export function MapView({
 
       const marker = L.marker(s.latLng, {
         icon: sourceMarker(s, sel, groupColorById.get(s.id),
-          s.groupId ? bessGroupRotById.get(s.groupId) : undefined),
-        title: s.name,
+          s.groupId ? bessGroupRotById.get(s.groupId) : undefined, off),
+        title: off ? `${s.name} — off (${project.scenario.period})` : s.name,
         opacity: dimNonSelected(s.id),
         draggable: true,
         // Stop mousedown propagating to map so box-select doesn't start.

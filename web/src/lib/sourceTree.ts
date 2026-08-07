@@ -19,6 +19,7 @@
 
 import type { CatalogEntry, Project, Source } from './types';
 import { lookupEntry, spectrumFor } from './catalog';
+import { sourceModeName } from './modes';
 import { approxDistanceM } from './propagation';
 import type { EffectiveSource } from './propagation';
 
@@ -81,12 +82,21 @@ export function buildSourceTree(
     if (s.latLng[1] < minLng) minLng = s.latLng[1];
     if (s.latLng[1] > maxLng) maxLng = s.latLng[1];
   }
+  // Modes may differ by period, so the tree is only valid for the scenario's
+  // period. Read from the project rather than taken as a parameter: every
+  // caller passes the project's own scenario anyway, and a fourth positional
+  // argument is one more thing a future caller can forget.
+  const period = project.scenario.period;
   // Cache spectrum lookup per (entry+mode) so rebuilds aren't catalog-bound.
   const spectrumCache = new Map<string, Float64Array | null>();
   function lwFor(s: Source): { lw: Float64Array; zAg: number } | null {
     const entry: CatalogEntry | null = lookupEntry(project, s);
     if (!entry) return null;
-    const modeName = s.modeOverride ?? entry.defaultMode;
+    // Off in this period ⇒ no member at all. The tree aggregates sound power,
+    // so a source left in with a placeholder level would inflate every cluster
+    // that contains it.
+    const modeName = sourceModeName(s, entry, period);
+    if (modeName == null) return null;
     const cacheKey = `${s.catalogScope}|${s.modelId}|${modeName}|${windSpeed}`;
     let lw = spectrumCache.get(cacheKey);
     if (lw === undefined) {

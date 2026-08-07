@@ -38,6 +38,15 @@ export function patchToOverride(patch: Partial<Source>): BessUnitOverride | null
   return any ? o : null;
 }
 
+/// A bulk edit: either one patch for every target, or a function computing the
+/// patch from the source it applies to.
+///
+/// The function form exists for edits that have to READ each target before they
+/// can write it — setting just the night mode has to keep whatever day and
+/// evening were already resolving to, and those can differ across a selection.
+/// A single shared patch can only overwrite.
+export type BulkSourcePatch = Partial<Source> | ((s: Source) => Partial<Source>);
+
 /// Apply `patch` to every source in `ids`, recording it as a per-unit override
 /// for any target that belongs to a BESS group.
 ///
@@ -46,22 +55,33 @@ export function patchToOverride(patch: Partial<Source>): BessUnitOverride | null
 export function applyPatchWithGroupOverrides(
   project: Project,
   ids: readonly string[],
-  patch: Partial<Source>,
+  patch: BulkSourcePatch,
 ): Project {
   const idSet = new Set(ids);
   if (idSet.size === 0) return project;
+  const patchFor = typeof patch === 'function' ? patch : () => patch;
 
-  const sources = project.sources.map((s) => (idSet.has(s.id) ? { ...s, ...patch } : s));
+  // Each target's patch is computed once and reused for its override, so the
+  // stored override cannot drift from what the live source was given.
+  const patches = new Map<string, Partial<Source>>();
+  const sources = project.sources.map((s) => {
+    if (!idSet.has(s.id)) return s;
+    const p = patchFor(s);
+    patches.set(s.id, p);
+    return { ...s, ...p };
+  });
 
-  const override = patchToOverride(patch);
-  if (!override) return { ...project, sources };
-
-  // slotKey lists per group id, for the targets that are group members.
-  const bySlot = new Map<string, string[]>();
+  // slotKey → override, per group id, for the targets that are group members
+  // AND whose patch contains something worth persisting. Built before the map
+  // below so a patch that survives no regeneration (a rename, say) leaves every
+  // group object untouched rather than replacing it with an equal copy.
+  const bySlot = new Map<string, Array<{ slot: string; override: BessUnitOverride }>>();
   for (const s of project.sources) {
     if (!idSet.has(s.id) || !s.groupId || !s.slotKey) continue;
+    const override = patchToOverride(patches.get(s.id) ?? {});
+    if (!override) continue;
     const list = bySlot.get(s.groupId) ?? [];
-    list.push(s.slotKey);
+    list.push({ slot: s.slotKey, override });
     bySlot.set(s.groupId, list);
   }
   if (bySlot.size === 0) return { ...project, sources };
@@ -70,7 +90,7 @@ export function applyPatchWithGroupOverrides(
     const slots = bySlot.get(g.id);
     if (!slots) return g;
     const next: BessGroup['unitOverrides'] = { ...(g.unitOverrides ?? {}) };
-    for (const slot of slots) {
+    for (const { slot, override } of slots) {
       // Merge, don't replace — a unit may already carry a position nudge that
       // this edit says nothing about.
       next[slot] = { ...(next[slot] ?? {}), ...override };

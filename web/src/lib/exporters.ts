@@ -16,12 +16,13 @@
 
 import * as XLSX from 'xlsx';
 import { buildPolylineShapefile, buildPointShapefile, buildZip } from './shapefileWriter';
-import type { Project } from './types';
+import type { Period, Project } from './types';
 import { projectDOmegaDb } from './types';
 import { weightedTotal, weightingFor, weightingLabel, weightsFor, type Weighting } from './weighting';
 import { assessedLevel, exceedsLimit, limitComparisonFor } from './limits';
 import { describeTonalBands } from './tonality';
-import type { GridResult, ReceiverResult } from './solver';
+import { describeModes, modeForPeriod, modeLabel, perPeriodModesEnabled } from './modes';
+import type { GridResult, PeriodResults, ReceiverResult } from './solver';
 import type { ContourLineSet } from './contourLines';
 
 // ---------- Trigger download from a Blob ----------
@@ -62,6 +63,12 @@ interface ReceiverRow {
   tonalBands: string;
   tonalityPenaltyDb: number;
   assessedDbA: number | null;
+  /// Solved level per period. With per-period modes these are three different
+  /// solves; without them, three copies of one number — which is exactly what
+  /// this export always showed.
+  levelDay: number | null;
+  levelEvening: number | null;
+  levelNight: number | null;
   limitDayDbA: number;
   limitEveningDbA: number;
   limitNightDbA: number;
@@ -70,19 +77,48 @@ interface ReceiverRow {
   passNight: 'pass' | 'fail' | '—';
 }
 
-function receiverRows(project: Project, results: ReceiverResult[] | null): ReceiverRow[] {
+/// Results as the exporters take them: one set (the active period, broadcast to
+/// all three columns) or one set per period.
+export type ExportResults = ReceiverResult[] | PeriodResults | null;
+
+function isPeriodResults(r: ExportResults): r is PeriodResults {
+  return r != null && !Array.isArray(r);
+}
+
+/// Results for the period being reported. A plain array is the same solve
+/// whatever period is asked for.
+function resultsFor(r: ExportResults, period: Period): ReceiverResult[] | null {
+  if (r == null) return null;
+  return isPeriodResults(r) ? r[period] : r;
+}
+
+function receiverRows(project: Project, results: ExportResults): ReceiverRow[] {
   const bs = project.scenario.bandSystem;
   const dOmega = projectDOmegaDb(project);
+  const active = project.scenario.period;
+  const mode = limitComparisonFor(project);
+  const byPeriod = {
+    day: resultsFor(results, 'day'),
+    evening: resultsFor(results, 'evening'),
+    night: resultsFor(results, 'night'),
+  };
   return project.receivers.map((r) => {
-    const result = results?.find((x) => x.receiverId === r.id);
+    const result = resultsFor(results, active)?.find((x) => x.receiverId === r.id);
     const total = result && Number.isFinite(result.totalDbA) ? result.totalDbA : null;
     const assessed = assessedLevel(result);
-    const mode = limitComparisonFor(project);
-    // Judged on the assessed level — level plus any tonality penalty — so the
-    // exported verdict cannot contradict the badge on screen.
-    const verdict = (limit: number): 'pass' | 'fail' | '—' => {
-      if (assessed == null) return '—';
-      return exceedsLimit(assessed, limit, mode) ? 'fail' : 'pass';
+
+    /// The level to judge a period on: that period's own solve, assessed (level
+    /// plus any tonality penalty). Judging all three against the active period's
+    /// number would report night compliance from a daytime solve.
+    const forPeriod = (p: Period) => {
+      const res = byPeriod[p]?.find((x) => x.receiverId === r.id);
+      const lvl = res && Number.isFinite(res.totalDbA) ? res.totalDbA : null;
+      return { level: lvl, assessed: assessedLevel(res) };
+    };
+    const verdict = (p: Period, limit: number): 'pass' | 'fail' | '—' => {
+      const a = forPeriod(p).assessed;
+      if (a == null) return '—';
+      return exceedsLimit(a, limit, mode) ? 'fail' : 'pass';
     };
     let cMinusA: number | null = null;
     if (result?.perBandLp) {
@@ -104,12 +140,15 @@ function receiverRows(project: Project, results: ReceiverResult[] | null): Recei
       tonalBands: describeTonalBands(result?.tonality?.bands ?? []),
       tonalityPenaltyDb: result?.tonalityPenaltyDb ?? 0,
       assessedDbA: assessed,
+      levelDay: forPeriod('day').level,
+      levelEvening: forPeriod('evening').level,
+      levelNight: forPeriod('night').level,
       limitDayDbA: r.limitDayDbA,
       limitEveningDbA: r.limitEveningDbA,
       limitNightDbA: r.limitNightDbA,
-      passDay: verdict(r.limitDayDbA),
-      passEvening: verdict(r.limitEveningDbA),
-      passNight: verdict(r.limitNightDbA),
+      passDay: verdict('day', r.limitDayDbA),
+      passEvening: verdict('evening', r.limitEveningDbA),
+      passNight: verdict('night', r.limitNightDbA),
     };
   });
 }
@@ -122,6 +161,7 @@ function rxHeaders(weighting: Weighting): string[] {
     'id', 'name', 'lat', 'lng', 'height_above_ground_m',
     `total_db${w}`, 'dbc_minus_dba',
     'tonal', 'tonal_bands', 'tonality_penalty_db', `assessed_db${w}`,
+    `level_day_db${w}`, `level_evening_db${w}`, `level_night_db${w}`,
     `limit_day_db${w}`, `limit_evening_db${w}`, `limit_night_db${w}`,
     'pass_day', 'pass_evening', 'pass_night',
   ];
@@ -134,18 +174,21 @@ function rxRowAsArray(r: ReceiverRow): Array<string | number> {
     r.cMinusA == null ? '' : Number(r.cMinusA.toFixed(1)),
     r.tonal, r.tonalBands, r.tonalityPenaltyDb,
     r.assessedDbA == null ? '' : Number(r.assessedDbA.toFixed(2)),
+    r.levelDay == null ? '' : Number(r.levelDay.toFixed(2)),
+    r.levelEvening == null ? '' : Number(r.levelEvening.toFixed(2)),
+    r.levelNight == null ? '' : Number(r.levelNight.toFixed(2)),
     r.limitDayDbA, r.limitEveningDbA, r.limitNightDbA,
     r.passDay, r.passEvening, r.passNight,
   ];
 }
 
-export function exportReceiversCsv(project: Project, results: ReceiverResult[] | null): Blob {
+export function exportReceiversCsv(project: Project, results: ExportResults): Blob {
   const rows = receiverRows(project, results);
   const csv = toCsv([rxHeaders(weightingFor(project)), ...rows.map(rxRowAsArray)]);
   return new Blob([csv], { type: 'text/csv;charset=utf-8' });
 }
 
-export function exportReceiversXlsx(project: Project, results: ReceiverResult[] | null): Blob {
+export function exportReceiversXlsx(project: Project, results: ExportResults): Blob {
   const rows = receiverRows(project, results);
   const ws = XLSX.utils.aoa_to_sheet([rxHeaders(weightingFor(project)), ...rows.map(rxRowAsArray)]);
   const wb = XLSX.utils.book_new();
@@ -159,6 +202,8 @@ export function exportReceiversXlsx(project: Project, results: ReceiverResult[] 
     ['Wind speed (m/s @ 10 m)', project.scenario.windSpeed],
     ['Band system', project.scenario.bandSystem],
     ['Assessment weighting', weightingLabel(weightingFor(project))],
+    // Whether the three level columns are three solves or three copies of one.
+    ['Modes per period', perPeriodModesEnabled(project) ? 'on' : 'off'],
     ['Generated', new Date().toISOString()],
   ];
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(info), 'Info');
@@ -227,25 +272,32 @@ function perSourceContribRows(
 /// project's weighting, and a `contribution_dba` header over C-weighted
 /// numbers is the same lie the visible labels were fixed for. The sweep's
 /// regex only looks for `dB(A)`, so lowercase `dba` slipped past it.
+/// `period` leads because it qualifies the whole row and is the same in all of
+/// them: this file is the ACTIVE period only. Tripling it would triple a
+/// diagnostic sheet that is already the longest in the workbook, and with
+/// per-period modes an unlabelled contribution table is unreadable — a source
+/// contributing nothing might be off, or might just be distant.
 const contribHeaders = (weighting: Weighting) => [
-  'receiver_id', 'receiver_name', 'source_id', 'source_name',
+  'period', 'receiver_id', 'receiver_name', 'source_id', 'source_name',
   `contribution_db${weighting.toLowerCase()}`,
 ];
 
 export function exportPerSourceContribCsv(project: Project, results: ReceiverResult[] | null): Blob {
   const rows = perSourceContribRows(project, results);
+  const period = project.scenario.period;
   const data = [
     contribHeaders(weightingFor(project)),
-    ...rows.map((r) => [r.receiverId, r.receiverName, r.sourceId, r.sourceName, Number.isFinite(r.contribDbA) ? r.contribDbA : '']),
+    ...rows.map((r) => [period, r.receiverId, r.receiverName, r.sourceId, r.sourceName, Number.isFinite(r.contribDbA) ? r.contribDbA : '']),
   ];
   return new Blob([toCsv(data)], { type: 'text/csv;charset=utf-8' });
 }
 
 export function exportPerSourceContribXlsx(project: Project, results: ReceiverResult[] | null): Blob {
   const rows = perSourceContribRows(project, results);
+  const period = project.scenario.period;
   const data = [
     contribHeaders(weightingFor(project)),
-    ...rows.map((r) => [r.receiverId, r.receiverName, r.sourceId, r.sourceName, Number.isFinite(r.contribDbA) ? r.contribDbA : '']),
+    ...rows.map((r) => [period, r.receiverId, r.receiverName, r.sourceId, r.sourceName, Number.isFinite(r.contribDbA) ? r.contribDbA : '']),
   ];
   const ws = XLSX.utils.aoa_to_sheet(data);
   const wb = XLSX.utils.book_new();
@@ -272,13 +324,17 @@ function spectrumRows(project: Project, results: ReceiverResult[] | null): { hea
   const centres = solvedBands === THIRD_OCTAVE_CENTRES.length ? THIRD_OCTAVE_CENTRES
     : solvedBands === OCTAVE_CENTRES.length ? OCTAVE_CENTRES
       : project.scenario.bandSystem === 'oneThirdOctave' ? THIRD_OCTAVE_CENTRES : OCTAVE_CENTRES;
-  const headers: Array<string | number> = ['receiver_id', 'receiver_name', ...centres.map((c) => `${c} Hz`)];
+  // Active period only, and labelled — see the note on `contribHeaders`. The
+  // column leads so it can't be mistaken for a band.
+  const headers: Array<string | number> = [
+    'period', 'receiver_id', 'receiver_name', ...centres.map((c) => `${c} Hz`),
+  ];
   const rows: Array<Array<string | number>> = [];
   if (!results) return { headers, rows };
   for (const rxResult of results) {
     const rx = project.receivers.find((r) => r.id === rxResult.receiverId);
     if (!rx) continue;
-    const cells: Array<string | number> = [rxResult.receiverId, rx.name];
+    const cells: Array<string | number> = [project.scenario.period, rxResult.receiverId, rx.name];
     for (let i = 0; i < centres.length; i++) {
       const v = rxResult.perBandLp[i];
       cells.push(Number.isFinite(v) ? v : '');
@@ -398,6 +454,16 @@ export function exportContoursShp(_project: Project, contours: ContourLineSet[])
 /// individual units — the group as a whole is intentionally NOT a feature.
 export function exportSourcesShp(project: Project): Blob {
   const features: { coord: [number, number]; properties: Record<string, number | string> }[] = [];
+  const period = project.scenario.period;
+  // Modes may differ by period, so one column can't tell the whole story. MODE
+  // is what this source is doing in the period being assessed — the same thing
+  // the map is showing — and MODE_DEN spells out all three, so the file still
+  // says which period it came from once it's been passed around.
+  //
+  // The catalog is deliberately not consulted: importing it would drag Firebase
+  // into a module whose whole job is writing files. An inherited mode shows as
+  // "(default)" rather than being resolved to a name.
+  const INHERITED = '(default)';
   for (const s of project.sources) {
     if (!Number.isFinite(s.latLng[0]) || !Number.isFinite(s.latLng[1])) continue;
     features.push({
@@ -413,7 +479,8 @@ export function exportSourcesShp(project: Project): Blob {
         ROTOR_M: s.rotorDiameterM ?? NaN,
         ELEV_OFF: s.elevationOffset ?? NaN,
         YAW_DEG: s.yawDeg ?? NaN,
-        MODE: s.modeOverride ?? '',
+        MODE: modeLabel(modeForPeriod(s.modeOverride, period), ''),
+        MODE_DEN: describeModes(s.modeOverride, INHERITED),
         GROUP_ID: s.groupId ?? '',          // empty for standalone sources
         SLOT_KEY: s.slotKey ?? '',
         LAT: s.latLng[0],
@@ -432,6 +499,7 @@ export function exportSourcesShp(project: Project): Blob {
     { name: 'ELEV_OFF', type: 'N', width: 8, decimals: 1 },
     { name: 'YAW_DEG', type: 'N', width: 7, decimals: 1 },
     { name: 'MODE', type: 'C', width: 40 },
+    { name: 'MODE_DEN', type: 'C', width: 80 },
     { name: 'GROUP_ID', type: 'C', width: 36 },
     { name: 'SLOT_KEY', type: 'C', width: 44 },
     { name: 'LAT', type: 'N', width: 13, decimals: 8 },

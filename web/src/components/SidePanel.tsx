@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { notify } from '../lib/notify';
 import type {
-  Annotation, CustomContourLine, Group, Project, ProjectSettings, Source, Receiver, SourceKind,
-  ReferenceLayer, ReferenceLayerStyle, ReferenceFeature, ReferencePointShape,
+  Annotation, CustomContourLine, Group, ModeOverride, Project, ProjectSettings, Source, Receiver,
+  SourceKind, ReferenceLayer, ReferenceLayerStyle, ReferenceFeature, ReferencePointShape,
 } from '../lib/types';
 import { DEFAULT_REFERENCE_STYLE } from '../lib/types';
 import { annotationsOf, dimensionLabel } from '../lib/annotations';
@@ -32,6 +32,9 @@ import {
   uploadProjectDem,
 } from '../lib/firestoreStorage';
 import { presetForEpsg } from '../lib/projections';
+import { ModePicker } from './ModePicker';
+import { applyModeEdit, perPeriodModesEnabled, variesByPeriod } from '../lib/modes';
+import type { BulkSourcePatch } from '../lib/groupOverrides';
 import {
   defaultFilenameStem,
   exportContoursKml,
@@ -47,6 +50,7 @@ import {
   triggerDownload,
 } from '../lib/exporters';
 import type { GridResult } from '../lib/solver';
+import { evaluateAllPeriods } from '../lib/solver';
 import {
   buildContourLines, clampLineWidth, customTracesFrom, steppedTracesFrom, unionContourLevels,
   CUSTOM_LABEL_MAX,
@@ -91,7 +95,7 @@ interface Props {
   onDeleteGroup(id: string): void;
   onSetGroupMembers(id: string, memberIds: string[]): void;
   onBulkUpdateSources(patch: Partial<Source>): void;
-  onBulkUpdateSourcesByIds(ids: string[], patch: Partial<Source>): void;
+  onBulkUpdateSourcesByIds(ids: string[], patch: BulkSourcePatch): void;
   onBulkUpdateReceivers(patch: Partial<Receiver>): void;
   onBulkDeleteSelected(): void;
   addMode: AddMode;
@@ -435,14 +439,19 @@ interface ModelGroup {
   sample: Source;
   entry: ReturnType<typeof lookupEntry>;
 }
-type ModelDraft = { catalogScope?: Source['catalogScope']; modelId?: string; modeOverride?: string | null };
+type ModelDraft = {
+  catalogScope?: Source['catalogScope'];
+  modelId?: string;
+  /// Only the periods the user actually set; see `applyModeEdit`.
+  modeOverride?: ModeOverride;
+};
 
 function BulkEditPanel(props: {
   project: Project;
   selectedSources: Source[];
   selectedReceivers: Receiver[];
   onBulkUpdateSources(patch: Partial<Source>): void;
-  onBulkUpdateSourcesByIds(ids: string[], patch: Partial<Source>): void;
+  onBulkUpdateSourcesByIds(ids: string[], patch: BulkSourcePatch): void;
   onBulkUpdateReceivers(patch: Partial<Receiver>): void;
 }) {
   const { project, selectedSources, selectedReceivers, onBulkUpdateSourcesByIds, onBulkUpdateReceivers } = props;
@@ -506,13 +515,24 @@ function BulkEditPanel(props: {
     for (const g of modelGroups) {
       const d = modelDrafts[g.key];
       if (!d) continue;
-      const patch: Partial<Source> = {};
-      if (d.modelId != null && d.catalogScope != null) {
-        patch.modelId = d.modelId;
-        patch.catalogScope = d.catalogScope;
-      }
-      if (d.modeOverride !== undefined) patch.modeOverride = d.modeOverride;
-      if (Object.keys(patch).length > 0) onBulkUpdateSourcesByIds(g.ids, patch);
+      const swapModel = d.modelId != null && d.catalogScope != null;
+      const modeEdit = d.modeOverride;
+      if (!swapModel && modeEdit === undefined) continue;
+      // Per source, because a per-period edit names only the periods it changes
+      // and the targets can be sitting on different modes. A pending model swap
+      // starts from nothing rather than merging: the outgoing model's mode names
+      // mean nothing on the incoming one.
+      onBulkUpdateSourcesByIds(g.ids, (s) => {
+        const patch: Partial<Source> = {};
+        if (swapModel) {
+          patch.modelId = d.modelId!;
+          patch.catalogScope = d.catalogScope!;
+        }
+        if (modeEdit !== undefined) {
+          patch.modeOverride = applyModeEdit(swapModel ? undefined : s.modeOverride, modeEdit);
+        }
+        return patch;
+      });
     }
     if (wtgIds.length > 0 && Object.keys(wtgDraft).length > 0) onBulkUpdateSourcesByIds(wtgIds, wtgDraft);
     if (Object.keys(rxDraft).length > 0) onBulkUpdateReceivers(rxDraft);
@@ -665,17 +685,19 @@ function ModelGroupEditor(props: {
         </select>
       </Field>
       {targetEntry && targetEntry.modes.length > 0 && (
-        <Field label="Change mode to">
-          <select
-            value={draft.modeOverride ?? ''}
-            onChange={(e) => onSet({ modeOverride: e.target.value || undefined })}
-          >
-            <option value="">(no change)</option>
-            {targetEntry.modes.map((md) => (
-              <option key={md.name} value={md.name}>{md.name}</option>
-            ))}
-          </select>
-        </Field>
+        // A bulk draft names only the periods it means to change: leaving a
+        // period on "(no change)" keeps whatever each target already had, which
+        // can differ across the selection. `applyModeEdit` does that merge at
+        // Apply time, per source.
+        <ModePicker
+          project={project}
+          fieldLabel="Change mode to"
+          modes={targetEntry.modes.map((md) => md.name)}
+          value={draft.modeOverride}
+          inheritLabel="(no change)"
+          inheritName="(no change)"
+          onChange={(v) => onSet({ modeOverride: v })}
+        />
       )}
     </div>
   );
@@ -1377,6 +1399,34 @@ function ResultsTab(props: Props) {
     triggerDownload(`${defaultFilenameStem(project, suffix)}.${ext}`, blob);
   }
 
+  // The receiver export reports all three periods, which with per-period modes
+  // means solving all three. The screen deliberately stays on the selected one
+  // (Q12), so the extra solves happen here, at export time, and only for the
+  // periods whose modes actually differ — otherwise this is the one solve
+  // already on screen, and the export is unchanged from what it always was.
+  const [exportingRx, setExportingRx] = useState(false);
+  async function exportReceivers(format: 'csv' | 'xlsx') {
+    if (exportingRx) return;
+    setExportingRx(true);
+    try {
+      const perPeriod = await evaluateAllPeriods(project, props.dem ?? null, 'export');
+      download(
+        format === 'csv'
+          ? exportReceiversCsv(project, perPeriod)
+          : exportReceiversXlsx(project, perPeriod),
+        'receivers', format,
+      );
+    } catch (err) {
+      // Falling back to the on-screen results would silently write the active
+      // period's number into all three columns — a wrong answer that looks
+      // right. Better to say the export failed.
+      console.error('[BESSTY] receiver export failed:', err);
+      notify.error('Could not solve every period for the export. Nothing was written.');
+    } finally {
+      setExportingRx(false);
+    }
+  }
+
   function exportContours(format: 'kml' | 'shp') {
     if (!grid) return;
     // Build the line set with the same dB bands the user is currently
@@ -1438,11 +1488,11 @@ function ResultsTab(props: Props) {
 
         <div className="meta-line"><b>Receiver totals + compliance</b></div>
         <div className="add-row">
-          <button className="btn small" disabled={!hasResults} onClick={() => download(exportReceiversCsv(project, results), 'receivers', 'csv')}>
-            ↓ CSV
+          <button className="btn small" disabled={!hasResults || exportingRx} onClick={() => void exportReceivers('csv')}>
+            {exportingRx ? '…' : '↓ CSV'}
           </button>
-          <button className="btn small" disabled={!hasResults} onClick={() => download(exportReceiversXlsx(project, results), 'receivers', 'xlsx')}>
-            ↓ XLSX
+          <button className="btn small" disabled={!hasResults || exportingRx} onClick={() => void exportReceivers('xlsx')}>
+            {exportingRx ? '…' : '↓ XLSX'}
           </button>
         </div>
 
@@ -2461,6 +2511,41 @@ export function SettingsTab(props: SettingsTabProps) {
 
       {tab === 'calculation' && (
       <section className="sp-section">
+        <h3><span>Operating periods</span></h3>
+        <Field label="">
+          <label className="row-checkbox">
+            <input
+              type="checkbox"
+              checked={perPeriodModesEnabled(project)}
+              onChange={(e) => {
+                const on = e.target.checked;
+                // Turning it off hides the controls but keeps the values — the
+                // solver still honours them. Say so, or the levels look wrong
+                // for no visible reason.
+                if (!on && project.sources.some((s) => variesByPeriod(s.modeOverride))) {
+                  notify.info(
+                    'Sources with a mode set per period keep it. The levels do not '
+                    + 'change; only the per-period controls are hidden.',
+                  );
+                }
+                update({ periods: { ...settings.periods, perPeriodModes: on } });
+              }}
+            />
+            <span>Modes per day / evening / night</span>
+          </label>
+        </Field>
+        <div className="hint">
+          Off by default. On, every mode dropdown gains a <b>D/E/N</b> expander
+          for setting a different mode in each period, plus an <b>Off</b> state
+          that drops the source from that period entirely. Only the period
+          selected on the Sources tab is solved on screen; the receiver export
+          covers all three.
+        </div>
+      </section>
+      )}
+
+      {tab === 'calculation' && (
+      <section className="sp-section">
         <h3><span>Standard</span></h3>
         <Field label="ISO 9613-2 edition">
           <select
@@ -3165,10 +3250,13 @@ function SourceItem(props: {
           ))}
         </select>
         {modes.length > 1 && (
-          <select value={s.modeOverride ?? (entry?.defaultMode ?? '')}
-            onChange={(e) => onChange({ modeOverride: e.target.value })}>
-            {modes.map((m) => <option key={m.name} value={m.name}>{m.name}</option>)}
-          </select>
+          <ModePicker
+            project={project}
+            modes={modes.map((m) => m.name)}
+            value={s.modeOverride ?? entry?.defaultMode}
+            inheritName={entry?.defaultMode ?? '(default)'}
+            onChange={(v) => onChange({ modeOverride: v })}
+          />
         )}
         {s.kind === 'wtg' && (
           <>

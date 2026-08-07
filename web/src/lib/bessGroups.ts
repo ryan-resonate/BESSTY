@@ -36,6 +36,7 @@
 //      distortion is negligible.
 
 import { footprintFor } from './catalog';
+import { mergeModeChain } from './modes';
 import type {
   BessGroup,
   BessGroupItem,
@@ -44,6 +45,7 @@ import type {
   BessSeqItem,
   CatalogEntry,
   CatalogScope,
+  ModeOverride,
   Source,
   SourceKind,
 } from './types';
@@ -77,7 +79,7 @@ interface PlacedUnit {
   /// The segment ref this unit was generated from (post-migration,
   /// every unit traces back to a segment). Carries the catalog
   /// scope + modelId + optional mode override.
-  segRef: { catalogScope: CatalogScope; modelId: string; modeOverride?: string | null };
+  segRef: { catalogScope: CatalogScope; modelId: string; modeOverride?: ModeOverride };
   /// Local-frame centre of the unit (m), before rotation + centring.
   centreX: number;
   centreY: number;
@@ -243,14 +245,16 @@ function finishPlacement(
       // rotated by yawDeg and it lines up with the reserved cell.
       yawDeg: group.rotationDeg + p.rotationDeg,
     };
-    // Mode override priority: per-slot override > segment-level
-    // modeOverride > catalog default. We surface the SEGMENT value
-    // on the materialised Source so the solver picks it up.
-    if (override?.modeOverride !== undefined) {
-      src.modeOverride = override.modeOverride;
-    } else if (p.segRef.modeOverride !== undefined) {
-      src.modeOverride = p.segRef.modeOverride;
-    }
+    // Mode override priority: per-slot override > segment-level modeOverride >
+    // catalog default. We surface the resolved value on the materialised Source
+    // so the solver picks it up.
+    //
+    // The merge is per PERIOD, not per whole override: a unit that names only a
+    // night mode still takes the segment's day mode. Choosing one link outright
+    // (the old `!== undefined` chain) would have made setting one period
+    // silently blank the other two.
+    const merged = mergeModeChain(override?.modeOverride, p.segRef.modeOverride);
+    if (merged !== undefined) src.modeOverride = merged;
     if (override?.elevationOffset !== undefined) src.elevationOffset = override.elevationOffset;
     sources.push(src);
   }

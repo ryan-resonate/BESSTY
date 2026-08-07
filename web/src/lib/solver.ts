@@ -23,6 +23,7 @@ import init, {
 } from '../wasm/iso9613_wasm.js';
 
 import type {
+  Period,
   Source,
   Project,
 } from './types';
@@ -33,6 +34,7 @@ import {
   type TonalityResult,
 } from './tonality';
 import { lookupEntry, resolveContainer, sourceHeightFor, spectrumFor } from './catalog';
+import { PERIODS, modeForPeriod, sourceModeName } from './modes';
 import { type DemRaster, type DemRegion, captureDemRegion } from './dem';
 import {
   propagationSettings,
@@ -154,7 +156,11 @@ export const SOLVE_SUPERSEDED = 'solve superseded';
 ///   - `study` — the factorial study's sequential sweep. Queued, never
 ///     superseded: the study runs while the user keeps editing, and its
 ///     combinations must not be cancelled by the editor's live re-solves.
-export type SolveChannel = 'live' | 'study';
+///   - `export` — the extra period solves a receiver export needs. Queued for
+///     the same reason as `study`, and in its OWN lane so an export isn't left
+///     waiting behind a long factorial sweep. On `live` a background re-solve
+///     would cancel it and the download would simply never arrive.
+export type SolveChannel = 'live' | 'study' | 'export';
 
 /// A single-worker lane for `solve_scene` calls.
 class SceneSolveLane {
@@ -248,6 +254,7 @@ class SceneSolveLane {
 const lanes: Record<SolveChannel, SceneSolveLane> = {
   live: new SceneSolveLane(true),
   study: new SceneSolveLane(false),
+  export: new SceneSolveLane(false),
 };
 
 /// Web Workers don't exist under `node:test`, and the conformance/wasm tests
@@ -318,8 +325,17 @@ function energySumPerBand(perSource: Array<{ perBandLp: Float64Array }>): Float6
 /// `sceneBuilder`. Sources whose catalog entry is missing, or whose coordinates
 /// are non-finite (busted import / glitched group drag), are dropped rather than
 /// fed to the engine as NaN.
+///
+/// A source switched Off for the scenario's period is dropped here too. Note
+/// what that means for a BESS modelled with containers: the box goes with it,
+/// so a parked unit stops screening its neighbours. Physically the container is
+/// still standing, so this errs LOUD (less screening ⇒ higher levels) — the
+/// conservative direction, but it is an approximation. Keeping the box while
+/// silencing the source needs a screens-only source in the engine, which is
+/// solver-side work; see docs/beesty-feature-plans.md.
 export function resolveSources(project: Project): ResolvedSource[] {
   const out: ResolvedSource[] = [];
+  const period = project.scenario.period;
   for (const source of project.sources) {
     if (!Number.isFinite(source.latLng[0]) || !Number.isFinite(source.latLng[1])) continue;
     const entry = lookupEntry(project, source);
@@ -327,7 +343,8 @@ export function resolveSources(project: Project): ResolvedSource[] {
       console.warn(`Catalog entry not found: ${source.catalogScope}/${source.modelId}`);
       continue;
     }
-    const modeName = source.modeOverride ?? entry.defaultMode;
+    const modeName = sourceModeName(source, entry, period);
+    if (modeName == null) continue;                       // Off this period
     const lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
     const heightAglM = sourceHagl(source, project);
     if (heightAglM == null) continue;
@@ -526,6 +543,49 @@ export async function evaluateProject(
   });
 }
 
+/// Receiver results for all three assessment periods.
+export type PeriodResults = Record<Period, ReceiverResult[]>;
+
+/// Solve every period, for the receiver export.
+///
+/// The screen only ever shows the selected period — three sets of contours and
+/// three levels per marker is more than anyone can read — but a compliance table
+/// has to cover day, evening and night, and with per-period modes those are
+/// genuinely different solves.
+///
+/// Periods whose sources all resolve to the SAME modes share one solve, so a
+/// project that doesn't use per-period modes (every project, until someone turns
+/// them on) costs exactly one solve and produces three identical columns —
+/// the same numbers the export has always shown.
+export async function evaluateAllPeriods(
+  project: Project,
+  dem: DemRaster | null,
+  channel: SolveChannel = 'live',
+): Promise<PeriodResults> {
+  const byMode = new Map<string, Period[]>();
+  for (const period of PERIODS) {
+    // The catalog default is per model, so it cannot differ between periods —
+    // the stored override is the whole of what varies, and is enough to tell
+    // two periods' scenes apart.
+    const key = JSON.stringify(
+      project.sources.map((s) => modeForPeriod(s.modeOverride, period) ?? null),
+    );
+    byMode.set(key, [...(byMode.get(key) ?? []), period]);
+  }
+
+  const out = {} as PeriodResults;
+  for (const periods of byMode.values()) {
+    const solved = await evaluateProject(
+      { ...project, scenario: { ...project.scenario, period: periods[0] } },
+      dem,
+      new Diagnostics(),
+      channel,
+    );
+    for (const p of periods) out[p] = solved;
+  }
+  return out;
+}
+
 // ============== Batched grid evaluation (S2) ==============
 
 /// Resolve one tile's effective sources (real units + Barnes-Hut cluster
@@ -545,7 +605,8 @@ function resolveTileSources(
     if (es.kind === 'real') {
       const entry = lookupEntry(project, es.source!);
       if (!entry) continue;
-      const modeName = es.source!.modeOverride ?? entry.defaultMode;
+      const modeName = sourceModeName(es.source!, entry, project.scenario.period);
+      if (modeName == null) continue;                     // Off this period
       lw = spectrumFor(entry, modeName, project.scenario.windSpeed, project.scenario.bandSystem);
       heightAglM = sourceHagl(es.source!, project) ?? 0;
       if (es.source!.kind === 'wtg') {

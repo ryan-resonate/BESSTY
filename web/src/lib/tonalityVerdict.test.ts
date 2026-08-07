@@ -135,8 +135,11 @@ test('the spectra export never writes more columns than the data fills', async (
   const cols = header.split(',');
   const vals = row.split(',');
   assert.equal(cols.length, vals.length, 'header and row must be the same width');
-  // id + name + 10 octave bands.
-  assert.equal(cols.length, 12, header);
+  // Band columns are everything past the leading identity columns, counted
+  // rather than assumed: the point of the test is the BAND count, and pinning
+  // the total broke the moment a `period` label was added in front.
+  const bandCols = (h: string[]) => h.filter((c) => c.endsWith(' Hz')).length;
+  assert.equal(bandCols(cols), 10, header);
   assert.equal(vals.filter((v) => v === '').length, 0, 'no empty columns');
 
   // Once the solve catches up, the same export is 31 bands wide.
@@ -144,7 +147,7 @@ test('the spectra export never writes more columns than the data fills', async (
     receiverId: 'R1', perBandLp: new Float64Array(31).fill(60), totalDbA: 60, perSource: [],
   };
   const csv2 = await exportSpectraCsv(project, [fresh]).text();
-  assert.equal(csv2.trim().split(SPLIT_LINES)[0].split(',').length, 33);
+  assert.equal(bandCols(csv2.trim().split(SPLIT_LINES)[0].split(',')), 31);
 });
 
 test('a result from before tonality existed is judged on its own level', () => {

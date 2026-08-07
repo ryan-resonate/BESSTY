@@ -22,6 +22,7 @@ import {
   type CatalogLookup,
 } from '../lib/bessGroups';
 import { footprintFor, listEntriesByKind } from '../lib/catalog';
+import { ModePicker } from './ModePicker';
 import type {
   BessGroup,
   BessRow,
@@ -1042,18 +1043,16 @@ function SegmentChip(p: SegmentChipProps) {
           </label>
 
           {modeOptions.length > 1 && (
-            <label style={menuFieldStyle}>
+            <div style={menuFieldStyle}>
               <span style={fieldLabelStyle}>Mode</span>
-              <select
-                value={p.segment.modeOverride ?? current?.defaultMode ?? ''}
-                onChange={(e) => p.onChange({ modeOverride: e.target.value })}
-                style={{ ...inputStyle, fontSize: 12 }}
-              >
-                {modeOptions.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-            </label>
+              <ModePicker
+                project={p.project}
+                modes={modeOptions}
+                value={p.segment.modeOverride ?? current?.defaultMode}
+                inheritName={current?.defaultMode ?? '(default)'}
+                onChange={(v) => p.onChange({ modeOverride: v })}
+              />
+            </div>
           )}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>

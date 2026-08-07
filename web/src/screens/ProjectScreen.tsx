@@ -38,6 +38,7 @@ import type {
   Annotation, Barrier, CustomContourLine, Project, Receiver, Source, SourceKind,
 } from '../lib/types';
 import { settingsOf } from '../lib/types';
+import { resolveModeName } from '../lib/modes';
 import { sanitiseCustomContours } from '../lib/contourLines';
 import { weightingFor } from '../lib/weighting';
 import { calcAreaCorners } from '../lib/geo';
@@ -1004,8 +1005,28 @@ export function ProjectScreen() {
   // re-snapshots, but the point receivers silently stayed on the
   // previous DEM. `demFingerprint` discriminates by source + bounds so
   // any real DEM swap forces a re-snapshot.
+  // Modes may be set per period, so the mode a source actually runs in is a
+  // function of `scenario.period`. Both structural keys carry the RESOLVED mode
+  // rather than the stored override: switching period then re-solves only when
+  // some source genuinely changes mode, and a project that has never used
+  // per-period modes fingerprints exactly as it did before they existed.
+  const resolvedModes = useCallback((p: Project) => {
+    const byModel = new Map<string, string>();      // scope|id → catalog default
+    return p.sources.map((s) => {
+      const modelKey = `${s.catalogScope}|${s.modelId}`;
+      let fallback = byModel.get(modelKey);
+      if (fallback === undefined) {
+        fallback = lookupEntry(p, s)?.defaultMode ?? '';
+        byModel.set(modelKey, fallback);
+      }
+      // `null` is Off — a distinct value, and one that changes the scene.
+      return resolveModeName(s.modeOverride, p.scenario.period, fallback);
+    });
+  }, []);
+
   const pointStructuralKey = useMemo(() => {
     if (!project) return '';
+    const modes = resolvedModes(project);
     return JSON.stringify({
       windSpeed: project.scenario.windSpeed,
       // The band system decides how many bands a result HAS. Leaving it out
@@ -1013,9 +1034,9 @@ export function ProjectScreen() {
       // survived under third-octave labels — which the exporters then paired
       // with the wrong frequencies.
       bandSystem: project.scenario.bandSystem,
-      sources: project.sources.map((s) => ({
+      sources: project.sources.map((s, i) => ({
         id: s.id, kind: s.kind, modelId: s.modelId, scope: s.catalogScope,
-        mode: s.modeOverride, hub: s.hubHeight, eo: s.elevationOffset,
+        mode: modes[i], hub: s.hubHeight, eo: s.elevationOffset,
       })),
       receivers: project.receivers.map((r) => ({
         id: r.id, h: r.heightAboveGroundM, ll: r.latLng,
@@ -1024,16 +1045,17 @@ export function ProjectScreen() {
       settings: project.settings,
       dem: demFingerprint(dem),
     });
-  }, [project, dem]);
+  }, [project, dem, resolvedModes]);
 
   const gridStructuralKey = useMemo(() => {
     if (!project) return '';
+    const modes = resolvedModes(project);
     return JSON.stringify({
       windSpeed: project.scenario.windSpeed,
       bandSystem: project.scenario.bandSystem,
-      sources: project.sources.map((s) => ({
+      sources: project.sources.map((s, i) => ({
         id: s.id, kind: s.kind, modelId: s.modelId, scope: s.catalogScope,
-        mode: s.modeOverride, hub: s.hubHeight, eo: s.elevationOffset,
+        mode: modes[i], hub: s.hubHeight, eo: s.elevationOffset,
       })),
       barriers: project.barriers,
       ground: project.settings?.ground,
@@ -1054,7 +1076,7 @@ export function ProjectScreen() {
       gridSpacingM,
       dem: demFingerprint(dem),
     });
-  }, [project, dem, gridSpacingM]);
+  }, [project, dem, gridSpacingM, resolvedModes]);
 
   // Source-position key: every named source's rounded lat/lng. A drag changes
   // this; the structural keys above deliberately exclude positions, so this is

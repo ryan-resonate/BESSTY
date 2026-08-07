@@ -176,6 +176,38 @@ test('every annotation kind has a way to be selected on the map', () => {
     'the dimension needs a wide transparent hit line');
 });
 
+test('every spectrum lookup goes through the mode resolver, and checks for Off', () => {
+  // `spectrumFor` falls back to the catalog's FIRST mode when it doesn't
+  // recognise a name — it doesn't throw. So handing it a raw `modeOverride`
+  // (which may be a per-period object) or the reserved Off id doesn't fail
+  // loudly: the source runs, at a mode nobody chose, and the number looks fine.
+  //
+  // The rule: every call resolves through `sourceModeName` first and drops the
+  // source when that returns null. `catalog.ts` is exempt — it DEFINES the
+  // function and its own alias passes a name through.
+  const offenders: string[] = [];
+  for (const { path, text } of FILES) {
+    if (path.endsWith('catalog.ts') || path.endsWith('types.ts')) continue;
+    for (const m of text.matchAll(/spectrumFor\(/g)) {
+      // The resolve + guard sit immediately above the call; 6 lines is room for
+      // a comment between them without letting an unrelated guard count.
+      const before = text.slice(0, m.index).split('\n').slice(-6).join('\n');
+      const line = text.slice(0, m.index).split('\n').length;
+      if (!/sourceModeName\(/.test(before)) {
+        offenders.push(`${path.replace(SRC, 'src')}:${line} — no sourceModeName() above it`);
+      } else if (!/==\s*null|===\s*null/.test(before)) {
+        offenders.push(`${path.replace(SRC, 'src')}:${line} — resolved but never checked for Off`);
+      }
+    }
+  }
+  assert.deepEqual(
+    offenders, [],
+    'these spectrum lookups can be handed an unresolved override or the Off id, '
+    + 'and would silently run the source at the catalog\'s first mode:\n  '
+    + offenders.join('\n  '),
+  );
+});
+
 test('Escape is handled only through the shared stack', () => {
   // Multiple window-level Escape listeners are siblings: stopPropagation does
   // not separate them, so one keypress fires every overlay's handler at once.

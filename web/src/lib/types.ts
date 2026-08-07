@@ -34,6 +34,24 @@ export interface Scenario {
   bandSystem: BandSystem;
 }
 
+/// An operating mode chosen per assessment period. An absent period inherits,
+/// exactly as an absent override always has — it does not mean "no mode".
+export interface PeriodModes {
+  day?: string | null;
+  evening?: string | null;
+  night?: string | null;
+}
+
+/// A mode override as stored. A plain `string` applies to every period — the
+/// only form that existed before per-period modes, so every older document
+/// parses unchanged — while a `PeriodModes` object varies by period, and
+/// `null`/absent inherits the catalog entry's `defaultMode`.
+///
+/// All the behaviour lives in `lib/modes.ts`; resolve through it rather than
+/// reading the field, or the reserved Off id reaches `spectrumFor` and silently
+/// runs the source at the catalog's first mode.
+export type ModeOverride = string | null | PeriodModes;
+
 export interface Source {
   id: string;
   kind: SourceKind;
@@ -64,7 +82,10 @@ export interface Source {
     heightM?: number;
     bearingDeg?: number;
   };
-  modeOverride?: string | null;
+  /// Which catalog mode this unit runs in. A plain string applies to every
+  /// period; a `{ day, evening, night }` object varies by period (see
+  /// `lib/modes.ts`). Resolve it with `sourceModeName` — never read it raw.
+  modeOverride?: ModeOverride;
   /// When this source belongs to a BessGroup, the group's id. Lets the
   /// editor select the whole group on click, route drag events through
   /// the group's centre handle, and recolour group members on the map.
@@ -240,8 +261,8 @@ export interface BessSegment {
   modelId: string;
   /// Optional per-segment mode override (e.g. "PO4500-low-noise" on
   /// a row of BESS in night mode). Inherits the catalog entry's
-  /// `defaultMode` when undefined.
-  modeOverride?: string | null;
+  /// `defaultMode` when undefined. May vary by period — see `lib/modes.ts`.
+  modeOverride?: ModeOverride;
   /// How many units in this segment.
   count: number;
   /// Edge-to-edge gap between consecutive units WITHIN this segment.
@@ -279,8 +300,8 @@ export interface BessUnitOverride {
   latLngDelta?: [number, number];
   /// Per-unit model swap (e.g. one slot has a different BESS model).
   modelOverride?: { catalogScope: CatalogScope; modelId: string };
-  /// Per-unit mode override.
-  modeOverride?: string | null;
+  /// Per-unit mode override. May vary by period — see `lib/modes.ts`.
+  modeOverride?: ModeOverride;
   /// Per-unit height-above-ground override.
   elevationOffset?: number;
 }
@@ -439,6 +460,14 @@ export interface AssessmentSettings {
 export interface ProjectSettings {
   ground: { defaultG: number };
   assessment?: AssessmentSettings;
+  /// Per-period operating modes (day / evening / night), including an explicit
+  /// Off. Absent ⇒ off, and when off NO per-period control appears anywhere —
+  /// every mode picker is the single dropdown it has always been.
+  ///
+  /// Gates the UI only. Values already stored are still honoured by the solver,
+  /// because a level that moves because a checkbox was unticked, with nothing
+  /// on screen to explain it, is worse than an override the picker can't edit.
+  periods?: { perPeriodModes?: boolean };
   /// Presentational state — see `DisplaySettings`. Never affects computed levels.
   display?: DisplaySettings;
   /// I18 — specular reflections off barriers and source containers.
