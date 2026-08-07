@@ -7,7 +7,7 @@ import type { jsPDF } from 'jspdf';
 import type { CustomContourLine, Project } from './types';
 import { limitForPeriod } from './types';
 import { calcAreaCorners } from './geo';
-import { exceedsLimit, limitComparisonFor } from './limits';
+import { assessedLevel, exceedsLimit, limitComparisonFor } from './limits';
 import type { GridResult, ReceiverResult } from './solver';
 import {
   buildContourLines, customTracesFrom, steppedTracesFrom, unionContourLevels,
@@ -267,7 +267,7 @@ function drawReceivers(
     const limit = limitForPeriod(r, project.scenario.period);
     // Same rule as every other surface (I17) — a PDF that disagrees with the
     // screen is worse than one with no colours.
-    const fail = exceedsLimit(dbA, limit, mode);
+    const fail = exceedsLimit(assessedLevel(res), limit, mode);
     const col: [number, number, number] = fail ? [211, 47, 47] : [46, 125, 50];
 
     doc.setFillColor(col[0], col[1], col[2]);

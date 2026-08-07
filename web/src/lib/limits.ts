@@ -42,6 +42,22 @@ export function limitComparisonFor(project: Project): LimitComparison {
 ///
 /// Negative levels round the same way (`Math.round(-40.5)` is −40, i.e. half-up
 /// toward +∞); no real receiver sits there, but the behaviour is defined.
+/// The level a receiver is JUDGED on: its solved level plus any tonality
+/// penalty. Falls back to the solved level, so a result from before tonality
+/// existed — or one where the penalty is off, which is the default — behaves
+/// exactly as it did.
+///
+/// Every pass/fail site reads this rather than `totalDbA`: the penalty is
+/// decided once, in the solve, and a site that judged the raw level would show
+/// a green badge beside a red export.
+export function assessedLevel(
+  result: { totalDbA: number; assessedDbA?: number } | null | undefined,
+): number | null {
+  if (!result) return null;
+  const v = result.assessedDbA ?? result.totalDbA;
+  return Number.isFinite(v) ? v : null;
+}
+
 export function exceedsLimit(
   levelDbA: number | null | undefined,
   limitDbA: number,

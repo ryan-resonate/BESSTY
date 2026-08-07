@@ -29,6 +29,10 @@ import type {
 } from './types';
 import { projectDOmegaDb } from './types';
 import { weightedTotal, weightingFor, weightsFor } from './weighting';
+import {
+  assessmentLevel, screenTonality, tonalityPenaltyDb, tonalitySettingsFor,
+  type TonalityResult,
+} from './tonality';
 import { lookupEntry, resolveContainer, sourceHeightFor, spectrumFor } from './catalog';
 import { type DemRaster, type DemRegion, captureDemRegion } from './dem';
 import {
@@ -114,7 +118,18 @@ export function ensureSolverReady(): Promise<void> {
 export interface ReceiverResult {
   receiverId: string;
   perBandLp: Float64Array;
+  /// The solved level, in the project's assessment weighting. What the user is
+  /// shown as "the level".
   totalDbA: number;
+  /// Tonality screen over the RECEIVED spectrum. Absent on rows that did not
+  /// solve.
+  tonality?: TonalityResult;
+  /// What the tonality settings add to the level, in dB. Zero unless the
+  /// penalty is switched on AND a tone was flagged.
+  tonalityPenaltyDb?: number;
+  /// The level actually compared with the limit: `totalDbA` plus any penalty.
+  /// Equal to `totalDbA` whenever no penalty applies, which is the default.
+  assessedDbA?: number;
   perSource: Array<{ sourceId: string; perBandLp: Float64Array }>;
 }
 
@@ -361,6 +376,7 @@ export async function evaluateProject(
 
   const origin = projectOrigin(project);
   const aw = weightsFor(project.scenario.bandSystem, weightingFor(project));
+  const tonalityCfg = tonalitySettingsFor(project);
   const n = bandCount(project.scenario.bandSystem);
   const cutoffM = propagationSettings(project).maxContributionDistanceM;
   const dOmega = projectDOmegaDb(project);
@@ -476,10 +492,20 @@ export async function evaluateProject(
         perSource.push({ sourceId: contribution.source_id, perBandLp });
       }
       const summed = energySumPerBand(perSource);
+      const total = aWeightedTotal(summed, aw, dOmega);
+      // Screened here, once, so every consumer — the results dock, the map
+      // badge, the PDF and the exports — judges the same number against the
+      // limit. A penalty computed independently at each site is a penalty that
+      // eventually disagrees with itself.
+      const tonality = screenTonality(summed, project.scenario.bandSystem, tonalityCfg.method);
+      const penaltyDb = tonalityPenaltyDb(tonality, tonalityCfg);
       results.set(rr.receiver_id, {
         receiverId: rr.receiver_id,
         perBandLp: summed,
-        totalDbA: aWeightedTotal(summed, aw, dOmega),
+        totalDbA: total,
+        tonality,
+        tonalityPenaltyDb: penaltyDb,
+        assessedDbA: assessmentLevel(Number.isFinite(total) ? total : null, penaltyDb) ?? total,
         perSource,
       });
     }

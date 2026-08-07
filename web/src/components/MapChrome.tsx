@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import type { Project } from '../lib/types';
 import { summariseDiagnostics, type Diagnostic } from '../lib/diagnostics';
 import { limitForPeriod } from '../lib/types';
-import { exceedsLimit, limitComparisonFor } from '../lib/limits';
+import { assessedLevel, exceedsLimit, limitComparisonFor } from '../lib/limits';
 import type { GridResult, ReceiverResult } from '../lib/solver';
 import type { Palette } from '../lib/colormap';
 import { paletteCss, makeBandsForRange } from '../lib/colormap';
@@ -112,7 +112,7 @@ export function ResultsDock(props: ResultsDockProps) {
   const mode = limitComparisonFor(project);
   const exceedances = (results ?? []).filter((r) => {
     const rx = project.receivers.find((x) => x.id === r.receiverId);
-    return rx && exceedsLimit(r.totalDbA, limitForPeriod(rx, project.scenario.period), mode);
+    return rx && exceedsLimit(assessedLevel(r), limitForPeriod(rx, project.scenario.period), mode);
   });
   // `over` stays the TRUE margin (it tells you how close you are), but the
   // colour must come from the same rule as everything else — otherwise a
@@ -123,7 +123,7 @@ export function ResultsDock(props: ResultsDockProps) {
     const limit = limitForPeriod(rx, project.scenario.period);
     const over = r.totalDbA - limit;
     if (!acc || over > acc.over) {
-      return { id: r.receiverId, over, fail: exceedsLimit(r.totalDbA, limit, mode) };
+      return { id: r.receiverId, over, fail: exceedsLimit(assessedLevel(r), limit, mode) };
     }
     return acc;
   }, null);

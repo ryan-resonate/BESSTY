@@ -19,7 +19,8 @@ import { buildPolylineShapefile, buildPointShapefile, buildZip } from './shapefi
 import type { Project } from './types';
 import { projectDOmegaDb } from './types';
 import { weightedTotal, weightingFor, weightingLabel, weightsFor, type Weighting } from './weighting';
-import { exceedsLimit, limitComparisonFor } from './limits';
+import { assessedLevel, exceedsLimit, limitComparisonFor } from './limits';
+import { describeTonalBands } from './tonality';
 import type { GridResult, ReceiverResult } from './solver';
 import type { ContourLineSet } from './contourLines';
 
@@ -55,6 +56,12 @@ interface ReceiverRow {
   /// large value says the spectrum is LF-dominated and may need a separate
   /// look, and it costs one extra sum over a spectrum already in hand.
   cMinusA: number | null;
+  /// Tonality screen: 'yes' / 'no' / 'n/a' at octave resolution, the bands it
+  /// flagged, and what was added to the level (0 unless the penalty is on).
+  tonal: 'yes' | 'no' | 'n/a';
+  tonalBands: string;
+  tonalityPenaltyDb: number;
+  assessedDbA: number | null;
   limitDayDbA: number;
   limitEveningDbA: number;
   limitNightDbA: number;
@@ -69,10 +76,13 @@ function receiverRows(project: Project, results: ReceiverResult[] | null): Recei
   return project.receivers.map((r) => {
     const result = results?.find((x) => x.receiverId === r.id);
     const total = result && Number.isFinite(result.totalDbA) ? result.totalDbA : null;
+    const assessed = assessedLevel(result);
     const mode = limitComparisonFor(project);
+    // Judged on the assessed level — level plus any tonality penalty — so the
+    // exported verdict cannot contradict the badge on screen.
     const verdict = (limit: number): 'pass' | 'fail' | '—' => {
-      if (total == null) return '—';
-      return exceedsLimit(total, limit, mode) ? 'fail' : 'pass';
+      if (assessed == null) return '—';
+      return exceedsLimit(assessed, limit, mode) ? 'fail' : 'pass';
     };
     let cMinusA: number | null = null;
     if (result?.perBandLp) {
@@ -88,6 +98,12 @@ function receiverRows(project: Project, results: ReceiverResult[] | null): Recei
       heightAboveGroundM: r.heightAboveGroundM,
       totalDbA: total,
       cMinusA,
+      tonal: result?.tonality
+        ? (result.tonality.assessable ? (result.tonality.tonal ? 'yes' : 'no') : 'n/a')
+        : 'n/a',
+      tonalBands: describeTonalBands(result?.tonality?.bands ?? []),
+      tonalityPenaltyDb: result?.tonalityPenaltyDb ?? 0,
+      assessedDbA: assessed,
       limitDayDbA: r.limitDayDbA,
       limitEveningDbA: r.limitEveningDbA,
       limitNightDbA: r.limitNightDbA,
@@ -105,6 +121,7 @@ function rxHeaders(weighting: Weighting): string[] {
   return [
     'id', 'name', 'lat', 'lng', 'height_above_ground_m',
     `total_db${w}`, 'dbc_minus_dba',
+    'tonal', 'tonal_bands', 'tonality_penalty_db', `assessed_db${w}`,
     `limit_day_db${w}`, `limit_evening_db${w}`, `limit_night_db${w}`,
     'pass_day', 'pass_evening', 'pass_night',
   ];
@@ -115,6 +132,8 @@ function rxRowAsArray(r: ReceiverRow): Array<string | number> {
     r.id, r.name, r.lat, r.lng, r.heightAboveGroundM,
     r.totalDbA == null ? '' : r.totalDbA,
     r.cMinusA == null ? '' : Number(r.cMinusA.toFixed(1)),
+    r.tonal, r.tonalBands, r.tonalityPenaltyDb,
+    r.assessedDbA == null ? '' : Number(r.assessedDbA.toFixed(2)),
     r.limitDayDbA, r.limitEveningDbA, r.limitNightDbA,
     r.passDay, r.passEvening, r.passNight,
   ];

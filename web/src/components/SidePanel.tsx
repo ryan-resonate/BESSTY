@@ -7,8 +7,13 @@ import type {
 import { DEFAULT_REFERENCE_STYLE } from '../lib/types';
 import { annotationsOf, dimensionLabel } from '../lib/annotations';
 import { weightingFor, weightingLabel } from '../lib/weighting';
+import {
+  DEFAULT_TONALITY_PENALTY_DB, describeTonalBands, tonalityMethodInfo, tonalityMethods,
+  tonalitySettingsFor,
+  type TonalityMethod,
+} from '../lib/tonality';
 import { limitForPeriod, settingsOf } from '../lib/types';
-import { exceedsLimit, limitComparisonFor } from '../lib/limits';
+import { assessedLevel, exceedsLimit, limitComparisonFor } from '../lib/limits';
 import type { ReceiverResult } from '../lib/solver';
 import type { BaseMap, ContourMode } from './MapView';
 import type { Palette } from '../lib/colormap';
@@ -989,7 +994,7 @@ function ReceiversTab(props: Props) {
         {project.receivers.map((r) => {
           const result = results?.find((x) => x.receiverId === r.id);
           const activeLimit = limitForPeriod(r, project.scenario.period);
-          const fail = exceedsLimit(result?.totalDbA, activeLimit, limitComparisonFor(project));
+          const fail = exceedsLimit(assessedLevel(result), activeLimit, limitComparisonFor(project));
           return (
             <div key={r.id}
               className={`item${selectedIds.has(r.id) ? ' selected' : ''}`}
@@ -1013,6 +1018,23 @@ function ReceiversTab(props: Props) {
                     {result.totalDbA.toFixed(1)} {unit} {fail ? '✗' : '✓'}
                   </span>
                 ) : <span className="muted">— run to compute</span>}
+                {/* A penalised level has to show its working: the number judged
+                    against the limit is not the number solved. */}
+                {result?.tonality?.tonal && (
+                  <span
+                    className="tonal-flag"
+                    title={
+                      `Tonal: ${describeTonalBands(result.tonality.bands)}`
+                      + (result.tonalityPenaltyDb
+                        ? ` · +${result.tonalityPenaltyDb} dB penalty applied`
+                        : ' · no penalty applied (switch it on in Settings)')
+                    }
+                  >
+                    ♪{result.tonalityPenaltyDb
+                      ? ` +${result.tonalityPenaltyDb} → ${(result.assessedDbA ?? result.totalDbA).toFixed(1)}`
+                      : ''}
+                  </span>
+                )}
               </div>
               <div className="item-controls" onClick={(e) => e.stopPropagation()}>
                 <span className="inline-unit" title="Height above ground (m)">
@@ -1329,7 +1351,7 @@ function ResultsTab(props: Props) {
   const limitMode = limitComparisonFor(project);
   const exceedances = (results ?? []).filter((r) => {
     const rx = project.receivers.find((x) => x.id === r.receiverId);
-    return rx && exceedsLimit(r.totalDbA, limitForPeriod(rx, project.scenario.period), limitMode);
+    return rx && exceedsLimit(assessedLevel(r), limitForPeriod(rx, project.scenario.period), limitMode);
   });
 
   const hasResults = (results?.length ?? 0) > 0;
@@ -2249,6 +2271,7 @@ export function SettingsTab(props: SettingsTabProps) {
 
   const propagation = settings.propagation ?? { maxContributionDistanceM: 20000, treeAcceptanceTheta: 0.25 };
   const topography = settings.topography ?? { despikeStrength: 'low' as const };
+  const tonality = tonalitySettingsFor(project);
 
   return (
     <>
@@ -2295,6 +2318,71 @@ export function SettingsTab(props: SettingsTabProps) {
           grid: it changes the numbers, not just the label. A <b>dB(C) − dB(A)</b>
           column is exported whatever this is set to, as a low-frequency
           screening indicator.
+        </div>
+      </section>
+      )}
+
+      {tab === 'calculation' && (
+      <section className="sp-section">
+        <h3><span>Tonality</span></h3>
+        <Field label="Screening method">
+          <select
+            value={tonality.method}
+            onChange={(e) => update({
+              assessment: {
+                ...settings.assessment,
+                tonality: { ...settings.assessment?.tonality, method: e.target.value as TonalityMethod },
+              },
+            })}
+          >
+            {tonalityMethods().map((m) => (
+              <option key={m.id} value={m.id}>{m.label}</option>
+            ))}
+          </select>
+        </Field>
+        <div className="hint">{tonalityMethodInfo(tonality.method).summary}</div>
+        <div className="hint" style={{ marginTop: 4 }}>
+          Screened on the level <b>reaching each receiver</b>, not on the source
+          spectrum: air absorption reshapes a spectrum with distance, so a tone
+          that is obvious at 50 m may be gone at 2 km. Needs one-third-octave
+          bands; at octave resolution it reports "not assessable" rather than a
+          clean pass.
+        </div>
+        <Field label="">
+          <label className="row-checkbox">
+            <input
+              type="checkbox"
+              checked={tonality.applyPenalty}
+              onChange={(e) => update({
+                assessment: {
+                  ...settings.assessment,
+                  tonality: { ...settings.assessment?.tonality, applyPenalty: e.target.checked },
+                },
+              })}
+            />
+            <span>Add a penalty to flagged receivers</span>
+          </label>
+        </Field>
+        {tonality.applyPenalty && (
+          <Field label="Penalty (dB)">
+            <NumericInput
+              min={0} max={20} step={1}
+              value={tonality.penaltyDb}
+              fallback={DEFAULT_TONALITY_PENALTY_DB}
+              onChange={(v) => update({
+                assessment: {
+                  ...settings.assessment,
+                  tonality: { ...settings.assessment?.tonality, penaltyDb: Math.max(0, v) },
+                },
+              })}
+            />
+          </Field>
+        )}
+        <div className="hint">
+          Off by default — the screen reports a tone either way. Switched on,
+          the penalty is added before the level is compared with the limit, and
+          every pass/fail badge and export follows it. Contours never carry it:
+          a grid cell has no assessment to attach it to.
         </div>
       </section>
       )}

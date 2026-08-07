@@ -957,3 +957,7 @@ header.app-header nav a:hover { background: var(--slate-1); }
   font-family: var(--font-mono);
   white-space: nowrap;
 }
+
+/* Tonality flag on a receiver row. Small and quiet: it qualifies the level
+   beside it rather than competing with the pass/fail colour. */
+.tonal-flag { margin-left: 6px; padding: 0 5px; border-radius: 3px; background: var(--slate-1, #f1f5f9); border: 1px solid var(--light); font-size: 11px; color: var(--ink); cursor: help; white-space: nowrap; }

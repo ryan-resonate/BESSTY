@@ -418,6 +418,18 @@ export interface AssessmentSettings {
   /// This changes the number, not just its label, so switching it invalidates
   /// the contour grid exactly as changing the standard does.
   weighting?: 'A' | 'C' | 'Z';
+  /// Tonality screening at the receiver. The screen always reports; the
+  /// penalty is opt-in. See `lib/tonality.ts`.
+  tonality?: {
+    /// Which screening method. A union rendered from a registry, so adding a
+    /// jurisdiction's method later needs no UI change.
+    method?: 'iso1996-2-annexJ';
+    /// Add `penaltyDb` to a flagged receiver's level before it is compared
+    /// with its limit. Absent = false: reporting a tone is not the same as
+    /// deciding it deserves a penalty.
+    applyPenalty?: boolean;
+    penaltyDb?: number;
+  };
 }
 
 export interface ProjectSettings {
