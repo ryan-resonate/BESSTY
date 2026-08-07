@@ -13,9 +13,11 @@ Settings open in a floating window from the **gear button in the top-right of th
   A **dB(C) − dB(A)** column is exported whatever the setting, as the usual low-frequency screening indicator: a large difference says the spectrum is low-frequency dominated and may deserve a separate look.
 
   The weightings are computed from the IEC 61672-1 pole frequencies at each band's **exact** midband frequency — the "16 Hz" band is really 15.85 Hz, and evaluating at the label instead would shift that band by 0.3 dB.
-- **Tonality** — screens each receiver's spectrum for a band standing proud of its neighbours. The method is selectable; ISO 1996-2 Annex J's simplified screen is the one implemented, flagging a one-third-octave band that exceeds **both** neighbours by 15 dB below 160 Hz, 8 dB from 160–400 Hz, or 5 dB at 500 Hz and above.
+- **Tonality** — screens each receiver's spectrum for a band standing proud of its neighbours. The method is selectable; the standard's simplified constant-difference screen is the one implemented, flagging a one-third-octave band that exceeds **both** neighbours by 15 dB below 160 Hz, 8 dB from 160–400 Hz, or 5 dB at 500 Hz and above.
 
   Screened on the level **reaching the receiver**, not the source spectrum: air absorption reshapes a spectrum with distance, so a tone that is plain at 50 m can be gone by 2 km. It needs one-third-octave bands — at octave resolution a tone is smeared across a whole band, so it reports *not assessable* rather than a clean pass.
+
+  A band at the very top or bottom of the spectrum has only one neighbour, so it is reported as an **unconfirmed candidate** rather than a tone — with nothing above it, a real tone and a spectrum still rising at the edge look identical. Candidates never attract a penalty.
 
   The screen always reports. The **penalty is off by default**; switched on, the chosen figure (5 dB by default) is added to a flagged receiver before its level is compared with the limit, and every badge, PDF and export follows that assessed level. Contours never carry it — a grid cell has no assessment to attach a penalty to.
 - **Standard** — ISO 9613-2:1996 or :2024. They differ in the ground-effect geometry factor, the barrier `Dz` bracket and `Kmet`, plus the 2024-only annexes.

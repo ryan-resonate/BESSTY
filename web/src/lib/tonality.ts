@@ -19,18 +19,26 @@
 import { centresFor, type Weighting } from './weighting';
 import type { BandSystem } from './types';
 
+/// Method ids are stable storage keys, so this one keeps its name even though
+/// the label around it has been corrected.
 export type TonalityMethod = 'iso1996-2-annexJ';
 
 export const DEFAULT_TONALITY_METHOD: TonalityMethod = 'iso1996-2-annexJ';
 
-/// One band that stands proud of both its neighbours.
+/// One band that stands proud of its neighbours.
 export interface TonalBand {
   index: number;
   centreHz: number;
-  /// How far above the HIGHER of its two neighbours it sits.
+  /// How far above the LOUDER usable neighbour it sits.
   excessDb: number;
   /// What it had to exceed them by to count.
   thresholdDb: number;
+  /// True when only ONE neighbour was available — the top and bottom bands of
+  /// the spectrum, or a band beside an empty one. Such a band is reported as a
+  /// CANDIDATE, never as a confirmed tone: with nothing above it, a genuine
+  /// tone and a spectrum still rising at the edge look identical, and calling
+  /// either way would be inventing a verdict. It does not attract a penalty.
+  oneSided: boolean;
 }
 
 export interface TonalityResult {
@@ -39,8 +47,15 @@ export interface TonalityResult {
   assessable: boolean;
   /// Why not, when `assessable` is false. Shown to the user verbatim.
   reason?: string;
+  /// A tone was CONFIRMED: some band stood proud of neighbours on both sides.
+  /// Only this drives the penalty.
   tonal: boolean;
+  /// Confirmed tones.
   bands: TonalBand[];
+  /// Edge bands that met the criterion against their single neighbour. Worth
+  /// surfacing — a BESS inverter's switching tone often lands in the top
+  /// third-octave — but not worth penalising on one-sided evidence.
+  candidates: TonalBand[];
 }
 
 export interface TonalityMethodInfo {
@@ -55,27 +70,40 @@ export interface TonalityMethodInfo {
 /// ISO 1996-2 Annex J's simplified screen: the ear resolves a tone against
 /// broadband noise less readily at low frequency, so the bar is set higher
 /// there.
-function annexJThreshold(centreHz: number): number {
+function simplifiedThreshold(centreHz: number): number {
   if (centreHz < 160) return 15;          // 25–125 Hz
   if (centreHz < 500) return 8;           // 160–400 Hz
   return 5;                               // 500 Hz and above
 }
 
-function screenAnnexJ(perBandLp: ArrayLike<number>, centres: number[]): TonalBand[] {
+/// The method is stated over 25 Hz – 10 kHz. Below 25 Hz it says nothing, so
+/// neither do we: applying the 15 dB bar to 10/12.5/20 Hz would be inventing
+/// coverage the standard does not give.
+const LOWEST_SCREENED_HZ = 25;
+
+function screenSimplified(perBandLp: ArrayLike<number>, centres: number[]): TonalBand[] {
   const out: TonalBand[] = [];
-  // The end bands have only one neighbour, so nothing can be established about
-  // them — leaving them out is honest, not an omission.
-  for (let i = 1; i < centres.length - 1; i++) {
+  for (let i = 0; i < centres.length; i++) {
+    if (centres[i] < LOWEST_SCREENED_HZ) continue;
     const lv = perBandLp[i];
-    const lo = perBandLp[i - 1];
-    const hi = perBandLp[i + 1];
-    if (!Number.isFinite(lv) || !Number.isFinite(lo) || !Number.isFinite(hi)) continue;
+    if (!Number.isFinite(lv)) continue;
+    // The two END bands have only one neighbour. Skipping them entirely was
+    // wrong in a way that mattered: a BESS inverter's switching tone often
+    // lands in the top third-octave, and the screen was reporting "no tones"
+    // rather than admitting it had not looked. Judged one-sided instead, which
+    // is all the data supports and is still a real test.
+    const neighbours = [perBandLp[i - 1], perBandLp[i + 1]]
+      .filter((v) => v !== undefined && Number.isFinite(v)) as number[];
+    if (neighbours.length === 0) continue;
     // Measured against the LOUDER neighbour: exceeding only the quieter one is
     // a slope, not a peak.
-    const excess = lv - Math.max(lo, hi);
-    const threshold = annexJThreshold(centres[i]);
+    const excess = lv - Math.max(...neighbours);
+    const threshold = simplifiedThreshold(centres[i]);
     if (excess >= threshold) {
-      out.push({ index: i, centreHz: centres[i], excessDb: excess, thresholdDb: threshold });
+      out.push({
+        index: i, centreHz: centres[i], excessDb: excess, thresholdDb: threshold,
+        oneSided: neighbours.length < 2,
+      });
     }
   }
   return out;
@@ -87,12 +115,17 @@ const METHODS: Record<TonalityMethod, {
 }> = {
   'iso1996-2-annexJ': {
     info: {
+      // Deliberately NOT citing an annex letter. The test itself is the
+      // standard's simplified / survey method and the thresholds are right, but
+      // the letter moved between editions (and differs from the reference
+      // narrowband method), and this string reaches client-facing exports.
+      // Confirm against the controlled copy before adding a citation.
       id: 'iso1996-2-annexJ',
-      label: 'ISO 1996-2 Annex J (simplified)',
-      summary: 'A one-third-octave band standing 15 dB (below 160 Hz), 8 dB '
-        + '(160–400 Hz) or 5 dB (500 Hz and above) above both its neighbours.',
+      label: 'ISO 1996-2 simplified (constant difference)',
+      summary: 'A one-third-octave band standing 15 dB (25–125 Hz), 8 dB '
+        + '(160–400 Hz) or 5 dB (500 Hz and above) above its neighbours.',
     },
-    run: screenAnnexJ,
+    run: screenSimplified,
   },
 };
 
@@ -119,14 +152,20 @@ export function screenTonality(
       reason: 'Tonality needs one-third-octave resolution — switch the band system in Settings.',
       tonal: false,
       bands: [],
+      candidates: [],
     };
   }
   if (!perBandLp || perBandLp.length < 3) {
-    return { assessable: false, reason: 'No spectrum at this receiver yet.', tonal: false, bands: [] };
+    return {
+      assessable: false, reason: 'No spectrum at this receiver yet.',
+      tonal: false, bands: [], candidates: [],
+    };
   }
   const impl = METHODS[method] ?? METHODS[DEFAULT_TONALITY_METHOD];
-  const bands = impl.run(perBandLp, centresFor(bandSystem));
-  return { assessable: true, tonal: bands.length > 0, bands };
+  const found = impl.run(perBandLp, centresFor(bandSystem));
+  const bands = found.filter((b) => !b.oneSided);
+  const candidates = found.filter((b) => b.oneSided);
+  return { assessable: true, tonal: bands.length > 0, bands, candidates };
 }
 
 /// The penalty to add to a receiver's level, given the screen and the settings.
@@ -145,7 +184,9 @@ export const DEFAULT_TONALITY_PENALTY_DB = 5;
 /// Short human summary of the flagged bands, for a results row or a cell.
 export function describeTonalBands(bands: TonalBand[]): string {
   if (!bands.length) return '';
-  return bands.map((b) => `${formatBandHz(b.centreHz)} +${b.excessDb.toFixed(0)} dB`).join(', ');
+  return bands
+    .map((b) => `${formatBandHz(b.centreHz)} +${b.excessDb.toFixed(0)} dB${b.oneSided ? ' (edge band, unconfirmed)' : ''}`)
+    .join(', ');
 }
 
 /// A band centre as a report writes it: `250 Hz`, `1 kHz`, `3.15 kHz`.

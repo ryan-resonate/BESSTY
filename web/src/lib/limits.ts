@@ -26,22 +26,6 @@ export function limitComparisonFor(project: Project): LimitComparison {
   return project.settings?.limitComparison ?? 'integer';
 }
 
-/// Does `levelDbA` exceed `limitDbA` under the given rule?
-///
-/// - `'integer'` (default): `Math.round(level) > limit`. Standard half-up
-///   rounding, so 40.5 → 41 (fails a 40 limit) but 40.4 → 40 (passes).
-///   Only the LEVEL rounds — the limit is compared as entered, because it is a
-///   set value rather than a measurement.
-/// - `'exact'`: `level > limit`, unrounded.
-///
-/// Equality passes under both rules: the test is for *exceedance*, so a level
-/// landing exactly on the limit complies.
-///
-/// A null / non-finite level is "no result", not a failure — callers that want
-/// to show a dash should check for that separately.
-///
-/// Negative levels round the same way (`Math.round(-40.5)` is −40, i.e. half-up
-/// toward +∞); no real receiver sits there, but the behaviour is defined.
 /// The level a receiver is JUDGED on: its solved level plus any tonality
 /// penalty. Falls back to the solved level, so a result from before tonality
 /// existed — or one where the penalty is off, which is the default — behaves
@@ -58,6 +42,25 @@ export function assessedLevel(
   return Number.isFinite(v) ? v : null;
 }
 
+/// Does `levelDbA` exceed `limitDbA` under the given rule?
+///
+/// - `'integer'` (default): `Math.round(level) > limit`. Standard half-up
+///   rounding, so 40.5 → 41 (fails a 40 limit) but 40.4 → 40 (passes).
+///   Only the LEVEL rounds — the limit is compared as entered, because it is a
+///   set value rather than a measurement.
+/// - `'exact'`: `level > limit`, unrounded.
+///
+/// Equality passes under both rules: the test is for *exceedance*, so a level
+/// landing exactly on the limit complies.
+///
+/// A null / non-finite level is "no result", not a failure — callers that want
+/// to show a dash should check for that separately.
+///
+/// Negative levels round the same way (`Math.round(-40.5)` is −40, i.e. half-up
+/// toward +∞); no real receiver sits there, but the behaviour is defined.
+///
+/// The level passed in should come from `assessedLevel`, not straight off
+/// `totalDbA`.
 export function exceedsLimit(
   levelDbA: number | null | undefined,
   limitDbA: number,

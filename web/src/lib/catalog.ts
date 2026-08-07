@@ -36,6 +36,7 @@ export {
   type ContainerBox,
 } from './catalogDims';
 
+import { exactCentreHz, weightingAt } from './weighting';
 import { SEED_CATALOG } from './seedCatalog';
 import { seedEntriesToUpsert } from './catalogMigration';
 import {
@@ -358,7 +359,7 @@ export function spectrumFor(
 /// Convert per-band LwA values to Lw (un-weighted) by subtracting the
 /// IEC 61672-1 A-weighting offset for each band's centre frequency. The
 /// inverse of "apply A-weighting" — at 1 kHz nothing changes (offset 0);
-/// at 16 Hz a value of 49.2 dBA becomes 49.2 - (-56.4) = 105.6 dB
+/// at the 16 Hz band a value of 49.2 dBA becomes 49.2 - (-56.7) = 105.9 dB
 /// un-weighted (much higher because A-weighting heavily suppresses LF).
 function unweightFromA(frequencies: number[], lwA: number[]): number[] {
   const out: number[] = new Array(lwA.length);
@@ -370,21 +371,18 @@ function unweightFromA(frequencies: number[], lwA: number[]): number[] {
   return out;
 }
 
-/// IEC 61672-1 A-weighting curve evaluated at any frequency. Used to
-/// convert A-weighted catalog spectra back to Z-weighted before the
-/// solver call. Closed-form per IEC 61672-1 §A.4 — exact, not a table
-/// lookup, so it works for arbitrary band centres (not just the standard
-/// octave / third-octave grids).
-function aWeightingAt(f: number): number {
-  // RA(f) per IEC 61672-1 + +2.0 normalisation so RA(1000 Hz) = 0.
-  const f2 = f * f;
-  const num = 12194.217 * 12194.217 * f2 * f2;
-  const denom =
-    (f2 + 20.598997 * 20.598997)
-    * Math.sqrt((f2 + 107.65265 * 107.65265) * (f2 + 737.86223 * 737.86223))
-    * (f2 + 12194.217 * 12194.217);
-  const ra = num / denom;
-  return 20 * Math.log10(ra) + 2.0;
+/// A-weighting for a catalog band, at the band's EXACT centre frequency.
+///
+/// A catalog frequency is a nominal LABEL — "16 Hz" names the band centred on
+/// 15.85 Hz — and the solver weights that band at its exact centre. Un-weighting
+/// the input at the label while re-weighting the output at the centre leaves a
+/// residue of up to 0.27 dB in the bottom band that never cancels: the round
+/// trip has to use the same frequency in both directions.
+///
+/// Negligible under A-weighting, where the bottom bands are suppressed by 50 dB
+/// anyway — but dB(Z) and dB(C) are selectable now, and neither suppresses them.
+function aWeightingAt(nominalHz: number): number {
+  return weightingAt(exactCentreHz(nominalHz), 'A');
 }
 
 /// Overall (single-figure) sound power from a per-band spectrum, returned as

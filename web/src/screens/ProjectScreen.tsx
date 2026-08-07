@@ -988,6 +988,11 @@ export function ProjectScreen() {
     if (!project) return '';
     return JSON.stringify({
       windSpeed: project.scenario.windSpeed,
+      // The band system decides how many bands a result HAS. Leaving it out
+      // meant switching it never re-solved, so an octave-length spectrum
+      // survived under third-octave labels — which the exporters then paired
+      // with the wrong frequencies.
+      bandSystem: project.scenario.bandSystem,
       sources: project.sources.map((s) => ({
         id: s.id, kind: s.kind, modelId: s.modelId, scope: s.catalogScope,
         mode: s.modeOverride, hub: s.hubHeight, eo: s.elevationOffset,
@@ -1005,6 +1010,7 @@ export function ProjectScreen() {
     if (!project) return '';
     return JSON.stringify({
       windSpeed: project.scenario.windSpeed,
+      bandSystem: project.scenario.bandSystem,
       sources: project.sources.map((s) => ({
         id: s.id, kind: s.kind, modelId: s.modelId, scope: s.catalogScope,
         mode: s.modeOverride, hub: s.hubHeight, eo: s.elevationOffset,
@@ -1017,10 +1023,12 @@ export function ProjectScreen() {
       // grid — without this the grid silently keeps the old terrain screening.
       topography: project.settings?.topography,
       meteorology: project.settings?.meteorology,
-      // The assessment weighting changes the number in every cell, not just
-      // its label, so a grid computed under one weighting is wrong under
-      // another and has to be recomputed rather than relabelled.
-      assessment: project.settings?.assessment,
+      // The WEIGHTING changes the number in every cell, so a grid computed
+      // under one is wrong under another. The tonality settings deliberately
+      // are NOT here: they only ever touch named receivers, and including the
+      // whole `assessment` object made toggling a penalty checkbox rebuild the
+      // entire grid for no change in any cell.
+      weighting: project.settings?.assessment?.weighting,
       gridReceiverHeight: project.settings?.general.defaultReceiverHeight,
       calc: project.calculationArea,
       gridSpacingM,

@@ -150,13 +150,15 @@ test('KML escapes a label — an ampersand in a name must not break the document
   assert.ok(!xml.includes('A & B <x>'));
 });
 
-test('the shapefile carries LABEL alongside THRESH_DBA', async () => {
+test('the shapefile carries LABEL alongside the threshold', async () => {
   const zip = await exportContoursShp(project, [steppedSet, namedSet]).arrayBuffer();
   const bytes = new Uint8Array(zip);
   // The DBF field descriptors sit in the header as plain ASCII; finding both
   // names is enough to pin the schema without decoding the whole bundle.
   const text = new TextDecoder('latin1').decode(bytes);
-  assert.ok(text.includes('THRESH_DBA'));
+  // Named THRESH_DB, not THRESH_DBA: the value follows the project's
+  // assessment weighting, so the field must not promise A.
+  assert.ok(text.includes('THRESH_DB'));
   assert.ok(text.includes('LABEL'));
   assert.ok(text.includes('Night limit'), 'the label value should reach the DBF records');
 });

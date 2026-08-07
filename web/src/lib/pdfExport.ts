@@ -238,6 +238,8 @@ export function drawScaleBar(doc: jsPDF, frame: MapFrame) {
   // The backing panel has to clear the end label, which is centred on the
   // bar's right edge and so overhangs it by half its own width.
   doc.setFontSize(6.5);
+  const km = lengthM >= 1000;
+  const unit = km ? ' km' : ' m';
   const endLabel = formatScale(lengthM);
   const overhang = doc.getTextWidth(endLabel) / 2 + 1;
   doc.setFillColor(255, 255, 255);
@@ -259,12 +261,14 @@ export function drawScaleBar(doc: jsPDF, frame: MapFrame) {
   for (let i = 0; i <= segments; i++) {
     const tx = x + i * segMm;
     doc.line(tx, y, tx, y - 0.9);
-    // The unit rides on the final label only, as it does on a survey drawing:
-    // repeating it crowds the divisions and says nothing the last one doesn't.
+    // Every division is expressed in the SAME unit as the end label, which is
+    // what carries it. Formatting each independently switched units mid-bar:
+    // a 1 km bar read "0 · 500 · 1 km", where the 500 looks like 500 km.
     const value = (lengthM * i) / segments;
-    const label = i === 0 ? '0'
-      : i === segments ? formatScale(value)
-        : formatScale(value).replace(/\s*(m|km)$/, '');
+    const shown = km ? value / 1000 : value;
+    const label = i === 0
+      ? '0'
+      : `${Number.isInteger(shown) ? shown : shown.toFixed(1)}${i === segments ? unit : ''}`;
     doc.text(label, tx - doc.getTextWidth(label) / 2, y - 1.6);
   }
 }

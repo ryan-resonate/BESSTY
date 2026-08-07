@@ -19,7 +19,6 @@
 
 import init, {
   solve_scene,
-  octave_a_weighting,
   octave_centres,
 } from '../wasm/iso9613_wasm.js';
 
@@ -1164,4 +1163,7 @@ function runGridJobOnPool(
   });
 }
 
-export { octave_centres, octave_a_weighting };
+//  is deliberately NOT re-exported: it is the Rust
+// crate's own copy of the curve, and the point of lib/weighting.ts is that one
+// implementation answers for the whole app.
+export { octave_centres };

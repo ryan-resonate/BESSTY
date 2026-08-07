@@ -1354,7 +1354,10 @@ function ResultsTab(props: Props) {
     return rx && exceedsLimit(assessedLevel(r), limitForPeriod(rx, project.scenario.period), limitMode);
   });
 
-  const hasResults = (results?.length ?? 0) > 0;
+  // `computing` matters as much as `hasResults`: changing the weighting
+  // relabels immediately but re-solves on a debounce, and an export fired in
+  // that window writes dB(C) headers over A-weighted numbers.
+  const hasResults = (results?.length ?? 0) > 0 && !computing;
   const hasGrid = grid != null;
 
   /// Grid-gated exports stay clickable with no grid — a `disabled` button

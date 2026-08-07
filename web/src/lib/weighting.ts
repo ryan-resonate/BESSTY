@@ -36,7 +36,7 @@ export function centresFor(bs: BandSystem): number[] {
 /// bottom band it is 0.3 dB, which is precisely the discrepancy between the
 /// app's old hand-written copies. Weighting therefore uses these; everything
 /// user-facing keeps the nominal labels.
-function exactCentre(nominal: number): number {
+export function exactCentreHz(nominal: number): number {
   // Recover the band index from the nominal label, then rebuild the exact
   // centre from it. Rounding to the nearest index is what absorbs the label's
   // own approximation (12.5 for 12.589, 31.5 for 31.623, …).
@@ -45,7 +45,7 @@ function exactCentre(nominal: number): number {
 }
 
 export function exactCentresFor(bs: BandSystem): number[] {
-  return centresFor(bs).map(exactCentre);
+  return centresFor(bs).map(exactCentreHz);
 }
 
 // IEC 61672-1 pole frequencies (Hz).
@@ -109,9 +109,22 @@ export function weightedTotal(
   weights: ArrayLike<number>,
   dOmegaDb = 0,
 ): number {
+  // A LENGTH MISMATCH IS A BUG, NOT A CASE TO HANDLE. Truncating to the shorter
+  // array silently pairs the wrong frequencies: a 10-band octave spectrum fed
+  // third-octave weights got the 10 Hz–80 Hz offsets applied to its 16 Hz–8 kHz
+  // levels, and exported 27 dB low without a word. Returning NaN makes the
+  // mistake visible at the point it happens.
+  if (perBandLp.length !== weights.length) {
+    if (perBandLp.length === 0) return -Infinity;
+    // eslint-disable-next-line no-console
+    console.error(
+      `weightedTotal: ${perBandLp.length} bands against ${weights.length} weights — `
+      + 'the spectrum and the band system disagree.',
+    );
+    return NaN;
+  }
   let sum = 0;
-  const n = Math.min(perBandLp.length, weights.length);
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < perBandLp.length; i++) {
     const v = perBandLp[i];
     if (Number.isFinite(v)) sum += Math.pow(10, (v + weights[i] + dOmegaDb) / 10);
   }

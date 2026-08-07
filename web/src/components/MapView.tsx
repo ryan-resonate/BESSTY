@@ -10,7 +10,7 @@ import {
   ANNOTATION_INK, annotationsOf, dimensionLabel, dimensionMidpoint, dimensionTiltDeg,
   leaderAttachOffset, newAnnotationId,
 } from '../lib/annotations';
-import { exceedsLimit, limitComparisonFor, type LimitComparison } from '../lib/limits';
+import { assessedLevel, exceedsLimit, limitComparisonFor, type LimitComparison } from '../lib/limits';
 import type { ReceiverResult, GridResult } from '../lib/solver';
 import { describeBarnesHut } from '../lib/solver';
 import { escapeHtml, safeCssColor } from '../lib/html';
@@ -197,11 +197,18 @@ function receiverMarker(
   /// How the level is written — dB(A) / dB(C) / dB(Z). A marker that says
   /// dB(A) over a C-weighted solve is a wrong number, not a wrong label.
   unitLabel: string,
+  /// The level the limit is tested against — solved level plus any tonality
+  /// penalty. Passed separately from `dbA` because the marker shows the solved
+  /// level but must colour by the assessed one.
+  assessedDb: number | null,
+  /// Tonality penalty in dB, shown beside the level when non-zero so a red
+  /// badge over a compliant-looking number explains itself.
+  penaltyDb: number,
 ): L.DivIcon {
   // The pass/fail rule lives in one place (I17) — never compare inline here.
   // Note the DISPLAYED level keeps full precision: only the verdict rounds, so
   // a green marker reading 40.4 against a 40 limit is correct, not a glitch.
-  const fail = exceedsLimit(dbA, activeLimit, mode);
+  const fail = exceedsLimit(assessedDb ?? dbA, activeLimit, mode);
   const colour = fail ? '#d32f2f' : '#2e7d32';
   const text = dbA != null ? `${dbA.toFixed(1)}` : '— ';
   const dotBorder = selected ? '#F2CB00' : (groupColor ?? '#fff');
@@ -216,7 +223,9 @@ function receiverMarker(
     className: 'recv-marker',
     html: `<div style="display:flex;flex-direction:column;align-items:center;gap:0;pointer-events:auto">
       <div style="background:rgba(255,255,255,0.92);backdrop-filter:blur(6px);border:${selected ? 2 : 1.5}px solid ${selected ? '#F2CB00' : '#2A2A2A'};border-radius:99px;padding:2px 9px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;color:${colour};white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,.3);text-align:center">
-        <div>${text} <span style="opacity:.6;font-weight:400">${unitLabel}</span></div>
+        <div>${text} <span style="opacity:.6;font-weight:400">${unitLabel}</span>${
+          penaltyDb > 0 ? `<span style="opacity:.75;font-weight:500"> ♪+${penaltyDb}</span>` : ''
+        }</div>
         ${limitLine}
       </div>
       <div style="width:0;height:8px;border-left:1.5px dashed ${colour}"></div>
@@ -1757,7 +1766,8 @@ export function MapView({
     const limitMode = limitComparisonFor(project);
     for (const r of project.receivers) {
       if (!validLatLng(r.latLng)) continue;
-      const dbA = results?.find((x) => x.receiverId === r.id)?.totalDbA ?? null;
+      const res = results?.find((x) => x.receiverId === r.id);
+      const dbA = res?.totalDbA ?? null;
       const sel = isSelected(r.id);
       const activeLimit = limitForPeriod(r, project.scenario.period);
       const marker = L.marker(r.latLng, {
@@ -1765,6 +1775,9 @@ export function MapView({
           r, dbA && isFinite(dbA) ? dbA : null, activeLimit, sel,
           groupColorById.get(r.id), limitMode, showReceiverLimits ?? false,
           weightingLabel(weightingFor(project)),
+          // The verdict is taken on the ASSESSED level; the marker still
+          // DISPLAYS the solved one, with the penalty shown beside it.
+          assessedLevel(res), res?.tonalityPenaltyDb ?? 0,
         ),
         title: r.name,
         opacity: dimNonSelected(r.id),
@@ -2874,7 +2887,7 @@ export function MapView({
             className: 'bh-cluster-label',
             html: `<div style="background:#7c3aed;color:#fff;border-radius:3px;padding:0 4px;`
               + 'font-family:\'JetBrains Mono\',monospace;font-size:9px;font-weight:600;'
-              + `white-space:nowrap">${cb.members} sources → 1 · Lw ${Number.isFinite(cb.dbA) ? cb.dbA.toFixed(0) : '—'} dB(A)</div>`,
+              + `white-space:nowrap">${cb.members} sources → 1 · Lw ${Number.isFinite(cb.dbA) ? cb.dbA.toFixed(0) : '—'} ${weightingLabel(weightingFor(project))}</div>`,
             iconSize: [90, 14],
             iconAnchor: [-6, 7],
           }),

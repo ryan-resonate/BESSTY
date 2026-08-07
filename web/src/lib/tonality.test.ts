@@ -61,7 +61,12 @@ test('a rising slope is not a tone, however steep', () => {
   // neighbour by 10 dB and none of them is a peak.
   const s = new Float64Array(31);
   for (let i = 0; i < s.length; i++) s[i] = 10 + i * 10;
-  assert.equal(screenTonality(s, 'oneThirdOctave').tonal, false);
+  const r = screenTonality(s, 'oneThirdOctave');
+  assert.equal(r.tonal, false);
+  // The TOP band clears the bar against its only neighbour, so it surfaces as
+  // an unconfirmed candidate — which is exactly why a one-sided hit must not
+  // count as a tone. A ramp would otherwise be penalised as tonal.
+  assert.deepEqual(r.candidates.map((b) => b.centreHz), [10000]);
 });
 
 test('the excess is measured against the LOUDER neighbour', () => {
@@ -78,13 +83,34 @@ test('several tones are all reported, not just the first', () => {
 
 // ---------- edges and bad input ----------
 
-test('the end bands are not judged — they have only one neighbour', () => {
-  const first = new Float64Array(31).fill(60);
-  first[0] = 200;
-  assert.equal(screenTonality(first, 'oneThirdOctave').tonal, false);
+test('an edge-band tone is surfaced as a candidate, not confirmed or hidden', () => {
+  // The top third-octave is where a BESS inverter's switching tone lands.
+  // Reporting "no tones" there was claiming a clean result for a band the
+  // screen had never looked at.
   const last = new Float64Array(31).fill(60);
   last[30] = 200;
-  assert.equal(screenTonality(last, 'oneThirdOctave').tonal, false);
+  const top = screenTonality(last, 'oneThirdOctave');
+  assert.equal(top.tonal, false, 'one neighbour cannot confirm a tone');
+  assert.deepEqual(top.candidates.map((b) => b.centreHz), [10000]);
+  assert.equal(top.candidates[0].oneSided, true);
+
+  // The bottom band is 10 Hz, below the method's 25 Hz floor, so it is out of
+  // scope entirely rather than an edge case.
+  const first = new Float64Array(31).fill(60);
+  first[0] = 200;
+  const bottom = screenTonality(first, 'oneThirdOctave');
+  assert.equal(bottom.tonal, false);
+  assert.equal(bottom.candidates.length, 0);
+});
+
+test('bands below 25 Hz are outside the stated scope of the method', () => {
+  for (const hz of [10, 12.5, 16, 20]) {
+    const r = screenTonality(spectrum({ [hz]: 200 }), 'oneThirdOctave');
+    assert.equal(r.tonal, false, `${hz} Hz should not be screened`);
+    assert.equal(r.candidates.length, 0, `${hz} Hz should not be a candidate`);
+  }
+  // 25 Hz itself IS in scope.
+  assert.equal(screenTonality(spectrum({ 25: 80 }), 'oneThirdOctave').tonal, true);
 });
 
 test('octave resolution reports NOT ASSESSABLE rather than "no tones"', () => {
@@ -101,12 +127,18 @@ test('a missing spectrum is not assessable either', () => {
   assert.equal(screenTonality(new Float64Array(2), 'oneThirdOctave').assessable, false);
 });
 
-test('non-finite bands are skipped rather than producing a phantom tone', () => {
+test('a band beside an empty one is a candidate, never a confirmed tone', () => {
   const s = spectrum({ 1000: 80 });
   s[19] = -Infinity;                       // the 800 Hz neighbour
-  // With one neighbour unusable the band cannot be judged, so nothing is
-  // claimed about it.
-  assert.equal(screenTonality(s, 'oneThirdOctave').bands.some((b) => b.centreHz === 1000), false);
+  const r = screenTonality(s, 'oneThirdOctave');
+  assert.equal(r.bands.some((b) => b.centreHz === 1000), false, 'not confirmed on one side');
+  assert.equal(r.candidates.some((b) => b.centreHz === 1000), true, 'but not hidden either');
+  // A band with NO usable neighbour is not reported at all.
+  const isolated = new Float64Array(31).fill(-Infinity);
+  isolated[20] = 90;
+  const iso = screenTonality(isolated, 'oneThirdOctave');
+  assert.equal(iso.tonal, false);
+  assert.equal(iso.candidates.length, 0);
 });
 
 // ---------- penalty ----------
@@ -168,6 +200,10 @@ test('the method registry is what the UI renders, so it must not be empty', () =
 test('flagged bands describe themselves compactly', () => {
   const r = screenTonality(spectrum({ 100: 80, 4000: 70 }), 'oneThirdOctave');
   assert.equal(describeTonalBands(r.bands), '100 Hz +20 dB, 4 kHz +10 dB');
+  // An edge candidate says so, so nobody reads it as a confirmed tone.
+  const edge = new Float64Array(31).fill(60);
+  edge[30] = 70;
+  assert.match(describeTonalBands(screenTonality(edge, 'oneThirdOctave').candidates), /unconfirmed/);
   assert.equal(describeTonalBands([]), '');
   // Band centres read as a report writes them.
   assert.equal(formatBandHz(250), '250 Hz');

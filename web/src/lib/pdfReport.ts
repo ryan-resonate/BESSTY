@@ -274,8 +274,15 @@ function drawReceivers(
     doc.setDrawColor(255, 255, 255);
     doc.circle(x, y, 1.0, 'FD');
 
-    // Label box, offset up-right so the dot stays visible.
-    const label = dbA != null ? `${dbA.toFixed(1)} ${unit}` : '—';
+    // Label box, offset up-right so the dot stays visible. A penalised
+    // receiver prints its working: a red dot beside a number that complies
+    // with the limit printed under it cannot be reconciled by a reviewer.
+    const penalty = res?.tonalityPenaltyDb ?? 0;
+    const label = dbA != null
+      ? (penalty > 0
+        ? `${dbA.toFixed(1)} +${penalty} = ${(assessedLevel(res) ?? dbA).toFixed(1)} ${unit}`
+        : `${dbA.toFixed(1)} ${unit}`)
+      : '—';
     doc.setFontSize(6.5);
     const w = doc.getTextWidth(label) + 2;
     const h = showLimits ? 5.6 : 3.6;

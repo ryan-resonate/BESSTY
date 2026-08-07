@@ -171,6 +171,35 @@ test('the scale bar is divided and labelled, not one solid rule', () => {
   assert.ok(Math.abs(value(labels[1]) * 2 - value(labels[2])) < 1e-9);
 });
 
+test('every scale-bar label is in the same unit, across every usable scale', () => {
+  // Formatting each label independently switched units mid-bar: a 1 km bar read
+  // "0 · 500 · 1 km", where the 500 looks like 500 km. Reachable on any A4
+  // figure covering roughly 5-10 km — the ordinary site figure.
+  const spans: Array<[number, number]> = [
+    [0.002, 0.002], [0.01, 0.01], [0.02, 0.02], [0.05, 0.05], [0.1, 0.1], [0.3, 0.3],
+  ];
+  for (const [dLat, dLng] of spans) {
+    const ext = {
+      sw: [-27.0, 152.0] as [number, number],
+      ne: [-27.0 + dLat, 152.0 + dLng] as [number, number],
+    };
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4', compress: false });
+    drawScaleBar(doc, fitFrame(ext, PAGES['a4-landscape'], 0));
+    const labels = [...doc.output().matchAll(/\(([^)]*)\)\s*Tj/g)].map((m) => m[1]);
+    assert.equal(labels.length, 3, `${dLat}°: ${JSON.stringify(labels)}`);
+    assert.equal(labels[0], '0');
+    // Only the LAST label carries a unit…
+    assert.match(labels[2], /\s(m|km)$/, JSON.stringify(labels));
+    assert.ok(!/[a-z]/.test(labels[1]), `middle label carries a unit: ${JSON.stringify(labels)}`);
+    // …and the middle really is half the end value, in that same unit.
+    const num = (t: string) => parseFloat(t.replace(/[^\d.]/g, ''));
+    assert.ok(
+      Math.abs(num(labels[1]) * 2 - num(labels[2])) < 1e-9,
+      `${JSON.stringify(labels)} — the divisions are not in one unit`,
+    );
+  }
+});
+
 test('the scale bar draws a filled segment and a hollow one', () => {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4', compress: false });
   drawScaleBar(doc, fitFrame(extent, PAGES['a4-landscape'], 0));

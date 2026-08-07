@@ -21,7 +21,7 @@ import { notify } from '../lib/notify';
 import { listEntriesByKind } from '../lib/catalog';
 import { evaluateProject } from '../lib/solver';
 import { limitForPeriod, type Project, type Receiver, type SourceKind } from '../lib/types';
-import { exceedsLimit, limitComparisonFor } from '../lib/limits';
+import { assessedLevel, exceedsLimit, limitComparisonFor } from '../lib/limits';
 import {
   axisOverlap, axisScopeOptions, candidateLabel, enumerateCombos, projectForCombo,
   scopeKey, worstOf,
@@ -155,7 +155,7 @@ export function FactorialStudy({ project, dem, onClose }: Props) {
         // own live solves, and those must not cancel the sweep.
         const rs = await evaluateProject(p, snap.dem, undefined, 'study');
         const byReceiver = new Map<string, number>();
-        for (const r of rs) if (selectedRxIds.has(r.receiverId)) byReceiver.set(r.receiverId, r.totalDbA);
+        for (const r of rs) if (selectedRxIds.has(r.receiverId)) byReceiver.set(r.receiverId, assessedLevel(r) ?? r.totalDbA);
         out.push({ combo: combos[i], byReceiver });
         setProgress({ done: i + 1, total: combos.length });
       }

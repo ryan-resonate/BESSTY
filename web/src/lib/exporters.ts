@@ -223,12 +223,19 @@ function perSourceContribRows(
   return rows;
 }
 
-const CONTRIB_HEADERS = ['receiver_id', 'receiver_name', 'source_id', 'source_name', 'contribution_dba'];
+/// Built per export rather than a constant: the last column carries the
+/// project's weighting, and a `contribution_dba` header over C-weighted
+/// numbers is the same lie the visible labels were fixed for. The sweep's
+/// regex only looks for `dB(A)`, so lowercase `dba` slipped past it.
+const contribHeaders = (weighting: Weighting) => [
+  'receiver_id', 'receiver_name', 'source_id', 'source_name',
+  `contribution_db${weighting.toLowerCase()}`,
+];
 
 export function exportPerSourceContribCsv(project: Project, results: ReceiverResult[] | null): Blob {
   const rows = perSourceContribRows(project, results);
   const data = [
-    CONTRIB_HEADERS,
+    contribHeaders(weightingFor(project)),
     ...rows.map((r) => [r.receiverId, r.receiverName, r.sourceId, r.sourceName, Number.isFinite(r.contribDbA) ? r.contribDbA : '']),
   ];
   return new Blob([toCsv(data)], { type: 'text/csv;charset=utf-8' });
@@ -237,7 +244,7 @@ export function exportPerSourceContribCsv(project: Project, results: ReceiverRes
 export function exportPerSourceContribXlsx(project: Project, results: ReceiverResult[] | null): Blob {
   const rows = perSourceContribRows(project, results);
   const data = [
-    CONTRIB_HEADERS,
+    contribHeaders(weightingFor(project)),
     ...rows.map((r) => [r.receiverId, r.receiverName, r.sourceId, r.sourceName, Number.isFinite(r.contribDbA) ? r.contribDbA : '']),
   ];
   const ws = XLSX.utils.aoa_to_sheet(data);
@@ -309,7 +316,7 @@ export function exportContoursKml(project: Project, contours: ContourLineSet[]):
         : `${set.threshold} ${weightingLabel(weightingFor(project))} — line ${segIdx + 1}`;
       placemarks.push(
         `<Placemark><name>${xmlEscape(title)}</name>` +
-        `<ExtendedData><Data name="threshold_dba"><value>${set.threshold}</value></Data>` +
+        `<ExtendedData><Data name="threshold_db"><value>${set.threshold}</value></Data>` +
         (set.label ? `<Data name="label"><value>${xmlEscape(set.label)}</value></Data>` : '') +
         `</ExtendedData>` +
         `<LineString><coordinates>${coords}</coordinates></LineString></Placemark>`,
@@ -327,7 +334,8 @@ export function exportContoursKml(project: Project, contours: ContourLineSet[]):
 
 /// Write contour lines as a zipped Esri shapefile bundle (.shp/.shx/.dbf
 /// + .prj). One LineString feature per contour segment, with the dB
-/// threshold stored as the `THRESH_DBA` attribute. Returns a Blob ready
+/// threshold stored as the `THRESH_DB` attribute, in the project's assessment
+/// weighting. Returns a Blob ready
 /// to download.
 ///
 /// Hand-rolled writer (see `shapefileWriter.ts`) — replaces an earlier
@@ -338,7 +346,10 @@ export function exportContoursShp(_project: Project, contours: ContourLineSet[])
   // `LABEL` carries a custom line's name and is empty for stepped contours, so
   // one export can hold both and GIS consumers can filter on it.
   const fields = [
-    { name: 'THRESH_DBA', type: 'N' as const, width: 8, decimals: 2 },
+    // Neutral name: the value follows the project's assessment weighting, and
+    // a DBF field called THRESH_DBA holding dB(C) is a trap for whoever opens
+    // it in GIS six months later.
+    { name: 'THRESH_DB', type: 'N' as const, width: 8, decimals: 2 },
     { name: 'LABEL', type: 'C' as const, width: 40 },
   ];
   const features: { coords: Array<[number, number]>; properties: Record<string, number | string> }[] = [];
@@ -347,7 +358,7 @@ export function exportContoursShp(_project: Project, contours: ContourLineSet[])
       features.push({
         // Shapefile coords are (lng, lat) — same as GeoJSON Position.
         coords: seg.map(([lat, lng]) => [lng, lat] as [number, number]),
-        properties: { THRESH_DBA: set.threshold, LABEL: set.label ?? '' },
+        properties: { THRESH_DB: set.threshold, LABEL: set.label ?? '' },
       });
     }
   }

@@ -119,11 +119,15 @@ export function ResultsDock(props: ResultsDockProps) {
   // receiver at 40.4 against a 40 limit reads green on the map and red here.
   const worst = (results ?? []).reduce<{ id: string; over: number; fail: boolean } | null>((acc, r) => {
     const rx = project.receivers.find((x) => x.id === r.receiverId);
-    if (!rx || !isFinite(r.totalDbA)) return acc;
+    const assessed = assessedLevel(r);
+    if (!rx || assessed == null) return acc;
     const limit = limitForPeriod(rx, project.scenario.period);
-    const over = r.totalDbA - limit;
+    // Ranked on the SAME level it is coloured by: ranking on the solved level
+    // while colouring on the assessed one named a green receiver as the worst
+    // while the count beside it said one was over.
+    const over = assessed - limit;
     if (!acc || over > acc.over) {
-      return { id: r.receiverId, over, fail: exceedsLimit(assessedLevel(r), limit, mode) };
+      return { id: r.receiverId, over, fail: exceedsLimit(assessed, limit, mode) };
     }
     return acc;
   }, null);
