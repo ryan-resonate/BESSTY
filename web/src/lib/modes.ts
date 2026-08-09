@@ -180,6 +180,15 @@ export function variesByPeriod(v: ModeOverride | undefined): boolean {
   return v.day !== v.evening || v.evening !== v.night;
 }
 
+/// Is any period of this override Off? A uniform Off doesn't "vary", so
+/// `variesByPeriod` alone misses it — and an Off is exactly the value the UI
+/// must never hide: a source contributing nothing with no visible control set
+/// to Off looks like a solver bug, not a choice.
+export function involvesOff(v: ModeOverride | undefined): boolean {
+  if (!isPeriodModes(v)) return v === MODE_OFF;
+  return PERIODS.some((p) => v[p] === MODE_OFF);
+}
+
 /// Is the whole per-period capability switched on for this project? Default
 /// OFF — a project that has never heard of periods shows none of the UI.
 ///

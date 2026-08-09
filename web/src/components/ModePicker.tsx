@@ -55,17 +55,37 @@ export function ModePicker(props: {
   const varies = variesByPeriod(value);
   const [open, setOpen] = useState(false);
 
-  const options = (
-    <>
-      {inheritLabel !== undefined && <option value="">{inheritLabel}</option>}
-      {modes.map((m) => <option key={m} value={m}>{m}</option>)}
-      {allowOff && <option value={MODE_OFF}>{MODE_OFF_LABEL}</option>}
-    </>
-  );
-
   /// The value a single dropdown shows: whatever applies in the period being
   /// assessed, so the control agrees with the levels on screen.
   const single = modeForPeriod(value, project.scenario.period);
+
+  /// Options for one select, given the value it currently shows.
+  ///
+  /// Two rules that both exist because a `<select>` whose value matches no
+  /// option renders BLANK while something real is in force:
+  ///  - an inherit option appears whenever the caller asked for one, or the
+  ///    current value is "inherit" itself (a sparse per-period object, or a
+  ///    model whose catalog entry is missing) — otherwise the blank control
+  ///    sits beside a project solving at the catalog default;
+  ///  - Off is offered only while per-period modes are ON — it is part of that
+  ///    capability — EXCEPT when the value already is Off, where hiding the
+  ///    option would strand the source: visible as Off, recoverable to a mode.
+  const inheritOptionLabel = inheritLabel
+    ?? (inheritName.startsWith('(') ? inheritName : `(default — ${inheritName})`);
+  /// `alwaysInherit` — the expander's selects always offer inheritance, so a
+  /// period that was pinned can be handed back to the default, not only set to
+  /// a name that happens to equal it.
+  const optionsFor = (current: string | null | undefined, alwaysInherit = false) => (
+    <>
+      {(inheritLabel !== undefined || alwaysInherit || current == null) && (
+        <option value="">{inheritOptionLabel}</option>
+      )}
+      {modes.map((m) => <option key={m} value={m}>{m}</option>)}
+      {allowOff && (perPeriod || current === MODE_OFF) && (
+        <option value={MODE_OFF}>{MODE_OFF_LABEL}</option>
+      )}
+    </>
+  );
 
   function setAllPeriods(v: string) {
     onChange(v === '' ? undefined : v);
@@ -100,7 +120,7 @@ export function ModePicker(props: {
             value={single ?? ''}
             title={title}
             onChange={(e) => setAllPeriods(e.target.value)}
-          >{options}</select>
+          >{optionsFor(single)}</select>
         )}
       {perPeriod && (
         <button
@@ -126,7 +146,7 @@ export function ModePicker(props: {
         <label key={p} className="fld" style={{ fontSize: 11 }}>
           <span>{PERIOD_LABEL[p]}</span>
           <select value={modeForPeriod(value, p) ?? ''} onChange={(e) => setOne(p, e.target.value)}>
-            {options}
+            {optionsFor(modeForPeriod(value, p), true)}
           </select>
         </label>
       ))}

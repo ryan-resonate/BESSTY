@@ -35,7 +35,10 @@
 //      approximation. At the scale of a BESS site (<< 1 km) the
 //      distortion is negligible.
 
-import { footprintFor } from './catalog';
+// From `catalogDims`, not `catalog`: this module takes its catalog access as a
+// CALLER-SUPPLIED lookup precisely so it never depends on Firebase, and
+// `catalog.ts` (which merely re-exports footprintFor) carries the whole SDK.
+import { footprintFor } from './catalogDims';
 import { mergeModeChain } from './modes';
 import type {
   BessGroup,
@@ -253,7 +256,19 @@ function finishPlacement(
     // night mode still takes the segment's day mode. Choosing one link outright
     // (the old `!== undefined` chain) would have made setting one period
     // silently blank the other two.
-    const merged = mergeModeChain(override?.modeOverride, p.segRef.modeOverride);
+    //
+    // The segment link only applies while the unit still RUNS the segment's
+    // model. A per-unit model swap makes the segment's mode a name from the
+    // wrong datasheet — and `spectrumFor` doesn't reject an unknown name, it
+    // silently substitutes the catalog's first mode, so the leak would solve
+    // at a level nobody chose. Gaps left by a sparse per-unit override resolve
+    // to the NEW model's default instead, which is the only honest fallback.
+    const segModelApplies = !override?.modelOverride
+      || (override.modelOverride.catalogScope === p.segRef.catalogScope
+        && override.modelOverride.modelId === p.segRef.modelId);
+    const merged = segModelApplies
+      ? mergeModeChain(override?.modeOverride, p.segRef.modeOverride)
+      : override?.modeOverride;
     if (merged !== undefined) src.modeOverride = merged;
     if (override?.elevationOffset !== undefined) src.elevationOffset = override.elevationOffset;
     sources.push(src);

@@ -193,10 +193,28 @@ test('every spectrum lookup goes through the mode resolver, and checks for Off',
       // a comment between them without letting an unrelated guard count.
       const before = text.slice(0, m.index).split('\n').slice(-6).join('\n');
       const line = text.slice(0, m.index).split('\n').length;
-      if (!/sourceModeName\(/.test(before)) {
-        offenders.push(`${path.replace(SRC, 'src')}:${line} — no sourceModeName() above it`);
-      } else if (!/==\s*null|===\s*null/.test(before)) {
-        offenders.push(`${path.replace(SRC, 'src')}:${line} — resolved but never checked for Off`);
+      const at = `${path.replace(SRC, 'src')}:${line}`;
+      // The check binds ONE variable through all three steps — resolved from
+      // sourceModeName, null-checked, and actually passed as the mode argument.
+      // Requiring merely "some resolve" plus "some null check" in the window
+      // let `spectrumFor(entry, m ?? entry.defaultMode, …)` through, which runs
+      // an Off source at the default mode: the exact failure this test exists
+      // to prevent.
+      const decl = before.match(/(?:const|let)\s+(\w+)\s*=\s*sourceModeName\(/);
+      if (!decl) {
+        offenders.push(`${at} — no sourceModeName() resolve above it`);
+        continue;
+      }
+      const name = decl[1];
+      if (!new RegExp(`if\\s*\\(\\s*${name}\\s*===?\\s*null\\s*\\)`).test(before)) {
+        offenders.push(`${at} — ${name} is resolved but never checked for Off`);
+        continue;
+      }
+      // Second argument of the call must be exactly the guarded variable.
+      const call = text.slice(m.index, m.index! + 200);
+      const arg = call.match(/^spectrumFor\(\s*[^,]+,\s*([\w.!]+)\s*[,)]/);
+      if (!arg || arg[1] !== name) {
+        offenders.push(`${at} — resolves ${name} but passes ${arg?.[1] ?? 'something else'}`);
       }
     }
   }

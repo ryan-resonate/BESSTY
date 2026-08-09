@@ -27,6 +27,6 @@ Switching period only re-solves when a mode actually differs, so on a project th
 
 ## What gets exported
 
-The **receiver totals** export covers all three periods regardless: `level_day`, `level_evening` and `level_night`, each judged against its own limit. If the modes are the same in every period the three columns simply repeat one solve.
+The **receiver totals** export covers all three periods regardless: `level_day`, `level_evening` and `level_night`, each judged against its own limit. Beside them, `assessed_day/evening/night` carry each period's level *plus its own tonality penalty* — the number the verdict actually compared — so a night fail caused by a tone that only appears in the night mode is explainable from the row. If the modes are the same in every period the columns simply repeat one solve.
 
 Per-source contributions and per-band spectra stay on the selected period — tripling them would triple the longest sheets in the workbook — and each now carries a leading `period` column saying which one it is. The source shapefile gains `MODE_DEN` alongside `MODE`, spelling out all three.

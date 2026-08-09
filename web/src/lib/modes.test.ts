@@ -14,6 +14,7 @@ import {
   MODE_OFF,
   applyModeEdit,
   describeModes,
+  involvesOff,
   mergeModeChain,
   modeForPeriod,
   normaliseModeOverride,
@@ -118,6 +119,20 @@ test('the summary names every period, Off included', () => {
   assert.equal(describeModes({ night: MODE_OFF }, 'nominal'), 'nominal / nominal / Off');
   assert.equal(describeModes('NRO0', 'nominal'), 'NRO0');
   assert.equal(describeModes(undefined, 'nominal'), 'nominal');
+});
+
+test('involvesOff sees a uniform Off, which variesByPeriod cannot', () => {
+  // The UI shows the mode control whenever an override varies OR involves Off.
+  // A source set Off in every period doesn't vary, so this predicate is the
+  // only thing standing between that source and an invisible, uneditable Off.
+  assert.equal(involvesOff(MODE_OFF), true);
+  assert.equal(variesByPeriod(MODE_OFF), false);          // …which is why it exists
+  assert.equal(involvesOff({ night: MODE_OFF }), true);
+  assert.equal(involvesOff({ day: 'a', evening: 'a', night: MODE_OFF }), true);
+  assert.equal(involvesOff('NRO0'), false);
+  assert.equal(involvesOff({ day: 'a', night: 'b' }), false);
+  assert.equal(involvesOff(undefined), false);
+  assert.equal(involvesOff(null), false);
 });
 
 test('the capability is off unless a project switches it on', () => {

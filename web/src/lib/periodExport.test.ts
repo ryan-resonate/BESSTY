@@ -92,10 +92,37 @@ test('each period is judged on its OWN solve, not the active one', async () => {
   assert.equal(get('pass_night'), 'pass');     // 33 vs 35
 });
 
+test('a period fail caused by a tonality penalty is explainable from the row', async () => {
+  // The reviewer's scenario: the night solve turns tonal and carries a +5
+  // penalty, so it fails BELOW its limit (33 + 5 = 38 vs 35). The single
+  // tonal/penalty columns describe the active (day) period, so without the
+  // per-period assessed columns that fail is unexplainable from the file's own
+  // numbers and reads as an export bug.
+  const night: ReceiverResult[] = [{
+    receiverId: 'R1',
+    perBandLp: new Float64Array(10).fill(30),
+    totalDbA: 33,
+    tonalityPenaltyDb: 5,
+    assessedDbA: 38,
+    perSource: [],
+  }];
+  const byPeriod: Record<Period, ReceiverResult[]> = {
+    day: resultAt(44), evening: resultAt(41), night,
+  };
+  const get = await columns(project(), byPeriod);
+  assert.equal(get('level_night_dba'), '33');
+  assert.equal(get('assessed_night_dba'), '38', 'the number the verdict compared');
+  assert.equal(get('pass_night'), 'fail');     // 38 vs 35 — explained by the row
+  // The active period (day) has no penalty, and its columns say so.
+  assert.equal(get('tonality_penalty_db'), '0');
+  assert.equal(get('assessed_day_dba'), '44');
+});
+
 test('a receiver with no result reports levels blank and verdicts as "—"', async () => {
   const get = await columns(project(), null);
   assert.equal(get('level_day_dba'), '');
   assert.equal(get('level_night_dba'), '');
+  assert.equal(get('assessed_night_dba'), '');
   assert.equal(get('pass_night'), '—');
 });
 

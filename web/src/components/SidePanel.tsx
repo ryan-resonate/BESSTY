@@ -33,8 +33,9 @@ import {
 } from '../lib/firestoreStorage';
 import { presetForEpsg } from '../lib/projections';
 import { ModePicker } from './ModePicker';
-import { applyModeEdit, perPeriodModesEnabled, variesByPeriod } from '../lib/modes';
-import type { BulkSourcePatch } from '../lib/groupOverrides';
+import { applyModeEdit, involvesOff, perPeriodModesEnabled, variesByPeriod } from '../lib/modes';
+import { applyPatchWithGroupOverrides, mergeBulkOps } from '../lib/groupOverrides';
+import type { BulkOp, BulkSourcePatch } from '../lib/groupOverrides';
 import {
   defaultFilenameStem,
   exportContoursKml,
@@ -512,6 +513,11 @@ function BulkEditPanel(props: {
   const dirty = modelDirty || Object.keys(wtgDraft).length > 0 || Object.keys(rxDraft).length > 0;
 
   function apply() {
+    // ALL source edits fold into ONE update. Each `onBulkUpdateSourcesByIds`
+    // call is a whole-project write, and issuing one per drafted group meant a
+    // second draft was computed from the state before the first — the last
+    // write won and the earlier edits silently vanished.
+    const ops: BulkOp[] = [];
     for (const g of modelGroups) {
       const d = modelDrafts[g.key];
       if (!d) continue;
@@ -522,19 +528,26 @@ function BulkEditPanel(props: {
       // and the targets can be sitting on different modes. A pending model swap
       // starts from nothing rather than merging: the outgoing model's mode names
       // mean nothing on the incoming one.
-      onBulkUpdateSourcesByIds(g.ids, (s) => {
-        const patch: Partial<Source> = {};
-        if (swapModel) {
-          patch.modelId = d.modelId!;
-          patch.catalogScope = d.catalogScope!;
-        }
-        if (modeEdit !== undefined) {
-          patch.modeOverride = applyModeEdit(swapModel ? undefined : s.modeOverride, modeEdit);
-        }
-        return patch;
+      ops.push({
+        ids: g.ids,
+        patch: (s) => {
+          const patch: Partial<Source> = {};
+          if (swapModel) {
+            patch.modelId = d.modelId!;
+            patch.catalogScope = d.catalogScope!;
+          }
+          if (modeEdit !== undefined) {
+            patch.modeOverride = applyModeEdit(swapModel ? undefined : s.modeOverride, modeEdit);
+          }
+          return patch;
+        },
       });
     }
-    if (wtgIds.length > 0 && Object.keys(wtgDraft).length > 0) onBulkUpdateSourcesByIds(wtgIds, wtgDraft);
+    if (wtgIds.length > 0 && Object.keys(wtgDraft).length > 0) {
+      ops.push({ ids: wtgIds, patch: wtgDraft });
+    }
+    const merged = mergeBulkOps(ops);
+    if (merged) onBulkUpdateSourcesByIds([...merged.ids], merged.patch);
     if (Object.keys(rxDraft).length > 0) onBulkUpdateReceivers(rxDraft);
     setModelDrafts({});
     setWtgDraft({});
@@ -709,10 +722,12 @@ function SourcesTab(props: Props) {
   const { project, setProject, results, selectedIds, onSelect, addMode, setAddMode, onSelectGroup } = props;
 
   function updateSource(id: string, patch: Partial<Source>) {
-    setProject({
-      ...project,
-      sources: project.sources.map((s) => (s.id === id ? { ...s, ...patch } : s)),
-    });
+    // Through the group-override path, not a bare map: for a BESS-group member
+    // a plain live patch never reaches `group.unitOverrides`, so the next
+    // re-materialisation — including simply REOPENING the project — silently
+    // reverted row edits like a night Off while the map showed them applied.
+    // For standalone sources this is the same merge it always was.
+    setProject(applyPatchWithGroupOverrides(project, [id], patch));
   }
   function removeSource(id: string) {
     setProject({ ...project, sources: project.sources.filter((s) => s.id !== id) });
@@ -2521,11 +2536,15 @@ export function SettingsTab(props: SettingsTabProps) {
                 const on = e.target.checked;
                 // Turning it off hides the controls but keeps the values — the
                 // solver still honours them. Say so, or the levels look wrong
-                // for no visible reason.
-                if (!on && project.sources.some((s) => variesByPeriod(s.modeOverride))) {
+                // for no visible reason. `involvesOff` matters here: a source
+                // Off in every period doesn't "vary", but it's the value most
+                // worth warning about.
+                if (!on && project.sources.some(
+                  (s) => variesByPeriod(s.modeOverride) || involvesOff(s.modeOverride),
+                )) {
                   notify.info(
-                    'Sources with a mode set per period keep it. The levels do not '
-                    + 'change; only the per-period controls are hidden.',
+                    'Sources with a per-period mode or an Off keep it. The levels do '
+                    + 'not change; only the per-period controls are hidden.',
                   );
                 }
                 update({ periods: { ...settings.periods, perPeriodModes: on } });
@@ -3251,8 +3270,12 @@ function SourceItem(props: {
         </select>
         {/* One mode used to mean nothing to choose, so the dropdown was
             hidden. Off is a choice too — without this a single-mode BESS could
-            never be switched off for a period. */}
-        {(modes.length > 1 || perPeriodModesEnabled(project)) && (
+            never be switched off for a period. And a STORED override that
+            varies or involves Off must render whatever the setting says: hiding
+            it left a source contributing nothing with no visible control, which
+            reads as a solver bug rather than a choice. */}
+        {(modes.length > 1 || perPeriodModesEnabled(project)
+          || variesByPeriod(s.modeOverride) || involvesOff(s.modeOverride)) && (
           <ModePicker
             project={project}
             modes={modes.map((m) => m.name)}

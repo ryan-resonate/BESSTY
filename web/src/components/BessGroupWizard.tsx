@@ -23,7 +23,7 @@ import {
 } from '../lib/bessGroups';
 import { footprintFor, listEntriesByKind } from '../lib/catalog';
 import { ModePicker } from './ModePicker';
-import { describeModes, perPeriodModesEnabled, variesByPeriod } from '../lib/modes';
+import { describeModes, involvesOff, perPeriodModesEnabled, variesByPeriod } from '../lib/modes';
 import type {
   BessGroup,
   BessRow,
@@ -184,10 +184,29 @@ export function BessGroupWizard(props: Props) {
   // Rewrite every segment of `fromScope:fromModel` to a new model across the
   // whole sequence (nested groups included). Mode resets to the new model's
   // default, since the old mode name may not exist on it.
+  // A bulk edit scoped to ONE model must only clear per-unit overrides on
+  // units whose EFFECTIVE model (per-unit swap included) is that model.
+  // Clearing every slot wiped hand-set modes on unrelated units — a night-Off
+  // on an inverter died because the BESS fan curve changed, and the inverter
+  // was back in the night scene with nothing announcing it.
+  const slotsOfModel = useCallback(
+    (g: BessGroup, scope: CatalogScope, modelId: string): Set<string> => {
+      const slots = new Set<string>();
+      for (const s of materialiseBessGroup(g, catalogLookup).sources) {
+        if (s.slotKey && s.catalogScope === scope && s.modelId === modelId) slots.add(s.slotKey);
+      }
+      return slots;
+    },
+    [catalogLookup],
+  );
+
   const swapModelTo = useCallback(
     (fromScope: CatalogScope, fromModel: string, toScope: CatalogScope, toModel: string) => {
       const defMode = catalogLookup(toScope, toModel)?.defaultMode;
       setGroup((g) => {
+        // Which slots the swap actually addresses — resolved BEFORE the
+        // sequence rewrite, against the models units currently run.
+        const affected = slotsOfModel(g, fromScope, fromModel);
         const r = swapModel(
           g.sequence ?? [],
           { scope: fromScope, modelId: fromModel },
@@ -200,10 +219,11 @@ export function BessGroupWizard(props: Props) {
         return clearOverriddenFields(
           { ...g, sequence: r.sequence },
           ['modelOverride', 'modeOverride'],
+          (slot) => affected.has(slot),
         );
       });
     },
-    [catalogLookup],
+    [catalogLookup, slotsOfModel],
   );
 
   // I6: set the mode on one model's segments. Every segment in the row shares
@@ -211,15 +231,18 @@ export function BessGroupWizard(props: Props) {
   // group-wide control below.
   const setModeForModel = useCallback(
     (scope: CatalogScope, modelId: string, mode: string) => {
-      setGroup((g) => clearOverriddenFields({
-        ...g,
-        sequence: mapAllSegments(g.sequence ?? [], (sg) =>
-          sg.catalogScope === scope && sg.modelId === modelId
-            ? { ...sg, modeOverride: mode }
-            : sg),
-      }, ['modeOverride']));
+      setGroup((g) => {
+        const affected = slotsOfModel(g, scope, modelId);
+        return clearOverriddenFields({
+          ...g,
+          sequence: mapAllSegments(g.sequence ?? [], (sg) =>
+            sg.catalogScope === scope && sg.modelId === modelId
+              ? { ...sg, modeOverride: mode }
+              : sg),
+        }, ['modeOverride'], (slot) => affected.has(slot));
+      });
     },
-    [],
+    [slotsOfModel],
   );
 
   // Modes offered by every model currently in the group, and the union of their
@@ -243,10 +266,22 @@ export function BessGroupWizard(props: Props) {
       setGroup((g) => {
         const r = setModeWhereSupported(g.sequence ?? [], mode, modesFor);
         notify.info(describeBulk(r, `set to "${mode}"`));
-        return clearOverriddenFields({ ...g, sequence: r.sequence }, ['modeOverride']);
+        // "Models without that mode are left completely alone" has to include
+        // their units' hand-set overrides — clearing those changes the very
+        // units the message promises are untouched.
+        const supported = new Set<string>();
+        for (const s of materialiseBessGroup(g, catalogLookup).sources) {
+          if (s.slotKey && modesFor(s.catalogScope, s.modelId).includes(mode)) {
+            supported.add(s.slotKey);
+          }
+        }
+        return clearOverriddenFields(
+          { ...g, sequence: r.sequence }, ['modeOverride'],
+          (slot) => supported.has(slot),
+        );
       });
     },
-    [modesFor],
+    [modesFor, catalogLookup],
   );
 
   // Esc unwinds one layer at a time: an open segment editor closes first, and
@@ -1055,8 +1090,12 @@ function SegmentChip(p: SegmentChipProps) {
           </label>
 
           {/* Shown for a single-mode model too once per-period modes are on:
-              Off is a choice, and hiding the control would make it unreachable. */}
-          {(modeOptions.length > 1 || perPeriodModesEnabled(p.project)) && (
+              Off is a choice, and hiding the control would make it unreachable.
+              And a stored override that varies or involves Off renders whatever
+              the setting says — hiding it would leave a silent Off with no
+              control pointing at it. */}
+          {(modeOptions.length > 1 || perPeriodModesEnabled(p.project)
+            || variesByPeriod(p.segment.modeOverride) || involvesOff(p.segment.modeOverride)) && (
             <div style={menuFieldStyle}>
               <span style={fieldLabelStyle}>Mode</span>
               <ModePicker

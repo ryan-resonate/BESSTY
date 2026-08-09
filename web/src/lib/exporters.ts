@@ -69,6 +69,15 @@ interface ReceiverRow {
   levelDay: number | null;
   levelEvening: number | null;
   levelNight: number | null;
+  /// Assessed level per period — that period's solved level plus that period's
+  /// own tonality penalty. This is the number each pass/fail verdict actually
+  /// compares against its limit, and it is exported so the verdict is always
+  /// explainable from the row: a night solve that turns tonal can fail below
+  /// its limit, and without this column that fail looks like an export bug.
+  /// (The single tonal/penalty columns describe the ACTIVE period's spectrum.)
+  assessedDay: number | null;
+  assessedEvening: number | null;
+  assessedNight: number | null;
   limitDayDbA: number;
   limitEveningDbA: number;
   limitNightDbA: number;
@@ -143,6 +152,9 @@ function receiverRows(project: Project, results: ExportResults): ReceiverRow[] {
       levelDay: forPeriod('day').level,
       levelEvening: forPeriod('evening').level,
       levelNight: forPeriod('night').level,
+      assessedDay: forPeriod('day').assessed,
+      assessedEvening: forPeriod('evening').assessed,
+      assessedNight: forPeriod('night').assessed,
       limitDayDbA: r.limitDayDbA,
       limitEveningDbA: r.limitEveningDbA,
       limitNightDbA: r.limitNightDbA,
@@ -162,6 +174,7 @@ function rxHeaders(weighting: Weighting): string[] {
     `total_db${w}`, 'dbc_minus_dba',
     'tonal', 'tonal_bands', 'tonality_penalty_db', `assessed_db${w}`,
     `level_day_db${w}`, `level_evening_db${w}`, `level_night_db${w}`,
+    `assessed_day_db${w}`, `assessed_evening_db${w}`, `assessed_night_db${w}`,
     `limit_day_db${w}`, `limit_evening_db${w}`, `limit_night_db${w}`,
     'pass_day', 'pass_evening', 'pass_night',
   ];
@@ -177,6 +190,9 @@ function rxRowAsArray(r: ReceiverRow): Array<string | number> {
     r.levelDay == null ? '' : Number(r.levelDay.toFixed(2)),
     r.levelEvening == null ? '' : Number(r.levelEvening.toFixed(2)),
     r.levelNight == null ? '' : Number(r.levelNight.toFixed(2)),
+    r.assessedDay == null ? '' : Number(r.assessedDay.toFixed(2)),
+    r.assessedEvening == null ? '' : Number(r.assessedEvening.toFixed(2)),
+    r.assessedNight == null ? '' : Number(r.assessedNight.toFixed(2)),
     r.limitDayDbA, r.limitEveningDbA, r.limitNightDbA,
     r.passDay, r.passEvening, r.passNight,
   ];
@@ -488,6 +504,13 @@ export function exportSourcesShp(project: Project): Blob {
       },
     });
   }
+  // MODE_DEN is three catalog mode names joined with ' / ', and mode names have
+  // no length cap — a fixed width silently truncates the night label mid-name,
+  // so GIS would show a mode that doesn't exist. DBF fields are fixed-width per
+  // FILE, not per row, so size it to this export's longest value (254 is the
+  // dBASE hard ceiling; beyond that truncation is unavoidable).
+  const denWidth = Math.min(254, features.reduce(
+    (m, f) => Math.max(m, String(f.properties.MODE_DEN).length), 80));
   const bundle = buildPointShapefile(features, [
     { name: 'SRC_ID', type: 'C', width: 36 },
     { name: 'NAME', type: 'C', width: 80 },
@@ -499,7 +522,7 @@ export function exportSourcesShp(project: Project): Blob {
     { name: 'ELEV_OFF', type: 'N', width: 8, decimals: 1 },
     { name: 'YAW_DEG', type: 'N', width: 7, decimals: 1 },
     { name: 'MODE', type: 'C', width: 40 },
-    { name: 'MODE_DEN', type: 'C', width: 80 },
+    { name: 'MODE_DEN', type: 'C', width: denWidth },
     { name: 'GROUP_ID', type: 'C', width: 36 },
     { name: 'SLOT_KEY', type: 'C', width: 44 },
     { name: 'LAT', type: 'N', width: 13, decimals: 8 },

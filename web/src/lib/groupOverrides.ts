@@ -101,21 +101,67 @@ export function applyPatchWithGroupOverrides(
   return { ...project, sources, bessGroups };
 }
 
-/// Drop the given override FIELDS from every slot of a group.
+/// One targeted bulk edit: a patch (or per-source patch function) aimed at a
+/// specific set of source ids.
+export interface BulkOp {
+  ids: readonly string[];
+  patch: BulkSourcePatch;
+}
+
+/// Fold several targeted edits into ONE edit over the union of their targets.
+///
+/// The bulk editor's Apply used to issue one project update per drafted group
+/// (plus one for the WTG-only fields), each computed from the same stale
+/// render snapshot — so with two or more drafts the last write silently
+/// discarded every earlier one. Merging first means one update, one undo step,
+/// and no ordering to get wrong.
+///
+/// Ops apply in array order: where two target the same source, later ops win
+/// per FIELD, matching what sequential applications would have produced had
+/// they composed correctly.
+export function mergeBulkOps(ops: readonly BulkOp[]): BulkOp | null {
+  const live = ops.filter((op) => op.ids.length > 0);
+  if (live.length === 0) return null;
+  if (live.length === 1) return live[0];
+  const sets = live.map((op) => new Set(op.ids));
+  const ids = [...new Set(live.flatMap((op) => op.ids))];
+  return {
+    ids,
+    patch: (s: Source) => {
+      let merged: Partial<Source> = {};
+      for (let i = 0; i < live.length; i++) {
+        if (!sets[i].has(s.id)) continue;
+        const p = live[i].patch;
+        merged = { ...merged, ...(typeof p === 'function' ? p(s) : p) };
+      }
+      return merged;
+    },
+  };
+}
+
+/// Drop the given override FIELDS from every slot of a group — or, with
+/// `slotFilter`, only from the slots it accepts.
 ///
 /// This is the "change all overwrites manual edits" path: after a wizard bulk
 /// model or mode swap, per-unit overrides of those same fields must go, or the
 /// stale override immediately re-applies over the new value and the bulk edit
 /// looks like it silently failed on exactly the units the user had tuned.
 /// Other override fields (a position nudge) are untouched.
+///
+/// `slotFilter` exists because a bulk edit scoped to ONE model must not wipe
+/// hand-set modes on units of other models in the same group: a night-Off on
+/// an inverter has nothing to do with changing the BESS fan curve, and losing
+/// it puts a source back into a period the user took it out of.
 export function clearOverriddenFields(
   group: BessGroup,
   fields: ReadonlyArray<keyof BessUnitOverride>,
+  slotFilter?: (slotKey: string) => boolean,
 ): BessGroup {
   const cur = group.unitOverrides;
   if (!cur) return group;
   const next: BessGroup['unitOverrides'] = {};
   for (const [slot, ov] of Object.entries(cur)) {
+    if (slotFilter && !slotFilter(slot)) { next[slot] = ov; continue; }
     const copy = { ...ov } as Record<string, unknown>;
     for (const f of fields) delete copy[f as string];
     // Drop slots whose override is now empty rather than leaving `{}` behind.

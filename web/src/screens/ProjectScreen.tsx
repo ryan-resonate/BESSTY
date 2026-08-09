@@ -48,7 +48,7 @@ import {
   buildEnvelope, describePaste as describeObjectPaste, materialisePaste, parseEnvelope,
 } from '../lib/clipboardObjects';
 import { notify } from '../lib/notify';
-import { applyPatchWithGroupOverrides } from '../lib/groupOverrides';
+import { applyPatchWithGroupOverrides, type BulkSourcePatch } from '../lib/groupOverrides';
 
 let nextId = 1000;
 function newId(prefix: string) {
@@ -835,17 +835,38 @@ export function ProjectScreen() {
   const redoStackRef = useRef<Project[]>([]);
   const UNDO_LIMIT = 50;
 
+  // Same-tick composition base. Two mutations fired from one event handler
+  // both closed over the same render's `project`, so the second silently
+  // discarded the first — the bulk editor's Apply lost the mode edit whenever
+  // a hub-height or receiver draft rode along. `setProject` stamps this
+  // synchronously; once the state commits, the effect clears it so everything
+  // is back to reading the committed render. (Distinct from `projectRef`,
+  // which deliberately mirrors only COMMITTED state.)
+  const pendingProjectRef = useRef<Project | null>(null);
+  useEffect(() => { pendingProjectRef.current = null; }, [project]);
+  /// The project a mutation must build on: any not-yet-committed same-tick
+  /// write, else the render state. Mutators that can fire more than once per
+  /// event go through this.
+  function baseProject(): Project | null {
+    return pendingProjectRef.current ?? project;
+  }
+
   function setProject(p: Project) {
     // Last-ditch sanitizer: strip NaN/Infinity from every numeric receiver
     // and source field before it lands in state. Anything that slips past
     // earlier guards (CSV import edge cases, weird user typing) gets
     // replaced here so render-time inputs never see non-finite values.
     const clean = sanitizeProject(p);
-    if (project) {
-      undoStackRef.current.push(project);
+    // The undo entry is the state this mutation was built ON — for a second
+    // same-tick mutation that is the first one's result, not the render state,
+    // or undo would pop back to a state the user never saw.
+    const base = baseProject();
+    if (base) {
+      undoStackRef.current.push(base);
       if (undoStackRef.current.length > UNDO_LIMIT) undoStackRef.current.shift();
       redoStackRef.current = [];
     }
+    pendingProjectRef.current = clean;
     setProjectState(clean);
     persistProject(clean);
   }
@@ -1484,23 +1505,28 @@ export function ProjectScreen() {
     });
   }
 
+  // The three bulk mutators read `baseProject()` rather than the render
+  // closure: the bulk editor's Apply can fire more than one of them in a
+  // single click, and each must build on the previous one's result.
   /// Bulk-update a property on every selected source.
   function bulkUpdateSources(patch: Partial<Source>) {
-    if (!project) return;
+    const p = baseProject();
+    if (!p) return;
     // I4: group members record the edit as a per-unit override too, or the next
     // re-materialisation discards it.
-    setProject(applyPatchWithGroupOverrides(project, [...selectedIds], patch));
+    setProject(applyPatchWithGroupOverrides(p, [...selectedIds], patch));
   }
   /// Bulk-update a property on a SUBSET of sources (by id). Powers the
   /// per-kind/per-model bulk editor, where a mixed selection retargets each
   /// type independently (e.g. all BESS → model X, all transformers → model Y).
-  function bulkUpdateSourcesByIds(ids: string[], patch: Partial<Source>) {
-    if (!project || ids.length === 0) return;
-    setProject(applyPatchWithGroupOverrides(project, ids, patch));
+  function bulkUpdateSourcesByIds(ids: string[], patch: BulkSourcePatch) {
+    const p = baseProject();
+    if (!p || ids.length === 0) return;
+    setProject(applyPatchWithGroupOverrides(p, ids, patch));
   }
   function bulkUpdateReceivers(patch: Partial<Receiver>) {
-    if (!project) return;
-    const p = project;
+    const p = baseProject();
+    if (!p) return;
     setProject({
       ...p,
       receivers: p.receivers.map((r) => (selectedIds.has(r.id) ? { ...r, ...patch } : r)),

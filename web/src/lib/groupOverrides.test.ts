@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  applyPatchWithGroupOverrides, clearOverriddenFields, patchToOverride,
+  applyPatchWithGroupOverrides, clearOverriddenFields, mergeBulkOps, patchToOverride,
 } from './groupOverrides';
 import type { BessGroup, Project, Source } from './types';
 
@@ -120,4 +120,61 @@ test('round trip: bulk edit survives, then change-all overwrites it', () => {
   const afterChangeAll = clearOverriddenFields(edited.bessGroups![0], ['modeOverride']);
   assert.deepEqual(afterChangeAll.unitOverrides, {},
     'the wizard wins — the stale override would otherwise re-apply over it');
+});
+
+test('a slot filter scopes the wipe to the units the edit addressed', () => {
+  // A bulk edit aimed at ONE model must not clear hand-set modes on other
+  // models' units in the same group: a night-Off on an inverter has nothing to
+  // do with a BESS fan-curve change, and losing it puts the inverter back into
+  // a period the user took it out of.
+  const g = {
+    id: 'g1',
+    unitOverrides: {
+      bess1: { modeOverride: 'old', latLngDelta: [1, 2] },
+      bess2: { modeOverride: 'old' },
+      inv1: { modeOverride: '__off' },
+    },
+  } as unknown as BessGroup;
+  const cleared = clearOverriddenFields(g, ['modeOverride'], (slot) => slot.startsWith('bess'));
+  assert.deepEqual(cleared.unitOverrides, {
+    bess1: { latLngDelta: [1, 2] },
+    inv1: { modeOverride: '__off' },
+  }, 'the inverter\'s Off survives; the addressed model\'s slots are wiped');
+});
+
+// ------------------------------------------------------------------- merging ops
+
+test('mergeBulkOps folds several targeted edits into one', () => {
+  // The bulk editor's Apply used to issue one whole-project write per drafted
+  // group, each computed from the same stale snapshot — the last write won and
+  // the earlier drafts silently vanished. Merged, there is exactly one write.
+  const merged = mergeBulkOps([
+    { ids: ['a', 'b'], patch: { modeOverride: 'quiet' } },
+    { ids: ['b', 'c'], patch: (s) => ({ hubHeight: s.id === 'b' ? 110 : 120 }) },
+  ]);
+  assert.ok(merged);
+  assert.deepEqual([...merged.ids].sort(), ['a', 'b', 'c']);
+  const patchFor = (id: string) =>
+    (typeof merged.patch === 'function' ? merged.patch(src(id)) : merged.patch);
+  assert.deepEqual(patchFor('a'), { modeOverride: 'quiet' });
+  // Overlapping target gets BOTH edits — the exact case the old loop lost.
+  assert.deepEqual(patchFor('b'), { modeOverride: 'quiet', hubHeight: 110 });
+  assert.deepEqual(patchFor('c'), { hubHeight: 120 });
+});
+
+test('mergeBulkOps keeps a single op intact and rejects nothing-to-do', () => {
+  const only = { ids: ['a'], patch: { modeOverride: 'x' } };
+  assert.equal(mergeBulkOps([only]), only, 'one op passes through untouched');
+  assert.equal(mergeBulkOps([]), null);
+  assert.equal(mergeBulkOps([{ ids: [], patch: { modeOverride: 'x' } }]), null);
+});
+
+test('mergeBulkOps: on a shared field the later op wins, as sequential applies would', () => {
+  const merged = mergeBulkOps([
+    { ids: ['a'], patch: { modeOverride: 'first' } },
+    { ids: ['a'], patch: { modeOverride: 'second' } },
+  ]);
+  assert.ok(merged);
+  const p = typeof merged.patch === 'function' ? merged.patch(src('a')) : merged.patch;
+  assert.deepEqual(p, { modeOverride: 'second' });
 });

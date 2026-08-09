@@ -34,7 +34,7 @@ import {
   type TonalityResult,
 } from './tonality';
 import { lookupEntry, resolveContainer, sourceHeightFor, spectrumFor } from './catalog';
-import { PERIODS, modeForPeriod, sourceModeName } from './modes';
+import { PERIODS, modeForPeriod, sourceIsOff, sourceModeName } from './modes';
 import { type DemRaster, type DemRegion, captureDemRegion } from './dem';
 import {
   propagationSettings,
@@ -406,7 +406,13 @@ export async function evaluateProject(
     (rx) => Number.isFinite(rx.latLng[0]) && Number.isFinite(rx.latLng[1]),
   );
 
-  const droppedSources = project.sources.length - sources.length;
+  // Sources Off for this period are dropped DELIBERATELY — they're greyed on
+  // the map and are not a problem to warn about. Counting them here made every
+  // solve with an Off source raise a false "no catalog entry" warning.
+  const offSources = project.sources.filter(
+    (s) => sourceIsOff(s, project.scenario.period),
+  ).length;
+  const droppedSources = project.sources.length - sources.length - offSources;
   if (droppedSources > 0) {
     diagnostics.note(
       'sources.unresolved', 'material',
@@ -557,6 +563,14 @@ export type PeriodResults = Record<Period, ReceiverResult[]>;
 /// project that doesn't use per-period modes (every project, until someone turns
 /// them on) costs exactly one solve and produces three identical columns —
 /// the same numbers the export has always shown.
+///
+/// Accepted-risk note (review 2026-08-09, deferred to Ryan): when periods DO
+/// differ, the solves run sequentially against the LIVE catalog caches, so a
+/// global-catalog snapshot landing in the milliseconds between them could put
+/// adjacent catalog states into one file's day and night columns. Pinning a
+/// snapshot means threading a catalog view through resolveSources /
+/// buildSourceTree / lookupEntry — a wide seam for a narrow window, and the
+/// same window already exists between any two on-screen re-solves.
 export async function evaluateAllPeriods(
   project: Project,
   dem: DemRaster | null,
@@ -756,8 +770,11 @@ export function describeBarnesHut(project: Project, spacingM: number): BhDebug |
     }
     tiles.push({ ...t, real, clusters, clustered, clusterBoxes });
   }
+  // Matches the tree's own filter: an Off source is not in the tree, so a
+  // total that counted it would disagree with every per-tile count below it.
   const totalSources = project.sources.filter(
-    (s) => Number.isFinite(s.latLng[0]) && Number.isFinite(s.latLng[1]),
+    (s) => Number.isFinite(s.latLng[0]) && Number.isFinite(s.latLng[1])
+      && !sourceIsOff(s, project.scenario.period),
   ).length;
   return { tiles, totalSources, theta: cfg.treeAcceptanceTheta, cutoffM: cfg.maxContributionDistanceM };
 }
