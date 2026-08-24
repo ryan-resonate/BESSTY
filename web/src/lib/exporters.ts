@@ -19,7 +19,7 @@ import { buildPolylineShapefile, buildPointShapefile, buildZip } from './shapefi
 import type { Period, Project } from './types';
 import { projectDOmegaDb } from './types';
 import { weightedTotal, weightingFor, weightingLabel, weightsFor, type Weighting } from './weighting';
-import { assessedLevel, exceedsLimit, limitComparisonFor } from './limits';
+import { assessedLevel, exceedsLimit, limitComparisonFor, limitFor } from './limits';
 import { describeTonalBands } from './tonality';
 import { describeModes, modeForPeriod, modeLabel, perPeriodModesEnabled } from './modes';
 import type { GridResult, PeriodResults, ReceiverResult } from './solver';
@@ -155,12 +155,16 @@ function receiverRows(project: Project, results: ExportResults): ReceiverRow[] {
       assessedDay: forPeriod('day').assessed,
       assessedEvening: forPeriod('evening').assessed,
       assessedNight: forPeriod('night').assessed,
-      limitDayDbA: r.limitDayDbA,
-      limitEveningDbA: r.limitEveningDbA,
-      limitNightDbA: r.limitNightDbA,
-      passDay: verdict('day', r.limitDayDbA),
-      passEvening: verdict('evening', r.limitEveningDbA),
-      passNight: verdict('night', r.limitNightDbA),
+      // Through the resolver, not off the scalar fields: with wind-speed
+      // limits on, the applicable limit comes from the receiver's table at the
+      // scenario wind speed, and an export printing the scalar beside a verdict
+      // computed from the table would contradict itself in its own row.
+      limitDayDbA: limitFor(project, r, 'day'),
+      limitEveningDbA: limitFor(project, r, 'evening'),
+      limitNightDbA: limitFor(project, r, 'night'),
+      passDay: verdict('day', limitFor(project, r, 'day')),
+      passEvening: verdict('evening', limitFor(project, r, 'evening')),
+      passNight: verdict('night', limitFor(project, r, 'night')),
     };
   });
 }

@@ -5,12 +5,11 @@ import type {
   Annotation, CustomContourLine, DimensionAnnotation, Project, Receiver, Source,
   ReferenceLayerStyle, TextAnnotation,
 } from '../lib/types';
-import { limitForPeriod } from '../lib/types';
 import {
   ANNOTATION_INK, annotationsOf, dimensionLabel, dimensionMidpoint, dimensionTiltDeg,
   leaderAttachOffset, newAnnotationId,
 } from '../lib/annotations';
-import { assessedLevel, exceedsLimit, limitComparisonFor, type LimitComparison } from '../lib/limits';
+import { assessedLevel, exceedsLimit, limitComparisonFor, limitFor, type LimitComparison } from '../lib/limits';
 import type { ReceiverResult, GridResult } from '../lib/solver';
 import { describeBarnesHut } from '../lib/solver';
 import { escapeHtml, safeCssColor } from '../lib/html';
@@ -1805,7 +1804,7 @@ export function MapView({
       const res = results?.find((x) => x.receiverId === r.id);
       const dbA = res?.totalDbA ?? null;
       const sel = isSelected(r.id);
-      const activeLimit = limitForPeriod(r, project.scenario.period);
+      const activeLimit = limitFor(project, r);
       const marker = L.marker(r.latLng, {
         icon: receiverMarker(
           r, dbA && isFinite(dbA) ? dbA : null, activeLimit, sel,

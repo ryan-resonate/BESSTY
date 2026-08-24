@@ -319,6 +319,22 @@ export interface Barrier {
 
 export type Period = 'day' | 'evening' | 'night';
 
+/// A receiver's noise limits as a grid of period × integer wind speed.
+///
+/// Wind-farm conditions are routinely written this way — a limit curve that
+/// rises with wind speed, because background noise does too — and a single
+/// scalar per period cannot express one. `windSpeeds` is ascending and holds
+/// integers (8 means the 7.5–8.5 m/s bin); each `limits` array runs parallel
+/// to it, one entry per wind speed.
+///
+/// Gated by `ProjectSettings.compliance.windSpeedLimits`. With the setting off,
+/// or on a receiver with no table, the scalar `limitDayDbA` fields apply
+/// exactly as they always have.
+export interface LimitTable {
+  windSpeeds: number[];
+  limits: { day: number[]; evening: number[]; night: number[] };
+}
+
 export interface Receiver {
   id: string;
   name: string;
@@ -334,6 +350,12 @@ export interface Receiver {
   /// to match this value when reading old projects.
   limitDbA?: number;
   period?: Period;     // legacy — period now lives on the project scenario
+  /// Wind-speed-dependent limits. Read only when
+  /// `settings.compliance.windSpeedLimits` is on; the scalar fields above are
+  /// the fallback. Resolve through `lib/limitTable.ts` — never index this
+  /// directly, or a surface ends up judging against a different limit than the
+  /// one beside it.
+  limitTable?: LimitTable;
 }
 
 /// A project's settings with the historical defaults filled in for anything
@@ -460,6 +482,14 @@ export interface AssessmentSettings {
 export interface ProjectSettings {
   ground: { defaultG: number };
   assessment?: AssessmentSettings;
+  /// Wind-speed-dependent receiver limits (`Receiver.limitTable`). Absent ⇒
+  /// off, and the scalar per-period limits apply exactly as they always have.
+  ///
+  /// Gates the UI and the lookup together, unlike `periods`: a limit table is a
+  /// different NUMBER to comply against rather than a different mode to run in,
+  /// so honouring a stored table while its editor is hidden would silently
+  /// change every verdict on the project.
+  compliance?: { windSpeedLimits?: boolean };
   /// Per-period operating modes (day / evening / night), including an explicit
   /// Off. Absent ⇒ off, and when off NO per-period control appears anywhere —
   /// every mode picker is the single dropdown it has always been.
@@ -842,6 +872,16 @@ export interface CatalogModeData {
   spectra: Record<string, number[]>;
   /// Wind speeds the spectra were defined for; empty for non-WTG.
   windSpeeds?: number[];
+  /// Electrical output (kW) in this mode, keyed by wind speed exactly as
+  /// `spectra` is — same keys, same stringification.
+  ///
+  /// The curtailment optimiser minimises lost generation, so this is what it
+  /// trades sound power against: a noise-reduced mode is only worth choosing if
+  /// the kW it costs buys the compliance it needs. Absent for turbines whose
+  /// datasheet didn't carry a power curve; the optimiser NAMES those rather than
+  /// assuming a number, because a guessed power curve produces a confident
+  /// schedule that is quietly wrong.
+  powerKw?: Record<string, number>;
 }
 
 export interface CatalogEntry {

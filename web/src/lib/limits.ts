@@ -15,6 +15,14 @@
 
 import type { Project } from './types';
 
+// The limit a receiver is judged against may be a scalar or a wind-speed
+// curve; `limitTable` decides which. Re-exported here so the rule "every
+// pass/fail site imports from limits.ts" still names one module — a surface
+// that reaches past this to `limitForPeriod` opts itself out of the project's
+// wind-speed limits and then disagrees with the surface beside it.
+export { limitFor, resolveLimit, windSpeedLimitsEnabled } from './limitTable';
+export type { LimitSource, ResolvedLimit } from './limitTable';
+
 export type LimitComparison = 'integer' | 'exact';
 
 /// The project's comparison rule. Absent ⇒ `'integer'` — the locked default.

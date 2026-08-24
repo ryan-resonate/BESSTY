@@ -5,8 +5,7 @@
 import { useEffect, useState } from 'react';
 import type { Project } from '../lib/types';
 import { summariseDiagnostics, type Diagnostic } from '../lib/diagnostics';
-import { limitForPeriod } from '../lib/types';
-import { assessedLevel, exceedsLimit, limitComparisonFor } from '../lib/limits';
+import { assessedLevel, exceedsLimit, limitComparisonFor, limitFor } from '../lib/limits';
 import type { GridResult, ReceiverResult } from '../lib/solver';
 import type { Palette } from '../lib/colormap';
 import { paletteCss, makeBandsForRange } from '../lib/colormap';
@@ -112,7 +111,7 @@ export function ResultsDock(props: ResultsDockProps) {
   const mode = limitComparisonFor(project);
   const exceedances = (results ?? []).filter((r) => {
     const rx = project.receivers.find((x) => x.id === r.receiverId);
-    return rx && exceedsLimit(assessedLevel(r), limitForPeriod(rx, project.scenario.period), mode);
+    return rx && exceedsLimit(assessedLevel(r), limitFor(project, rx), mode);
   });
   // `over` stays the TRUE margin (it tells you how close you are), but the
   // colour must come from the same rule as everything else — otherwise a
@@ -121,7 +120,7 @@ export function ResultsDock(props: ResultsDockProps) {
     const rx = project.receivers.find((x) => x.id === r.receiverId);
     const assessed = assessedLevel(r);
     if (!rx || assessed == null) return acc;
-    const limit = limitForPeriod(rx, project.scenario.period);
+    const limit = limitFor(project, rx);
     // Ranked on the SAME level it is coloured by: ranking on the solved level
     // while colouring on the assessed one named a green receiver as the worst
     // while the count beside it said one was over.

@@ -20,8 +20,8 @@ import { FloatingWindow } from './FloatingWindow';
 import { notify } from '../lib/notify';
 import { listEntriesByKind } from '../lib/catalog';
 import { evaluateProject } from '../lib/solver';
-import { limitForPeriod, type Project, type Receiver, type SourceKind } from '../lib/types';
-import { assessedLevel, exceedsLimit, limitComparisonFor } from '../lib/limits';
+import type { Project, Receiver, SourceKind } from '../lib/types';
+import { assessedLevel, exceedsLimit, limitComparisonFor, limitFor } from '../lib/limits';
 import {
   axisOverlap, axisScopeOptions, candidateLabel, enumerateCombos, projectForCombo,
   scopeKey, worstOf,
@@ -196,8 +196,13 @@ export function FactorialStudy({ project, dem, onClose }: Props) {
   const [viewRx, setViewRx] = useState<string>('worst');
   // Read from the snapshot: the limit-comparison mode and period are project
   // settings, and the matrix's colours must match the run, not later edits.
-  const mode = limitComparisonFor(ran?.project ?? project);
-  const period = (ran?.project ?? project).scenario.period;
+  // Limits are read from the SNAPSHOT project too, not just the comparison
+  // rule: with wind-speed-dependent limits the limit depends on the scenario
+  // wind speed, so reading it from the live project would judge the run's
+  // numbers against a limit from a wind speed it was never solved at.
+  const limitProject = ran?.project ?? project;
+  const mode = limitComparisonFor(limitProject);
+  const period = limitProject.scenario.period;
   /// The project has moved on since these numbers were computed.
   const stale = ran != null && (ran.project !== project || ran.dem !== dem);
 
@@ -206,12 +211,12 @@ export function FactorialStudy({ project, dem, onClose }: Props) {
     if (viewRx === 'worst') {
       const v = worstOf(r, rxs.map((x) => x.id));
       const fail = rxs.some((rx) =>
-        exceedsLimit(r.byReceiver.get(rx.id), limitForPeriod(rx, period), mode));
+        exceedsLimit(r.byReceiver.get(rx.id), limitFor(limitProject, rx, period), mode));
       return { v, fail };
     }
     const rx = rxs.find((x) => x.id === viewRx);
     const v = r.byReceiver.get(viewRx) ?? null;
-    return { v, fail: rx ? exceedsLimit(v, limitForPeriod(rx, period), mode) : false };
+    return { v, fail: rx ? exceedsLimit(v, limitFor(limitProject, rx, period), mode) : false };
   }
 
   return (

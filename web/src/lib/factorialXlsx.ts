@@ -7,8 +7,7 @@
 import ExcelJS from 'exceljs';
 import { weightingFor, weightingLabel } from './weighting';
 import type { Project, Receiver } from './types';
-import { limitForPeriod } from './types';
-import { exceedsLimit, limitComparisonFor } from './limits';
+import { exceedsLimit, limitComparisonFor, limitFor } from './limits';
 import { type AxisSpec, type ComboResult } from './factorial';
 
 const GREEN = 'FFD6F5D6';
@@ -60,7 +59,7 @@ export async function buildFactorialXlsx(
   };
 
   for (const rx of receivers) {
-    const limit = limitForPeriod(rx, period);
+    const limit = limitFor(project, rx, period);
     const ws = wb.addWorksheet((rx.name || rx.id).slice(0, 28));
     metaRows(ws, `Receiver: ${rx.name || rx.id} — limit ${limit} ${weightingLabel(weightingFor(project))} (${period})`);
 

@@ -226,6 +226,34 @@ test('every spectrum lookup goes through the mode resolver, and checks for Off',
   );
 });
 
+test('no surface picks its own limit — every judgement goes through the resolver', () => {
+  // A receiver's limit may be a scalar per period OR a wind-speed curve
+  // (`limitTable`). `limitForPeriod` only ever returns the scalar, so a
+  // surface still calling it judges against a different number than the
+  // surface beside it — the map says pass, the export says fail, and both
+  // look right on their own. `limitFor`/`resolveLimit` from lib/limits is the
+  // one way in.
+  //
+  // types.ts DEFINES it and limitTable.ts is the resolver that legitimately
+  // falls back to it.
+  const owners = ['types.ts', 'limitTable.ts'];
+  const offenders: string[] = [];
+  for (const { path, text } of FILES) {
+    if (owners.some((o) => path.endsWith(o))) continue;
+    const code = text.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const m of code.matchAll(/\blimitForPeriod\s*\(/g)) {
+      const line = code.slice(0, m.index).split('\n').length;
+      offenders.push(`${path.replace(SRC, 'src')}:${line}`);
+    }
+  }
+  assert.deepEqual(
+    offenders, [],
+    'these read the scalar limit directly and so ignore any wind-speed limit '
+    + 'table; call limitFor(project, receiver, period?) from lib/limits '
+    + 'instead:\n  ' + offenders.join('\n  '),
+  );
+});
+
 test('Escape is handled only through the shared stack', () => {
   // Multiple window-level Escape listeners are siblings: stopPropagation does
   // not separate them, so one keypress fires every overlay's handler at once.

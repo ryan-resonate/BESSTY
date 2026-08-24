@@ -12,8 +12,8 @@ import {
   tonalityMethods, tonalitySettingsFor,
   type TonalityMethod,
 } from '../lib/tonality';
-import { limitForPeriod, settingsOf } from '../lib/types';
-import { assessedLevel, exceedsLimit, limitComparisonFor } from '../lib/limits';
+import { settingsOf } from '../lib/types';
+import { assessedLevel, exceedsLimit, limitComparisonFor, limitFor } from '../lib/limits';
 import type { ReceiverResult } from '../lib/solver';
 import type { BaseMap, ContourMode } from './MapView';
 import type { Palette } from '../lib/colormap';
@@ -1030,7 +1030,7 @@ function ReceiversTab(props: Props) {
         </div>
         {project.receivers.map((r) => {
           const result = results?.find((x) => x.receiverId === r.id);
-          const activeLimit = limitForPeriod(r, project.scenario.period);
+          const activeLimit = limitFor(project, r);
           const fail = exceedsLimit(assessedLevel(result), activeLimit, limitComparisonFor(project));
           return (
             <div key={r.id}
@@ -1388,7 +1388,7 @@ function ResultsTab(props: Props) {
   const limitMode = limitComparisonFor(project);
   const exceedances = (results ?? []).filter((r) => {
     const rx = project.receivers.find((x) => x.id === r.receiverId);
-    return rx && exceedsLimit(assessedLevel(r), limitForPeriod(rx, project.scenario.period), limitMode);
+    return rx && exceedsLimit(assessedLevel(r), limitFor(project, rx), limitMode);
   });
 
   // `computing` matters as much as `hasResults`: changing the weighting
