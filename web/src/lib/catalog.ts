@@ -22,7 +22,7 @@
 // `catalogsGlobal` allows writes by any authenticated user. Idempotent
 // per doc id, so races between concurrent users are benign.
 
-import type { CatalogEntry, Project, Source, SourceKind } from './types';
+import type { CatalogEntry, CatalogModeData, Project, Source, SourceKind } from './types';
 
 // Physical dimension resolution (emission height, footprint, container box)
 // lives in the dependency-free `catalogDims` leaf so it can be unit-tested and
@@ -331,8 +331,26 @@ export function spectrumFor(
   windSpeed: number,
   bandSystem: 'octave' | 'oneThirdOctave',
 ): Float64Array {
+  // NOTE the fallback: an unrecognised name silently becomes the FIRST mode.
+  // That is why `lib/modes.ts` owns override resolution and a wiring test
+  // guards every call site — see the note at the top of that file. Callers that
+  // already hold the mode itself should use `spectrumForMode` and skip the
+  // name lookup entirely.
   const mode = entry.modes.find((m) => m.name === modeName) ?? entry.modes[0];
   if (!mode) return new Float64Array(bandSystem === 'octave' ? OCTAVE_CENTRES.length : THIRD_OCT_CENTRES.length);
+  return spectrumForMode(mode, bandSystem, windSpeed);
+}
+
+/// The same projection, for a caller that already has the mode object.
+///
+/// Preferred wherever the mode came from `entry.modes` rather than from a
+/// stored override: there is no name to be wrong, so the silent
+/// first-mode fallback above cannot happen at all.
+export function spectrumForMode(
+  mode: CatalogModeData,
+  bandSystem: 'octave' | 'oneThirdOctave',
+  windSpeed: number,
+): Float64Array {
 
   // Pull the raw per-band Lw values for the requested wind speed, then
   // un-weight if the catalog mode is stored in A-weighted form. The WASM
