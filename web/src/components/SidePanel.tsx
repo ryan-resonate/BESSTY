@@ -32,6 +32,8 @@ import {
   uploadProjectDem,
 } from '../lib/firestoreStorage';
 import { presetForEpsg } from '../lib/projections';
+import { BulkLimitImport, LimitTableEditor } from './LimitTableEditor';
+import { windSpeedLimitsEnabled } from '../lib/limits';
 import { ModePicker } from './ModePicker';
 import { applyModeEdit, involvesOff, perPeriodModesEnabled, variesByPeriod } from '../lib/modes';
 import { applyPatchWithGroupOverrides, mergeBulkOps } from '../lib/groupOverrides';
@@ -992,6 +994,7 @@ function ReceiversTab(props: Props) {
   // Levels and limits are both read in the project's assessment weighting, so
   // the label has to follow it rather than being spelled dB(A) in the source.
   const unit = weightingLabel(weightingFor(project));
+  const [bulkOpen, setBulkOpen] = useState(false);
 
   function updateReceiver(id: string, patch: Partial<Receiver>) {
     setProject({
@@ -1098,10 +1101,38 @@ function ReceiversTab(props: Props) {
                 />
                 <button className="x-btn" onClick={() => removeReceiver(r.id)}>✕</button>
               </div>
+              {windSpeedLimitsEnabled(project) && (
+                <LimitTableEditor
+                  project={project}
+                  receiver={r}
+                  unit={unit}
+                  onChange={(t) => updateReceiver(r.id, { limitTable: t })}
+                  onApplyToAll={(t) => setProject({
+                    ...project,
+                    receivers: project.receivers.map((x) => ({ ...x, limitTable: t })),
+                  })}
+                />
+              )}
             </div>
           );
         })}
       </Card>
+
+      {windSpeedLimitsEnabled(project) && project.receivers.length > 0 && (
+        <Card title="Import limits">
+          {bulkOpen ? (
+            <BulkLimitImport
+              project={project}
+              onClose={() => setBulkOpen(false)}
+              onApply={(receivers) => setProject({ ...project, receivers })}
+            />
+          ) : (
+            <button className="btn small" onClick={() => setBulkOpen(true)}>
+              Paste limits for every receiver…
+            </button>
+          )}
+        </Card>
+      )}
     </>
   );
 }
@@ -2520,6 +2551,32 @@ export function SettingsTab(props: SettingsTabProps) {
           the penalty is added before the level is compared with the limit, and
           every pass/fail badge and export follows it. Contours never carry it:
           a grid cell has no assessment to attach it to.
+        </div>
+      </section>
+      )}
+
+      {tab === 'calculation' && (
+      <section className="sp-section">
+        <h3><span>Wind-speed limits</span></h3>
+        <Field label="">
+          <label className="row-checkbox">
+            <input
+              type="checkbox"
+              checked={windSpeedLimitsEnabled(project)}
+              onChange={(e) => update({
+                compliance: { ...settings.compliance, windSpeedLimits: e.target.checked },
+              })}
+            />
+            <span>Receiver limits vary with wind speed</span>
+          </label>
+        </Field>
+        <div className="hint">
+          Off by default. On, each receiver gains a grid of period × integer wind
+          speed, and every verdict is read from it at the scenario wind speed.
+          This gates the <b>lookup</b>, not just the editor: a stored table taking
+          effect while its grid was hidden would change every verdict on the
+          project with nothing on screen to explain it. A wind speed outside a
+          table uses the nearest column — limits are never interpolated.
         </div>
       </section>
       )}

@@ -638,16 +638,30 @@ export function CatalogEntryEditor(props: {
                       onChange={(e) => {
                         const ws = e.target.value.split(/[,\s]+/).map(Number).filter((n) => Number.isFinite(n) && n >= 0);
                         const newSpectra: Record<string, number[]> = {};
+                        // The power curve is keyed by the same wind speeds, so
+                        // it is rebuilt alongside. Left alone it would keep
+                        // entries for speeds the spectra no longer cover, and
+                        // the optimiser would interpolate power across a wind
+                        // speed this mode can no longer be evaluated at.
+                        const newPower: Record<string, number> = {};
                         if (ws.length === 0) {
                           newSpectra['broadband'] = m.frequencies.map(() => 80);
-                          updateMode(activeModeIdx, { windSpeeds: undefined, spectra: newSpectra });
+                          updateMode(activeModeIdx, {
+                            windSpeeds: undefined, spectra: newSpectra, powerKw: undefined,
+                          });
                           return;
                         }
                         for (const w of ws) {
                           const k = String(w);
                           newSpectra[k] = m.spectra[k] ?? m.frequencies.map(() => 80);
+                          const p = m.powerKw?.[k];
+                          if (p !== undefined) newPower[k] = p;
                         }
-                        updateMode(activeModeIdx, { windSpeeds: ws, spectra: newSpectra });
+                        updateMode(activeModeIdx, {
+                          windSpeeds: ws,
+                          spectra: newSpectra,
+                          powerKw: Object.keys(newPower).length > 0 ? newPower : undefined,
+                        });
                       }}
                     />
                   </label>
@@ -736,6 +750,60 @@ export function CatalogEntryEditor(props: {
                           </td>
                         ))}
                       </tr>
+                      {/* Power curve. Only for turbines, and only when the mode
+                          is wind-dependent — a single broadband figure has no
+                          curve to trade against. This is what the curtailment
+                          optimiser costs a quieter mode in, so a mode left
+                          blank here makes the whole turbine unschedulable
+                          rather than silently worth nothing. */}
+                      {draft.kind === 'wtg' && wsKeys[0] !== 'broadband' && (
+                        <tr style={{ borderTop: '1px dashed var(--light)' }}>
+                          <td title="Electrical output in this mode. Used by the curtailment optimiser to price a quieter mode against the generation it costs.">
+                            kW
+                          </td>
+                          {wsKeys.map((k, ci) => (
+                            <td key={k} style={{ textAlign: 'right', padding: 2 }}>
+                              <input
+                                type="number" step={1} min={0}
+                                placeholder="—"
+                                value={m.powerKw?.[k] ?? ''}
+                                onChange={(e) => {
+                                  const next = { ...(m.powerKw ?? {}) };
+                                  // Cleared means "no data", which is a refusal
+                                  // the optimiser reports by name — not a zero,
+                                  // which would read as a turbine that generates
+                                  // nothing and is therefore free to switch off.
+                                  if (e.target.value === '') delete next[k];
+                                  else next[k] = +e.target.value;
+                                  updateMode(activeModeIdx, { powerKw: next });
+                                }}
+                                onPaste={(e) => {
+                                  const text = e.clipboardData.getData('text/plain');
+                                  if (!text) return;
+                                  const parsed = parseSpectrumPaste(text);
+                                  if (!parsed.ok) { e.preventDefault(); notify.warning(parsed.reason); return; }
+                                  if (parsed.orientation === 'single') return;
+                                  e.preventDefault();
+                                  // A pasted row fills wind speeds left to right
+                                  // from the cell clicked, matching how the
+                                  // spectrum rows above behave.
+                                  const next = { ...(m.powerKw ?? {}) };
+                                  let written = 0;
+                                  parsed.values.forEach((v, off) => {
+                                    const key = wsKeys[ci + off];
+                                    if (key === undefined || v == null) return;
+                                    next[key] = v;
+                                    written++;
+                                  });
+                                  updateMode(activeModeIdx, { powerKw: next });
+                                  notify.success(`${written} power value${written === 1 ? '' : 's'} pasted.`);
+                                }}
+                                style={{ width: 60, fontFamily: 'inherit', fontSize: 11, padding: '2px 4px', textAlign: 'right' }}
+                              />
+                            </td>
+                          ))}
+                        </tr>
+                      )}
                     </tfoot>
                   </table>
                 </div>
