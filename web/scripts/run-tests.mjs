@@ -47,14 +47,23 @@ try {
     outExtension: { '.js': '.mjs' },
     // Node builtins and the generated wasm glue stay external — pure-logic
     // modules under test must not pull the wasm binary into the bundle.
-    external: ['node:*', '*.wasm'],
+    // The `highs` package joins them: an emscripten CommonJS bundle that
+    // requires node builtins at load time; inlining it breaks the ESM output.
+    // The MILP tests resolve it from BEESTY_WEB_ROOT and inject it instead.
+    external: ['node:*', '*.wasm', 'highs'],
     logLevel: 'warning',
   });
   // Bundled tests run from a temp dir, so `import.meta.url` no longer points at
   // the repo — hand any test that needs the built wasm an absolute path.
   const res = spawnSync(process.execPath, ['--test', outdir], {
     stdio: 'inherit',
-    env: { ...process.env, BEESTY_WASM_PATH: join(root, 'src', 'wasm', 'iso9613_wasm_bg.wasm') },
+    env: {
+      ...process.env,
+      BEESTY_WASM_PATH: join(root, 'src', 'wasm', 'iso9613_wasm_bg.wasm'),
+      // Lets a bundled test resolve packages against the real project rather
+      // than the temp dir it is running from.
+      BEESTY_WEB_ROOT: root,
+    },
   });
   process.exit(res.status ?? 1);
 } finally {
