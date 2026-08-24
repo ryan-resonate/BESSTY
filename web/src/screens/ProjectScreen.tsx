@@ -8,6 +8,7 @@ import { MapControls } from '../components/MapControls';
 import { SettingsWindow } from '../components/SettingsWindow';
 import { PdfExportDialog } from '../components/PdfExportDialog';
 import { FactorialStudy } from '../components/FactorialStudy';
+import { CurtailmentStudy, applyCellToProject } from '../components/CurtailmentStudy';
 import { attributionFor, tileUrlFor } from '../components/MapView';
 import { Legend, ResultsDock, StatusBar } from '../components/MapChrome';
 import { SidePanel, type AddMode, type Tab } from '../components/SidePanel';
@@ -223,6 +224,7 @@ export function ProjectScreen() {
   /// export is a snapshot, so it must not follow the map if it moves behind
   /// the dialog.
   const [showStudy, setShowStudy] = useState(false);
+  const [showCurtailment, setShowCurtailment] = useState(false);
   const [pdfExtent, setPdfExtent] = useState<{ sw: [number, number]; ne: [number, number] } | null>(null);
 
   function openPdfExport() {
@@ -1671,6 +1673,7 @@ export function ProjectScreen() {
         onOpenSettings={() => setShowSettings(true)}
         onOpenPdfExport={openPdfExport}
         onOpenStudy={() => setShowStudy(true)}
+        onOpenCurtailment={() => setShowCurtailment(true)}
         showReceiverLimits={showReceiverLimits} setShowReceiverLimits={setShowReceiverLimits}
         contourMode={contourMode} setContourMode={setContourMode}
         contourOpacity={contourOpacity} setContourOpacity={setContourOpacity}
@@ -1801,6 +1804,17 @@ export function ProjectScreen() {
 
       {showStudy && (
         <FactorialStudy project={project} dem={dem} onClose={() => setShowStudy(false)} />
+      )}
+
+      {showCurtailment && (
+        <CurtailmentStudy
+          project={project}
+          dem={dem}
+          onClose={() => setShowCurtailment(false)}
+          // Applied through setProject, so a schedule lands as one ordinary
+          // undoable edit rather than through a side door that skips history.
+          onApplySchedule={(cell) => setProject(applyCellToProject(project, cell))}
+        />
       )}
 
       {pdfExtent && (

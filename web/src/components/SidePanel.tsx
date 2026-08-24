@@ -136,6 +136,9 @@ interface Props {
   onOpenPdfExport?(): void;
   /// I14: open the factorial configuration study.
   onOpenStudy?(): void;
+  /// Open the wind-farm curtailment optimiser. Absent on projects without
+  /// turbines, where the control would only ever refuse.
+  onOpenCurtailment?(): void;
   /// Called when the user reverts to a saved version. The handler should
   /// merge the snapshot's content into the live project while preserving
   /// current ownership + privacy metadata. Wired up in ProjectScreen.
@@ -1601,6 +1604,13 @@ function ResultsTab(props: Props) {
             disabled={!props.onOpenStudy}
             title="Compare battery × inverter configurations across your receivers"
           >⊞ Compare configurations…</button>
+          {props.onOpenCurtailment && project.sources.some((s) => s.kind === 'wtg') && (
+            <button
+              className="btn small block"
+              onClick={() => props.onOpenCurtailment?.()}
+              title="Least-generation mode schedule per wind speed, for every receiver to comply"
+            >⚙ Curtailment optimiser…</button>
+          )}
           <button className="btn small" style={mutedWhenNoGrid} title={gridHint} onClick={() => { if (requireGrid() && grid) download(exportGridGeoTiff(grid), 'grid', 'tif'); }}>
             ↓ GeoTIFF
           </button>

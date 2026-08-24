@@ -20,8 +20,12 @@ import type { Period, Project } from './types';
 import { projectDOmegaDb } from './types';
 import { weightedTotal, weightingFor, weightingLabel, weightsFor, type Weighting } from './weighting';
 import { assessedLevel, exceedsLimit, limitComparisonFor, limitFor } from './limits';
-import { describeTonalBands } from './tonality';
-import { describeModes, modeForPeriod, modeLabel, perPeriodModesEnabled } from './modes';
+import { describeTonalBands, tonalitySettingsFor } from './tonality';
+import {
+  PERIODS, PERIOD_LABEL, describeModes, modeForPeriod, modeLabel, perPeriodModesEnabled,
+} from './modes';
+import { windSpeedLimitsEnabled } from './limitTable';
+import type { CurtailmentResult } from './curtailment';
 import type { GridResult, PeriodResults, ReceiverResult } from './solver';
 import type { ContourLineSet } from './contourLines';
 
@@ -731,3 +735,81 @@ export function defaultFilenameStem(project: Project, suffix: string): string {
   return `${slug}_${suffix}_${ts}`;
 }
 
+
+// ---------- 6. Curtailment schedule ----------
+
+/// One sheet per period: turbine rows × wind-speed columns of mode names, then
+/// the rows that let a reader check the schedule rather than take it on trust —
+/// generation given up, which receiver is binding, and how much headroom is
+/// left at it. A settings sheet records what the run assumed.
+export function exportCurtailmentXlsx(
+  project: Project,
+  result: CurtailmentResult,
+  opts: { marginDb: number },
+): Blob {
+  const wb = XLSX.utils.book_new();
+  const periods = PERIODS.filter((p) => result.cells.some((c) => c.period === p));
+
+  for (const period of periods) {
+    const cells = result.cells.filter((c) => c.period === period)
+      .sort((a, b) => a.windSpeed - b.windSpeed);
+    const speeds = cells.map((c) => c.windSpeed);
+    const rows: Array<Array<string | number>> = [];
+    rows.push(['Turbine', ...speeds.map((w) => `${w} m/s`)]);
+    for (const t of result.turbines) {
+      rows.push([
+        t.name,
+        // An infeasible cell prescribes nothing; a blank would read as "no
+        // curtailment needed", which is the opposite of what it means.
+        ...cells.map((c) => (c.status === 'optimal'
+          ? modeLabel(c.modes[t.id], '')
+          : 'n/a')),
+      ]);
+    }
+    rows.push([]);
+    rows.push(['Lost kW', ...cells.map((c) => (c.status === 'optimal' ? Number(c.lostKw.toFixed(1)) : 'n/a'))]);
+    rows.push(['Binding receiver', ...cells.map((c) => c.bindingReceiverName ?? '')]);
+    rows.push([
+      'Headroom dB',
+      ...cells.map((c) => (c.marginAtBindingDb == null ? '' : Number(c.marginAtBindingDb.toFixed(2)))),
+    ]);
+    rows.push(['Status', ...cells.map((c) => c.status)]);
+    rows.push(['Note', ...cells.map((c) => c.detail ?? '')]);
+    XLSX.utils.book_append_sheet(
+      wb, XLSX.utils.aoa_to_sheet(rows), PERIOD_LABEL[period],
+    );
+  }
+
+  const info: Array<Array<string | number>> = [
+    ['Project', project.name],
+    ['Generated', new Date().toISOString()],
+    ['Objective', 'Minimise generation lost, per wind speed and period, subject to every receiver complying'],
+    ['Solver', 'HiGHS (MILP) — each cell solved to a proven global optimum'],
+    ['Margin below limit (dB)', opts.marginDb],
+    ['Assessment weighting', weightingLabel(weightingFor(project))],
+    ['Limit comparison', limitComparisonFor(project)],
+    ['Wind-speed limits', windSpeedLimitsEnabled(project) ? 'on' : 'off (scalar per-period limits)'],
+    ['Band system', project.scenario.bandSystem],
+    ['DOmega (dB)', projectDOmegaDb(project)],
+    ['Standard', `ISO 9613-2:${project.settings?.standard ?? '2024'}`],
+  ];
+  const tonality = tonalitySettingsFor(project);
+  if (tonality.enabled && tonality.applyPenalty) {
+    info.push([
+      'Tonality penalty (dB)', tonality.penaltyDb,
+    ], [
+      'Note',
+      'The penalty was subtracted from every cap before optimising. It depends on the '
+      + 'spectrum, which depends on the schedule, so it cannot be known in advance; '
+      + 'assuming it always applies may curtail more than strictly necessary.',
+    ]);
+  }
+  if (result.warnings.length > 0) {
+    info.push([], ['Warnings']);
+    for (const w of result.warnings) info.push([w]);
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(info), 'Settings');
+
+  const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer;
+  return new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}

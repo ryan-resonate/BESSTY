@@ -11,7 +11,7 @@
 //     the reference the MILP is tested against, but |options|^|groups| means it
 //     is only usable on tiny problems.
 //   - `solveWithHighs` hands the same model to HiGHS, which returns a PROVEN
-//     optimum. Lazy-loaded, because the wasm is ~1 MB and most sessions never
+//     optimum. Lazy-loaded, because the wasm is 3.4 MB and most sessions never
 //     open the optimiser.
 //
 // Keeping the model a plain data structure is what lets the two be
@@ -174,8 +174,11 @@ function coef(v: number): string {
 /// on an unscaled row would silently drop a quiet turbine out of a constraint.
 /// Scaling a row by a positive constant changes nothing mathematically.
 ///
-/// Capacities that are not strictly positive cannot be scaled and are not
-/// emitted here; `unsatisfiableResources` catches that case first.
+/// A capacity that is not strictly positive cannot be scaled, so its row goes
+/// out unscaled against its true right-hand side rather than being skipped —
+/// skipping would admit a cheaper schedule that breaches it. A NEGATIVE
+/// capacity is impossible to satisfy at all and `unsatisfiableResources`
+/// catches it before the model ever reaches here.
 export function toLpFormat(model: MilpModel): string {
   const lines: string[] = [];
   const objTerms: string[] = [];
@@ -246,7 +249,7 @@ export function setHighsLoader(fn: (() => Promise<HighsInstance>) | null): void 
 
 /// Load HiGHS once, on first use.
 ///
-/// The import is dynamic so the ~1 MB wasm stays out of the main bundle: most
+/// The import is dynamic so the 3.4 MB wasm stays out of the main bundle: most
 /// sessions never open the optimiser, and this is the only thing in the app
 /// that needs a MILP solver.
 async function loadHighs(): Promise<HighsInstance> {
