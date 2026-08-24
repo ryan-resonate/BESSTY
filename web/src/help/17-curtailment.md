@@ -63,4 +63,6 @@ The correction is deliberately approximate, applied on top of the same solve rat
 
 Direction is stated the way met files and wind roses state it: the direction the wind blows **from**. A northerly (0°) blows towards the south, so a receiver south of a turbine is the one downwind of it.
 
-It is applied to turbine contributions only. Anything the optimiser cannot switch — a BESS, a substation — keeps its full level regardless of direction.
+**It applies to wind turbines only, and only here.** A BESS or substation is never adjusted -- it runs the same whatever the wind is doing. Nothing BESSTY reports changes either: levels, map badges, contours, the receiver export and the PDF all stay on the downwind-to-every-receiver reading.
+
+So if you apply a directional schedule to the project, expect the reported levels to sit **above** what the optimiser assumed for that direction. That is not a disagreement -- the optimiser credited a wind direction, and what BESSTY reports deliberately does not.

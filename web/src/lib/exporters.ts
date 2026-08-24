@@ -810,8 +810,16 @@ export function exportCurtailmentXlsx(
     ['Limit comparison', limitComparisonFor(project)],
     ['Wind-speed limits', windSpeedLimitsEnabled(project) ? 'on' : 'off (scalar per-period limits)'],
     ['Wind direction', directions.length > 0
-      ? ` directions swept; approximate directivity applied`
+      ? `${directions.length} directions swept`
       : 'not modelled — every receiver treated as downwind (ISO 9613-2)'],
+    ...(directions.length > 0 ? [[
+      'Note',
+      'Within ±60° of downwind no adjustment; −2 dB elsewhere. Approximate, applied to '
+      + 'WIND TURBINES ONLY, and only for this optimisation — a BESS or substation is '
+      + 'never adjusted, and every level BESSTY reports still treats every receiver as '
+      + 'downwind. Reported levels will therefore read higher than a directional cell '
+      + 'assumed.',
+    ]] : []),
     ['Band system', project.scenario.bandSystem],
     ['DOmega (dB)', projectDOmegaDb(project)],
     ['Standard', `ISO 9613-2:${project.settings?.standard ?? '2024'}`],

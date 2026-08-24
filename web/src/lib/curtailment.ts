@@ -59,15 +59,11 @@ export interface CurtailmentOptions {
   /// everywhere else. Each direction is an independent schedule.
   windDirectionsDeg?: number[];
   /// How the correction is computed. Ignored when no directions are swept.
-  directivity?: DirectivityModel;
-  /// Apply the correction to sources the optimiser cannot switch (BESS,
-  /// auxiliaries) as well as to turbines.
   ///
-  /// Default false, matching the standalone tool, which only ever has turbine
-  /// bearings. Physically the effect is at least partly propagation rather than
-  /// source directivity, in which case it applies to any source — hence the
-  /// switch rather than a hard-coded choice.
-  directivityOnFixedSources?: boolean;
+  /// It applies to WIND TURBINES ONLY, and only inside this optimisation. It is
+  /// not a property of the project, it is not an ISO term, and it never reaches
+  /// a reported level — see the note at the top of `lib/directivity.ts`.
+  directivity?: DirectivityModel;
 }
 
 export interface CellReceiver {
@@ -335,7 +331,6 @@ export function buildCellModel(
   wind?: {
     windDirectionDeg: number;
     model: DirectivityModel;
-    onFixedSources: boolean;
   },
 ): { cell: CellModel; warnings: string[] } {
   const warnings: string[] = [];
@@ -344,13 +339,17 @@ export function buildCellModel(
   const turbines = project.sources.filter((s) => s.kind === 'wtg');
   const turbineIds = new Set(turbines.map((t) => t.id));
 
-  // Per (source, receiver) wind correction. Bearings come from the real
+  // Per (turbine, receiver) wind correction. Bearings come from the real
   // coordinates the project already holds — the standalone tool needs a
   // bearings CSV only because a SoundPlan contribution export carries no
   // geometry.
+  //
+  // TURBINES ONLY, with no switch to change that. The correction exists to
+  // decide wind-turbine curtailment and has no meaning outside it: a BESS runs
+  // the same whatever the wind is doing, and crediting one here would quietly
+  // relax a cap on the strength of an approximation that was never about it.
   const adjust = (s: Source, r: Receiver): DirectivityAdjustment | undefined => {
-    if (!wind) return undefined;
-    if (!turbineIds.has(s.id) && !wind.onFixedSources) return undefined;
+    if (!wind || !turbineIds.has(s.id)) return undefined;
     return directivityAdjustmentDb(wind.model, {
       bearingDeg: bearingDeg(s.latLng, r.latLng),
       windFromDeg: wind.windDirectionDeg,
@@ -526,11 +525,7 @@ export async function optimiseCurtailment(
       for (const windDirectionDeg of directions) {
         const { cell, warnings: w } = buildCellModel(
           project, transfer, period, windSpeed, opts.marginDb,
-          windDirectionDeg === undefined ? undefined : {
-            windDirectionDeg,
-            model,
-            onFixedSources: opts.directivityOnFixedSources ?? false,
-          },
+          windDirectionDeg === undefined ? undefined : { windDirectionDeg, model },
         );
         for (const msg of w) warnings.add(msg);
         const solution = await solveWithHighs(cell.model);

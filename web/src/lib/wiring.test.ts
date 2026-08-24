@@ -256,6 +256,68 @@ test('no surface picks its own limit — every judgement goes through the resolv
   );
 });
 
+test('the wind-direction correction stays inside the curtailment optimiser', () => {
+  // It is a curtailment-planning approximation, not an ISO term and not a
+  // property of the project. Everything BESSTY REPORTS — map badges, contours,
+  // the receiver export, the PDF — must stay on the downwind-to-every-receiver
+  // reading, so an import of `directivity` anywhere outside the curtailment
+  // path is the correction leaking into an output that should not have it.
+  //
+  // `exporters` is on the list for one reason only: the curtailment XLSX labels
+  // its swept directions. If that file ever used it for anything else this
+  // check would not catch it — hence the second assertion below.
+  const allowed = [
+    'directivity.ts',
+    'curtailment.ts',
+    'CurtailmentStudy.tsx',
+    'exporters.ts',
+  ];
+  const offenders = FILES
+    .filter((f) => /from '\.{1,2}\/(lib\/)?directivity'/.test(f.text))
+    .map((f) => f.path)
+    .filter((p) => !allowed.some((a) => p.endsWith(a)))
+    .map((p) => p.replace(SRC, 'src'));
+  assert.deepEqual(
+    offenders, [],
+    'these import the wind-direction correction but are not part of the '
+    + 'curtailment optimiser, so it would reach a reported level:\n  '
+    + offenders.join('\n  '),
+  );
+
+  // The exporter may only NAME a direction, never apply a correction.
+  const exporters = FILES.find((f) => f.path.endsWith('exporters.ts'));
+  assert.ok(exporters, 'exporters.ts not found');
+  const imported = exporters!.text.match(/import \{([^}]*)\} from '\.\/directivity'/);
+  assert.ok(imported, 'expected exporters to import from directivity');
+  assert.deepEqual(
+    imported![1].split(',').map((s) => s.trim()).filter(Boolean),
+    ['describeWindFrom'],
+    'the exporter may only label a direction; applying a correction there would '
+    + 'put it into a file BESSTY reports from',
+  );
+});
+
+test('no source but a wind turbine is given a directivity correction', () => {
+  // Ryan, explicitly: it applies to turbine curtailment and has no other
+  // meaning — never to a BESS, in any way. The guard is a `kind === 'wtg'`
+  // membership test in the cell model, with no option to widen it.
+  const curtailment = FILES.find((f) => f.path.endsWith('curtailment.ts'));
+  assert.ok(curtailment, 'curtailment.ts not found');
+  const body = curtailment!.text;
+  const start = body.indexOf('const adjust =');
+  assert.ok(start > 0, 'the per-pair adjustment helper was not found');
+  const guard = body.slice(start, start + 240);
+  assert.match(
+    guard, /if \(!wind \|\| !turbineIds\.has\(s\.id\)\) return undefined;/,
+    'the adjustment must bail for anything that is not a turbine',
+  );
+  // And nothing may reintroduce a way to turn that off.
+  assert.doesNotMatch(
+    body, /onFixedSources|directivityOnFixedSources/,
+    'there must be no switch that applies the correction to non-turbine sources',
+  );
+});
+
 test('Escape is handled only through the shared stack', () => {
   // Multiple window-level Escape listeners are siblings: stopPropagation does
   // not separate them, so one keypress fires every overlay's handler at once.

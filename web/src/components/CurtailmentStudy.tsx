@@ -88,6 +88,33 @@ export function CurtailmentStudy(props: {
     }
   }
 
+  /// Write a cell's modes into the project.
+  ///
+  /// A DIRECTIONAL cell needs a word first. Its schedule was chosen having
+  /// credited receivers that are not downwind, and BESSTY deliberately reports
+  /// no such credit — so the levels on the map will sit above what this cell
+  /// assumed, and a receiver can read over its limit while the schedule is
+  /// correct for that wind direction. Better said out loud than discovered.
+  async function applyCell(c: CellResult) {
+    if (c.status !== 'optimal') return;
+    if (c.windDirectionDeg !== undefined) {
+      const ok = await notify.confirm({
+        title: `Apply the schedule for wind from ${describeWindFrom(c.windDirectionDeg)}?`,
+        body: 'This schedule credits receivers that are not downwind. Reported levels do '
+          + 'not — every level, contour and export BESSTY produces treats every receiver '
+          + 'as downwind — so expect them to read HIGHER than this cell assumed, and '
+          + 'possibly over the limit.\n\nThe modes applied are still the right ones for '
+          + 'this wind direction.',
+        confirmLabel: 'Apply',
+      });
+      if (!ok) return;
+    }
+    onApplySchedule(c);
+    notify.success(
+      `${PERIOD_LABEL[c.period]} modes at ${c.windSpeed} m/s applied to the project.`,
+    );
+  }
+
   const turbineName = new Map(
     project.sources.filter((s: Source) => s.kind === 'wtg').map((s) => [s.id, s.name]),
   );
@@ -182,10 +209,12 @@ export function CurtailmentStudy(props: {
           </div>
           {directional && (
             <div className="hint" style={{ fontSize: 10 }}>
-              Approximate: no adjustment within ±60° of downwind, −2 dB elsewhere, applied to
-              turbine contributions on top of the same solve. Each direction gets its own
-              schedule. Leaving this off treats every receiver as downwind, which is what
-              ISO 9613-2 does and is the conservative case.
+              Approximate, and for scheduling turbines only: no adjustment within ±60° of
+              downwind, −2 dB elsewhere, applied to <b>turbine</b> contributions on top of
+              the same solve. A BESS or substation is never adjusted. It changes nothing
+              BESSTY reports — levels, contours and exports stay on the
+              downwind-to-every-receiver reading, which is what ISO 9613-2 does and is the
+              conservative case. Each direction gets its own schedule.
             </div>
           )}
 
@@ -330,13 +359,7 @@ export function CurtailmentStudy(props: {
                       speeds={shownSpeeds}
                       cells={shown}
                       render={(c) => c.status === 'optimal' ? 'apply' : ''}
-                      onCell={(c) => {
-                        if (c.status !== 'optimal') return;
-                        onApplySchedule(c);
-                        notify.success(
-                          `${PERIOD_LABEL[c.period]} modes at ${c.windSpeed} m/s applied to the project.`,
-                        );
-                      }}
+                      onCell={(c) => { void applyCell(c); }}
                     />
                   </tfoot>
                 </table>

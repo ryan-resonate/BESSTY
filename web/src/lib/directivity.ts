@@ -1,8 +1,23 @@
-// Wind-direction-dependent correction between a source and a receiver.
+// Wind-direction-dependent correction between a WIND TURBINE and a receiver,
+// used ONLY when optimising curtailment.
+//
+// SCOPE, and it is deliberately narrow. This is a curtailment-planning
+// approximation and nothing else:
+//
+//   - Wind turbines only. It never applies to a BESS, an auxiliary, or any
+//     other source. A battery runs the same whatever the wind is doing.
+//   - Inside the optimiser only. It never reaches a reported level, a map
+//     badge, a contour, the receiver export, or the PDF. Everything BESSTY
+//     reports stays on the downwind-to-every-receiver reading ISO 9613-2 takes.
+//   - Not a project property. It lives in the curtailment run's options, so it
+//     cannot be switched on once and silently colour the rest of the app.
+//
+// A wiring test enforces the second and third points by refusing any import of
+// this module outside the curtailment path.
 //
 // ISO 9613-2 is a DOWNWIND method: every receiver is treated as if the wind
 // were blowing straight at it. That is deliberately conservative and it is what
-// BESSTY does everywhere else — but a curtailment schedule computed that way
+// BESSTY reports everywhere — but a curtailment schedule computed that way
 // curtails for a wind direction that only occurs some of the time. Knowing
 // which way the wind is blowing lets a receiver upwind of a turbine be credited
 // with the reduction it actually gets, which is the whole point of directional

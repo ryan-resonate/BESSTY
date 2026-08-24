@@ -108,7 +108,6 @@ test('an upwind turbine is credited and a downwind one is not', () => {
   const use = fullPowerUse(project(), {
     windDirectionDeg: 0,
     model: DEFAULT_DIRECTIVITY,
-    onFixedSources: false,
   });
   const noWind = fullPowerUse(project());
 
@@ -124,10 +123,10 @@ test('reversing the wind reverses which turbine is credited', () => {
   // The single most valuable assertion here: a 180° convention error passes
   // every test that only ever uses one wind direction.
   const fromNorth = fullPowerUse(project(), {
-    windDirectionDeg: 0, model: DEFAULT_DIRECTIVITY, onFixedSources: false,
+    windDirectionDeg: 0, model: DEFAULT_DIRECTIVITY,
   });
   const fromSouth = fullPowerUse(project(), {
-    windDirectionDeg: 180, model: DEFAULT_DIRECTIVITY, onFixedSources: false,
+    windDirectionDeg: 180, model: DEFAULT_DIRECTIVITY,
   });
   assert.ok(fromNorth.south < fromNorth.north, 'wind from the north credits the south turbine');
   assert.ok(fromSouth.north < fromSouth.south, 'wind from the south credits the north turbine');
@@ -138,7 +137,7 @@ test('a crosswind credits both turbines', () => {
   // Wind from the east: both turbines lie ~90° off the downwind line, so both
   // are outside the ±60° sector.
   const use = fullPowerUse(project(), {
-    windDirectionDeg: 90, model: DEFAULT_DIRECTIVITY, onFixedSources: false,
+    windDirectionDeg: 90, model: DEFAULT_DIRECTIVITY,
   });
   const noWind = fullPowerUse(project());
   for (const id of ['north', 'south']) {
@@ -152,7 +151,7 @@ test('the correction changes what the optimiser is allowed to do', () => {
   // headroom, so the receiver's available energy genuinely grows.
   const downwindOnly = buildCellModel(project(), transfer(), 'night', 8, 0).cell;
   const withWind = buildCellModel(project(), transfer(), 'night', 8, 0, {
-    windDirectionDeg: 0, model: DEFAULT_DIRECTIVITY, onFixedSources: false,
+    windDirectionDeg: 0, model: DEFAULT_DIRECTIVITY,
   }).cell;
 
   // The cap itself is untouched — the correction is on the source side.
@@ -164,10 +163,11 @@ test('the correction changes what the optimiser is allowed to do', () => {
     'crediting a turbine must reduce what it spends against the cap');
 });
 
-test('fixed sources are left alone unless asked for', () => {
-  // Matching the standalone tool, which only ever holds turbine bearings. The
-  // switch exists because the effect is arguably propagation rather than source
-  // directivity, in which case it would apply to any source.
+test('a BESS is never given the correction, whatever the wind is doing', () => {
+  // The correction decides wind-turbine curtailment and has no other meaning.
+  // A battery runs the same whatever the wind is doing, so crediting one would
+  // relax a cap on the strength of an approximation that was never about it —
+  // and there is deliberately no switch to turn that on.
   const p = project();
   p.sources = [
     ...p.sources,
@@ -179,15 +179,25 @@ test('fixed sources are left alone unless asked for', () => {
   const t = transfer();
   t.set('bess', new Map([['R1', new Float64Array(10).fill(-60)]]));
 
-  const off = buildCellModel(p, t, 'night', 8, 0, {
-    windDirectionDeg: 0, model: DEFAULT_DIRECTIVITY, onFixedSources: false,
+  const noWind = buildCellModel(p, t, 'night', 8, 0).cell;
+  // The BESS sits due south of the receiver, so a northerly puts it dead
+  // UPWIND — the position that would earn a turbine the full −2 dB.
+  const upwind = buildCellModel(p, t, 'night', 8, 0, {
+    windDirectionDeg: 0, model: DEFAULT_DIRECTIVITY,
   }).cell;
-  const on = buildCellModel(p, t, 'night', 8, 0, {
-    windDirectionDeg: 0, model: DEFAULT_DIRECTIVITY, onFixedSources: true,
+  // …and from the south it is dead downwind, the other extreme.
+  const downwind = buildCellModel(p, t, 'night', 8, 0, {
+    windDirectionDeg: 180, model: DEFAULT_DIRECTIVITY,
   }).cell;
 
-  assert.ok(on.receivers[0].fixedEnergy < off.receivers[0].fixedEnergy,
-    'the BESS is upwind, so switching this on must credit it');
-  assert.ok(on.receivers[0].availableEnergy > off.receivers[0].availableEnergy,
-    'and that leaves the turbines more room');
+  assert.equal(upwind.receivers[0].fixedEnergy, noWind.receivers[0].fixedEnergy,
+    'the BESS contribution must not move with the wind');
+  assert.equal(downwind.receivers[0].fixedEnergy, noWind.receivers[0].fixedEnergy);
+  assert.equal(upwind.receivers[0].availableEnergy, noWind.receivers[0].availableEnergy,
+    'so the cap the turbines optimise against is unchanged by it too');
+
+  // The turbines in the same run still are corrected — proving the BESS was
+  // skipped by kind, not because the correction failed to apply at all.
+  const spend = (c: typeof noWind) => c.model.groups.reduce((a, g) => a + g.options[0].use[0], 0);
+  assert.ok(spend(upwind) < spend(noWind), 'the turbines are still credited');
 });
