@@ -23,11 +23,20 @@
 
 import type { CatalogEntry, Period, Project, Receiver, Source } from './types';
 import { projectDOmegaDb } from './types';
-import { lookupEntry, spectrumFor, spectrumForMode } from './catalog';
+// `lookupEntry` needs the catalog stores; the spectrum maths does not, and it
+// comes from the dependency-free leaf so this module's model half stays
+// testable without the Firebase SDK.
+import { lookupEntry } from './catalog';
+import { spectrumFor, spectrumForMode } from './spectra';
 import { MODE_OFF, sourceModeName } from './modes';
-import { evaluateProject, type ReceiverResult } from './solver';
+import { evaluateProject, sourceHagl, type ReceiverResult } from './solver';
 import type { DemRaster } from './dem';
 import { limitComparisonFor, resolveLimit } from './limits';
+import { approxDistanceM } from './geo';
+import {
+  adjustmentAtBand, bearingDeg, directivityAdjustmentDb,
+  type DirectivityAdjustment, type DirectivityModel,
+} from './directivity';
 import { weightingFor, weightsFor } from './weighting';
 import { tonalitySettingsFor } from './tonality';
 import {
@@ -44,6 +53,21 @@ export interface CurtailmentOptions {
   periods: Period[];
   /// Extra headroom below the limit, in dB. 0 = comply exactly.
   marginDb: number;
+  /// Wind directions to optimise for, in degrees the wind blows FROM. Empty ⇒
+  /// no direction is assumed and no correction is applied, which is the
+  /// downwind-to-every-receiver reading ISO 9613-2 takes and what BESSTY does
+  /// everywhere else. Each direction is an independent schedule.
+  windDirectionsDeg?: number[];
+  /// How the correction is computed. Ignored when no directions are swept.
+  directivity?: DirectivityModel;
+  /// Apply the correction to sources the optimiser cannot switch (BESS,
+  /// auxiliaries) as well as to turbines.
+  ///
+  /// Default false, matching the standalone tool, which only ever has turbine
+  /// bearings. Physically the effect is at least partly propagation rather than
+  /// source directivity, in which case it applies to any source — hence the
+  /// switch rather than a hard-coded choice.
+  directivityOnFixedSources?: boolean;
 }
 
 export interface CellReceiver {
@@ -59,6 +83,9 @@ export interface CellReceiver {
 export interface CellResult {
   period: Period;
   windSpeed: number;
+  /// The wind direction this schedule is for (degrees FROM), or undefined when
+  /// the run assumed every receiver was downwind.
+  windDirectionDeg?: number;
   status: 'optimal' | 'infeasible' | 'error';
   /// sourceId → mode name, or `MODE_OFF`. Empty unless optimal.
   modes: Record<string, string>;
@@ -236,14 +263,25 @@ export function transferFromResults(
 // ------------------------------------------------------------- cell models
 
 /// Weighted energy a source contributes at a receiver, given its sound power.
-function energyOf(lw: Float64Array, transfer: Float64Array | undefined, weights: Float64Array): number {
+///
+/// `adjust` is the wind-direction correction for this pair — a scalar, or a
+/// per-band array for a model that varies with frequency. It rides here rather
+/// than being folded into the transfer because the transfer is a property of
+/// the geometry alone, and the same matrix is reused across every wind
+/// direction in a sweep.
+function energyOf(
+  lw: Float64Array,
+  transfer: Float64Array | undefined,
+  weights: Float64Array,
+  adjust?: DirectivityAdjustment,
+): number {
   if (!transfer) return 0;
   let sum = 0;
   for (let b = 0; b < weights.length; b++) {
     const t = transfer[b];
     const w = lw[b];
     if (!Number.isFinite(t) || !Number.isFinite(w)) continue;
-    sum += Math.pow(10, (w + t + weights[b]) / 10);
+    sum += Math.pow(10, (w + t + weights[b] + adjustmentAtBand(adjust, b)) / 10);
   }
   return sum;
 }
@@ -294,12 +332,33 @@ export function buildCellModel(
   period: Period,
   windSpeed: number,
   marginDb: number,
+  wind?: {
+    windDirectionDeg: number;
+    model: DirectivityModel;
+    onFixedSources: boolean;
+  },
 ): { cell: CellModel; warnings: string[] } {
   const warnings: string[] = [];
   const bs = project.scenario.bandSystem;
   const weights = weightsFor(bs, weightingFor(project));
   const turbines = project.sources.filter((s) => s.kind === 'wtg');
   const turbineIds = new Set(turbines.map((t) => t.id));
+
+  // Per (source, receiver) wind correction. Bearings come from the real
+  // coordinates the project already holds — the standalone tool needs a
+  // bearings CSV only because a SoundPlan contribution export carries no
+  // geometry.
+  const adjust = (s: Source, r: Receiver): DirectivityAdjustment | undefined => {
+    if (!wind) return undefined;
+    if (!turbineIds.has(s.id) && !wind.onFixedSources) return undefined;
+    return directivityAdjustmentDb(wind.model, {
+      bearingDeg: bearingDeg(s.latLng, r.latLng),
+      windFromDeg: wind.windDirectionDeg,
+      distanceM: approxDistanceM(s.latLng, r.latLng),
+      sourceHeightM: sourceHagl(s, project) ?? 0,
+      receiverHeightM: r.heightAboveGroundM,
+    });
+  };
 
   // Fixed sources: everything the optimiser cannot switch. Their mode is
   // whatever the project already resolves for this period, Off included.
@@ -314,7 +373,7 @@ export function buildCellModel(
     const lw = spectrumFor(entry, mode, windSpeed, bs);
     const byRx = transfer.get(s.id);
     for (const r of project.receivers) {
-      fixedEnergy.set(r.id, (fixedEnergy.get(r.id) ?? 0) + energyOf(lw, byRx?.get(r.id), weights));
+      fixedEnergy.set(r.id, (fixedEnergy.get(r.id) ?? 0) + energyOf(lw, byRx?.get(r.id), weights, adjust(s, r)));
     }
   }
 
@@ -351,7 +410,7 @@ export function buildCellModel(
       return {
         key: `${t.id}::${m.name}`,
         cost: pMax - powers[i],
-        use: receivers.map((r) => energyOf(lw, byRx?.get(r.id), weights)),
+        use: project.receivers.map((r) => energyOf(lw, byRx?.get(r.id), weights, adjust(t, r))),
       };
     });
     // Off is always on the menu: it costs the turbine's whole output and emits
@@ -453,19 +512,35 @@ export async function optimiseCurtailment(
 
   const cells: CellResult[] = [];
   const warnings = new Set<string>();
-  const total = opts.periods.length * opts.windSpeeds.length;
+  // `undefined` means "assume every receiver is downwind" — no direction, no
+  // correction, which is the conservative reading and the default.
+  const directions: Array<number | undefined> = opts.windDirectionsDeg?.length
+    ? opts.windDirectionsDeg
+    : [undefined];
+  const model = opts.directivity ?? { kind: 'none' as const };
+  const total = opts.periods.length * opts.windSpeeds.length * directions.length;
   let done = 0;
 
   for (const period of opts.periods) {
     for (const windSpeed of opts.windSpeeds) {
-      const { cell, warnings: w } = buildCellModel(
-        project, transfer, period, windSpeed, opts.marginDb,
-      );
-      for (const msg of w) warnings.add(msg);
-      const solution = await solveWithHighs(cell.model);
-      cells.push(describeCell(cell, solution, period, windSpeed));
-      done++;
-      onProgress?.(done, total);
+      for (const windDirectionDeg of directions) {
+        const { cell, warnings: w } = buildCellModel(
+          project, transfer, period, windSpeed, opts.marginDb,
+          windDirectionDeg === undefined ? undefined : {
+            windDirectionDeg,
+            model,
+            onFixedSources: opts.directivityOnFixedSources ?? false,
+          },
+        );
+        for (const msg of w) warnings.add(msg);
+        const solution = await solveWithHighs(cell.model);
+        cells.push({
+          ...describeCell(cell, solution, period, windSpeed),
+          windDirectionDeg,
+        });
+        done++;
+        onProgress?.(done, total);
+      }
     }
   }
 

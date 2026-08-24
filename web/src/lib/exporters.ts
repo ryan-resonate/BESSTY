@@ -25,6 +25,7 @@ import {
   PERIODS, PERIOD_LABEL, describeModes, modeForPeriod, modeLabel, perPeriodModesEnabled,
 } from './modes';
 import { windSpeedLimitsEnabled } from './limitTable';
+import { describeWindFrom } from './directivity';
 import type { CurtailmentResult } from './curtailment';
 import type { GridResult, PeriodResults, ReceiverResult } from './solver';
 import type { ContourLineSet } from './contourLines';
@@ -750,31 +751,50 @@ export function exportCurtailmentXlsx(
   const wb = XLSX.utils.book_new();
   const periods = PERIODS.filter((p) => result.cells.some((c) => c.period === p));
 
+  // Wind directions that were actually swept. Empty for a non-directional run,
+  // where every receiver was treated as downwind.
+  const directions = [...new Set(result.cells.map((c) => c.windDirectionDeg))]
+    .filter((d): d is number => d !== undefined)
+    .sort((a, b) => a - b);
+  const dirKeys: Array<number | undefined> = directions.length > 0 ? directions : [undefined];
+
   for (const period of periods) {
-    const cells = result.cells.filter((c) => c.period === period)
-      .sort((a, b) => a.windSpeed - b.windSpeed);
-    const speeds = cells.map((c) => c.windSpeed);
+    const speeds = [...new Set(
+      result.cells.filter((c) => c.period === period).map((c) => c.windSpeed),
+    )].sort((a, b) => a - b);
     const rows: Array<Array<string | number>> = [];
-    rows.push(['Turbine', ...speeds.map((w) => `${w} m/s`)]);
-    for (const t of result.turbines) {
+    // A "Wind from" column only when there is something to put in it, so a
+    // non-directional export keeps exactly the shape it had.
+    const lead = directions.length > 0 ? ['Wind from', 'Turbine'] : ['Turbine'];
+    rows.push([...lead, ...speeds.map((w) => `${w} m/s`)]);
+
+    for (const dir of dirKeys) {
+      const cells = speeds.map((w) => result.cells.find(
+        (c) => c.period === period && c.windSpeed === w && c.windDirectionDeg === dir,
+      ));
+      const label = dir === undefined ? [] : [describeWindFrom(dir)];
+      for (const t of result.turbines) {
+        rows.push([
+          ...label, t.name,
+          // An infeasible cell prescribes nothing; a blank would read as "no
+          // curtailment needed", which is the opposite of what it means.
+          ...cells.map((c) => (c?.status === 'optimal' ? modeLabel(c.modes[t.id], '') : 'n/a')),
+        ]);
+      }
+      const pad = dir === undefined ? [] : [''];
       rows.push([
-        t.name,
-        // An infeasible cell prescribes nothing; a blank would read as "no
-        // curtailment needed", which is the opposite of what it means.
-        ...cells.map((c) => (c.status === 'optimal'
-          ? modeLabel(c.modes[t.id], '')
-          : 'n/a')),
+        ...pad, 'Lost kW',
+        ...cells.map((c) => (c?.status === 'optimal' ? Number(c.lostKw.toFixed(1)) : 'n/a')),
       ]);
+      rows.push([...pad, 'Binding receiver', ...cells.map((c) => c?.bindingReceiverName ?? '')]);
+      rows.push([
+        ...pad, 'Headroom dB',
+        ...cells.map((c) => (c?.marginAtBindingDb == null ? '' : Number(c.marginAtBindingDb.toFixed(2)))),
+      ]);
+      rows.push([...pad, 'Status', ...cells.map((c) => c?.status ?? '')]);
+      rows.push([...pad, 'Note', ...cells.map((c) => c?.detail ?? '')]);
+      rows.push([]);
     }
-    rows.push([]);
-    rows.push(['Lost kW', ...cells.map((c) => (c.status === 'optimal' ? Number(c.lostKw.toFixed(1)) : 'n/a'))]);
-    rows.push(['Binding receiver', ...cells.map((c) => c.bindingReceiverName ?? '')]);
-    rows.push([
-      'Headroom dB',
-      ...cells.map((c) => (c.marginAtBindingDb == null ? '' : Number(c.marginAtBindingDb.toFixed(2)))),
-    ]);
-    rows.push(['Status', ...cells.map((c) => c.status)]);
-    rows.push(['Note', ...cells.map((c) => c.detail ?? '')]);
     XLSX.utils.book_append_sheet(
       wb, XLSX.utils.aoa_to_sheet(rows), PERIOD_LABEL[period],
     );
@@ -789,6 +809,9 @@ export function exportCurtailmentXlsx(
     ['Assessment weighting', weightingLabel(weightingFor(project))],
     ['Limit comparison', limitComparisonFor(project)],
     ['Wind-speed limits', windSpeedLimitsEnabled(project) ? 'on' : 'off (scalar per-period limits)'],
+    ['Wind direction', directions.length > 0
+      ? ` directions swept; approximate directivity applied`
+      : 'not modelled — every receiver treated as downwind (ISO 9613-2)'],
     ['Band system', project.scenario.bandSystem],
     ['DOmega (dB)', projectDOmegaDb(project)],
     ['Standard', `ISO 9613-2:${project.settings?.standard ?? '2024'}`],

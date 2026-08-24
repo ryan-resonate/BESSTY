@@ -183,11 +183,13 @@ test('every spectrum lookup goes through the mode resolver, and checks for Off',
   // loudly: the source runs, at a mode nobody chose, and the number looks fine.
   //
   // The rule: every call resolves through `sourceModeName` first and drops the
-  // source when that returns null. `catalog.ts` is exempt — it DEFINES the
-  // function and its own alias passes a name through.
+  // source when that returns null. `spectra.ts` is exempt — it DEFINES the
+  // function and its own alias passes a name through. (It lives there rather
+  // than in `catalog.ts` so the pure projection maths carries no Firebase edge;
+  // `catalog.ts` only re-exports it.)
   const offenders: string[] = [];
   for (const { path, text } of FILES) {
-    if (path.endsWith('catalog.ts') || path.endsWith('types.ts')) continue;
+    if (path.endsWith('spectra.ts') || path.endsWith('types.ts')) continue;
     for (const m of text.matchAll(/spectrumFor\(/g)) {
       // The resolve + guard sit immediately above the call; 6 lines is room for
       // a comment between them without letting an unrelated guard count.

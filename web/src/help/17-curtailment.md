@@ -49,3 +49,18 @@ The whole sweep runs off **one** acoustic solve. The transfer between a turbine 
 ## Export
 
 **XLSX** gives one sheet per period — turbines by wind speed, with the lost-kW, binding-receiver and headroom rows beneath — plus a settings sheet recording the margin, weighting, limit comparison and everything else the run assumed.
+
+## Wind direction
+
+By default no wind direction is assumed: every receiver is treated as downwind of every turbine. That is what ISO 9613-2 does, it is what the rest of BESSTY reports, and it is the conservative case — but it curtails for a wind direction that only blows some of the time.
+
+Tick **Account for wind direction** and the optimiser sweeps the compass, producing a separate schedule for each direction. Pick the direction from the dropdown above the table; each option shows what that direction costs, so the expensive ones are easy to find.
+
+The correction is deliberately approximate, applied on top of the same solve rather than by re-propagating:
+
+- receiver within **±60° of downwind** — no adjustment;
+- anywhere else — **−2 dB**.
+
+Direction is stated the way met files and wind roses state it: the direction the wind blows **from**. A northerly (0°) blows towards the south, so a receiver south of a turbine is the one downwind of it.
+
+It is applied to turbine contributions only. Anything the optimiser cannot switch — a BESS, a substation — keeps its full level regardless of direction.

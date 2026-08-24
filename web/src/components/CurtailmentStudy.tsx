@@ -17,6 +17,7 @@ import { notify } from '../lib/notify';
 import type { DemRaster } from '../lib/dem';
 import type { Period, Project, Source } from '../lib/types';
 import { MODE_OFF, MODE_OFF_LABEL, PERIODS, PERIOD_LABEL, withPeriodMode } from '../lib/modes';
+import { DEFAULT_DIRECTIVITY, describeWindFrom, sweepDirections } from '../lib/directivity';
 import {
   optimiseCurtailment,
   precheckCurtailment,
@@ -38,6 +39,12 @@ export function CurtailmentStudy(props: {
   const [periods, setPeriods] = useState<Period[]>([...PERIODS]);
   const [speeds, setSpeeds] = useState<number[]>(pre.windSpeeds);
   const [marginDb, setMarginDb] = useState(0);
+  // Off by default: with no direction assumed, every receiver is treated as
+  // downwind, which is what ISO 9613-2 does and what the rest of BESSTY
+  // reports. Switching it on is opting into a less conservative model.
+  const [directional, setDirectional] = useState(false);
+  const [stepDeg, setStepDeg] = useState(10);
+  const [viewDirection, setViewDirection] = useState<number | undefined>(undefined);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [result, setResult] = useState<CurtailmentResult | null>(null);
@@ -51,15 +58,21 @@ export function CurtailmentStudy(props: {
     if (running) return;
     const id = ++runId.current;
     setRunning(true);
-    setProgress({ done: 0, total: periods.length * speeds.length });
+    const dirs = directional ? sweepDirections(stepDeg) : [];
+    setProgress({ done: 0, total: periods.length * speeds.length * Math.max(1, dirs.length) });
     try {
       const out = await optimiseCurtailment(
         project, dem,
-        { windSpeeds: speeds, periods, marginDb },
+        {
+          windSpeeds: speeds, periods, marginDb,
+          windDirectionsDeg: dirs,
+          directivity: DEFAULT_DIRECTIVITY,
+        },
         (done, total) => { if (id === runId.current) setProgress({ done, total }); },
       );
       if (id !== runId.current) return;        // superseded by a later run
       setResult(out);
+      setViewDirection(dirs[0]);
       setRanAgainst(project);
       const failed = out.cells.filter((c) => c.status !== 'optimal').length;
       if (failed > 0) {
@@ -78,8 +91,12 @@ export function CurtailmentStudy(props: {
   const turbineName = new Map(
     project.sources.filter((s: Source) => s.kind === 'wtg').map((s) => [s.id, s.name]),
   );
-  const shown = (result?.cells ?? []).filter((c) => c.period === viewPeriod);
+  const shown = (result?.cells ?? [])
+    .filter((c) => c.period === viewPeriod && c.windDirectionDeg === viewDirection);
   const shownSpeeds = [...new Set(shown.map((c) => c.windSpeed))].sort((a, b) => a - b);
+  const ranDirections = [...new Set((result?.cells ?? []).map((c) => c.windDirectionDeg))]
+    .filter((d): d is number => d !== undefined)
+    .sort((a, b) => a - b);
 
   return (
     <FloatingWindow
@@ -140,6 +157,38 @@ export function CurtailmentStudy(props: {
             />
           </label>
 
+          <div className="add-row" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
+            <label className="row-checkbox" style={{ fontSize: 11 }}>
+              <input
+                type="checkbox"
+                checked={directional}
+                onChange={(e) => setDirectional(e.target.checked)}
+              />
+              <span title={'Credit receivers that are not downwind with the reduction they '
+                + 'actually get, instead of treating every receiver as downwind'}
+              >Account for wind direction</span>
+            </label>
+            {directional && (
+              <>
+                <span style={{ fontSize: 11 }}>every</span>
+                <select value={stepDeg} onChange={(e) => setStepDeg(+e.target.value)}>
+                  <option value={10}>10° (36 directions)</option>
+                  <option value={22.5}>22.5° (16 directions)</option>
+                  <option value={30}>30° (12 directions)</option>
+                  <option value={45}>45° (8 directions)</option>
+                </select>
+              </>
+            )}
+          </div>
+          {directional && (
+            <div className="hint" style={{ fontSize: 10 }}>
+              Approximate: no adjustment within ±60° of downwind, −2 dB elsewhere, applied to
+              turbine contributions on top of the same solve. Each direction gets its own
+              schedule. Leaving this off treats every receiver as downwind, which is what
+              ISO 9613-2 does and is the conservative case.
+            </div>
+          )}
+
           <div className="add-row">
             <button
               className="btn small primary"
@@ -175,7 +224,7 @@ export function CurtailmentStudy(props: {
           {/* ---- results ---- */}
           {result && shown.length > 0 && (
             <>
-              <div className="add-row">
+              <div className="add-row" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
                 {PERIODS.filter((p) => result.cells.some((c) => c.period === p)).map((p) => (
                   <button
                     key={p}
@@ -183,6 +232,31 @@ export function CurtailmentStudy(props: {
                     onClick={() => setViewPeriod(p)}
                   >{PERIOD_LABEL[p]}</button>
                 ))}
+                {ranDirections.length > 0 && (
+                  <>
+                    <span style={{ fontSize: 11, marginLeft: 8 }} title="Direction the wind blows FROM">
+                      Wind from
+                    </span>
+                    <select
+                      value={viewDirection ?? ''}
+                      onChange={(e) => setViewDirection(+e.target.value)}
+                    >
+                      {ranDirections.map((d) => {
+                        // Worst first is the wrong default, but knowing which
+                        // directions actually cost generation is the point of
+                        // the sweep, so each option carries its own cost.
+                        const cost = result.cells
+                          .filter((c) => c.period === viewPeriod && c.windDirectionDeg === d)
+                          .reduce((a, c) => a + (c.status === 'optimal' ? c.lostKw : 0), 0);
+                        return (
+                          <option key={d} value={d}>
+                            {describeWindFrom(d)}{cost > 0 ? ` — ${cost.toFixed(0)} kW` : ' — no curtailment'}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </>
+                )}
               </div>
 
               <div style={{ overflow: 'auto', minHeight: 0, flex: 1 }}>

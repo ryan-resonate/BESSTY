@@ -285,7 +285,7 @@ async function solveScenes(scenes: string[], channel: SolveChannel): Promise<Sce
 /// ground-attenuation shape functions. Independent of terrain elevation.
 ///
 /// Returns null if the catalog entry is missing.
-function sourceHagl(source: Source, project: Project): number | null {
+export function sourceHagl(source: Source, project: Project): number | null {
   const entry = lookupEntry(project, source);
   if (source.kind === 'wtg') {
     // Per-source `hubHeight` REPLACES the library default (it's the

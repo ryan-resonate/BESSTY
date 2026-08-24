@@ -24,6 +24,22 @@ function findTests(dir) {
   return out;
 }
 
+/// Swap the Firebase SDK for a stub while bundling tests.
+///
+/// The real SDK is CommonJS that requires node builtins at load time, so the
+/// ESM output throws `Dynamic require of "process"` as soon as a test
+/// transitively imports `lib/catalog` — which is most of the app. Nothing under
+/// test wants a real Firebase; the stub throws only if something CALLS it, so a
+/// test that genuinely reached the network would still fail loudly.
+const firebaseStub = {
+  name: 'firebase-test-stub',
+  setup(build) {
+    build.onResolve({ filter: /^firebase(\/|$)/ }, () => ({
+      path: join(root, 'scripts', 'firebase-test-stub.mjs'),
+    }));
+  },
+};
+
 const entryPoints = findTests(join(root, 'src'));
 if (entryPoints.length === 0) {
   console.log('no *.test.ts files found');
@@ -51,6 +67,11 @@ try {
     // requires node builtins at load time; inlining it breaks the ESM output.
     // The MILP tests resolve it from BEESTY_WEB_ROOT and inject it instead.
     external: ['node:*', '*.wasm', 'highs'],
+    plugins: [firebaseStub],
+    // Vite's `import.meta.env` does not exist under node, and `lib/firebase`
+    // reads its config from it at module scope. Empty is right: the tests have
+    // no Firebase config and must not pick one up from the environment.
+    define: { 'import.meta.env': '{}' },
     logLevel: 'warning',
   });
   // Bundled tests run from a temp dir, so `import.meta.url` no longer points at
