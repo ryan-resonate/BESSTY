@@ -2,9 +2,12 @@
 # is the whole of the authorisation. A crawler that followed one would publish
 # it into a search index, which turns an unguessable link into a listed one.
 #
-# The meta robots tag in index.html says the same thing; this file says it to
-# crawlers that never execute the page, and refuses the /share/ path outright
-# so a token is not even requested.
+# NOTE: inert on the current deployment. CI builds with BESSTY_BASE=/BESSTY/,
+# so this is served at /BESSTY/robots.txt, and crawlers only honour a
+# ROOT-level /robots.txt — which belongs to the ryan-resonate.github.io root
+# and is not ours to write. The `noindex` meta tag in index.html is what
+# actually holds today. Kept because this becomes effective the moment BESSTY
+# is served from a domain root, and because the cost of keeping it is nil.
 User-agent: *
 Disallow: /share/
 Disallow: /

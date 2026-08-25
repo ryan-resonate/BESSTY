@@ -65,10 +65,34 @@ export function storage(): FirebaseStorage {
   return _storage;
 }
 
+/// Is the page currently showing a public share link?
+///
+/// Read from `location.hash` rather than from the router, because this is
+/// called during Firebase initialisation — before React has mounted — and it
+/// must be right the first time.
+function onShareRoute(): boolean {
+  return typeof window !== 'undefined'
+    && /^#\/share\//.test(window.location.hash);
+}
+
 function maybeLoadAnalytics() {
   if (analyticsLoaded) return;
   if (typeof window === 'undefined') return;
   if (!firebaseConfig.measurementId) return;
+  // NEVER on a share route. The app uses a HashRouter, so a share URL carries
+  // its token in the fragment — and GA4's automatic `page_view` reports
+  // `page_location`, which is the FULL url including that fragment. Loading
+  // analytics here would hand every live share token to Google, where it would
+  // sit in an analytics property long after the share was withdrawn.
+  //
+  // The share viewer reaches Firebase (it reads one document), so this cannot
+  // be solved by not initialising Firebase there.
+  //
+  // Residual, accepted: someone already inside the signed-in app who edits the
+  // address bar into a share link has analytics loaded from the previous page.
+  // The case this protects is the one that matters — a client opening a link
+  // they were sent, in a fresh tab.
+  if (onShareRoute()) return;
   analyticsLoaded = true;
   void import('firebase/analytics').then(async ({ getAnalytics, isSupported }) => {
     if (await isSupported()) {

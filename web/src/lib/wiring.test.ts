@@ -349,6 +349,36 @@ test('both contour EXPORTS trace through one function, so they cannot drift apar
   }
 });
 
+test('analytics never loads on a share route', () => {
+  // A share URL carries its token in the hash fragment, and GA4's automatic
+  // page_view reports `page_location` — the full URL, fragment included. With
+  // analytics running on the viewer, every opened share hands its live token
+  // to Google, where it outlives the share's own revocation.
+  //
+  // The viewer reads a Firestore document, so it reaches `getApp()`, so this
+  // cannot be solved by keeping Firebase out of that screen. The guard has to
+  // live in the loader, and it is one `return` that a tidy-up could remove
+  // without any test noticing.
+  const firebase = FILES.find((f) => f.path.endsWith('firebase.ts'));
+  assert.ok(firebase, 'firebase.ts not found');
+  const code = firebase!.text.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const loader = code.slice(code.indexOf('function maybeLoadAnalytics'));
+  assert.ok(loader.length > 0, 'maybeLoadAnalytics not found — has it been renamed?');
+  const body = loader.slice(0, loader.indexOf('\n}'));
+  assert.match(
+    body, /onShareRoute\s*\(\s*\)/,
+    'maybeLoadAnalytics must bail on a share route, or share tokens reach analytics',
+  );
+  // …and the predicate has to actually look for the share path. Checked
+  // against the RAW text: the regex literal `/^#\/share\//` ends in two
+  // adjacent slashes, which the comment stripper above reads as a line comment
+  // and removes.
+  assert.match(
+    firebase!.text, /#\\\/share/,
+    'onShareRoute must match the share hash path',
+  );
+});
+
 test('the public share viewer cannot solve, cannot reach the catalog, and cannot write', () => {
   // `/share/:token` renders for anyone on the internet with no account. Its
   // safety rests on a claim in its own header — that it holds no project, runs
