@@ -55,8 +55,7 @@ import {
 import type { GridResult } from '../lib/solver';
 import { evaluateAllPeriods } from '../lib/solver';
 import {
-  buildContourLines, clampLineWidth, customTracesFrom, steppedTracesFrom, unionContourLevels,
-  CUSTOM_LABEL_MAX,
+  clampLineWidth, traceForExport, CUSTOM_LABEL_MAX,
 } from '../lib/contourLines';
 import { makeBandsForRange } from '../lib/colormap';
 import type { DemRaster } from '../lib/dem';
@@ -139,6 +138,8 @@ interface Props {
   /// Open the wind-farm curtailment optimiser. Absent on projects without
   /// turbines, where the control would only ever refuse.
   onOpenCurtailment?(): void;
+  /// Open the wind-speed sweep runner.
+  onOpenWindSweep?(): void;
   /// Called when the user reverts to a saved version. The handler should
   /// merge the snapshot's content into the live project while preserving
   /// current ownership + privacy metadata. Wired up in ProjectScreen.
@@ -1476,25 +1477,18 @@ function ResultsTab(props: Props) {
     }
   }
 
-  function exportContours(format: 'kml' | 'shp') {
+  async function exportContours(format: 'kml' | 'shp') {
     if (!grid) return;
     // Build the line set with the same dB bands the user is currently
-    // viewing so the export matches the on-screen contours exactly.
-    const bands = makeBandsForRange(contourBounds.min, contourBounds.max, contourBounds.step);
-    const thresholds = bands.map((b) => b.lo);
-    // Custom lines ride along when their own export flag is set, tagged with
-    // their name so a consumer can tell a compliance line from a palette step.
-    const custom = (props.customContours ?? [])
-      .filter((c) => c.export && Number.isFinite(c.levelDb));
-    const traced = buildContourLines(grid, unionContourLevels(thresholds, custom));
-    const named = customTracesFrom(traced, custom).map((c) => c.set);
-    const sets = [
-      // A level a named line already covers is not also written as a stepped
-      // contour — the geometry is identical, so it would be one contour
-      // appearing as two features.
-      ...steppedTracesFrom(traced, thresholds, named.map((s) => s.threshold)),
-      ...named,
-    ];
+    // viewing so the export matches the on-screen contours exactly. Custom
+    // lines ride along when their own export flag is set, tagged with their
+    // name so a consumer can tell a compliance line from a palette step —
+    // see `traceForExport`, which the wind sweep shares.
+    const sets = await traceForExport(
+      grid,
+      makeBandsForRange(contourBounds.min, contourBounds.max, contourBounds.step).map((b) => b.lo),
+      props.customContours,
+    );
     if (format === 'kml') {
       download(exportContoursKml(project, sets), 'contours', 'kml');
     } else {
@@ -1586,8 +1580,8 @@ function ResultsTab(props: Props) {
 
         <div className="meta-line" style={{ marginTop: 8 }}><b>Contour lines</b></div>
         <div className="add-row">
-          <button className="btn small" style={mutedWhenNoGrid} title={gridHint} onClick={() => { if (requireGrid()) exportContours('kml'); }}>↓ KML</button>
-          <button className="btn small" style={mutedWhenNoGrid} title={gridHint} onClick={() => { if (requireGrid()) exportContours('shp'); }}>↓ Shapefile</button>
+          <button className="btn small" style={mutedWhenNoGrid} title={gridHint} onClick={() => { if (requireGrid()) void exportContours('kml'); }}>↓ KML</button>
+          <button className="btn small" style={mutedWhenNoGrid} title={gridHint} onClick={() => { if (requireGrid()) void exportContours('shp'); }}>↓ Shapefile</button>
         </div>
 
         <div className="meta-line" style={{ marginTop: 8 }}><b>Grid raster</b></div>
@@ -1611,6 +1605,12 @@ function ResultsTab(props: Props) {
               title="Least-generation mode schedule per wind speed, for every receiver to comply"
             >⚙ Curtailment optimiser…</button>
           )}
+          <button
+            className="btn small block"
+            onClick={() => props.onOpenWindSweep?.()}
+            disabled={!props.onOpenWindSweep}
+            title="Re-solve receivers and contours at each wind speed, and export the lot"
+          >🌬 Wind-speed sweep…</button>
           <button className="btn small" style={mutedWhenNoGrid} title={gridHint} onClick={() => { if (requireGrid() && grid) download(exportGridGeoTiff(grid), 'grid', 'tif'); }}>
             ↓ GeoTIFF
           </button>

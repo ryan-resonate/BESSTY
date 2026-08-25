@@ -9,11 +9,12 @@ import { SettingsWindow } from '../components/SettingsWindow';
 import { PdfExportDialog } from '../components/PdfExportDialog';
 import { FactorialStudy } from '../components/FactorialStudy';
 import { CurtailmentStudy, applyCellToProject } from '../components/CurtailmentStudy';
+import { WindSweepStudy } from '../components/WindSweepStudy';
 import { attributionFor, tileUrlFor } from '../components/MapView';
 import { Legend, ResultsDock, StatusBar } from '../components/MapChrome';
 import { SidePanel, type AddMode, type Tab } from '../components/SidePanel';
 import { listEntriesByKind, lookupEntry } from '../lib/catalog';
-import { gridDomain, type Palette } from '../lib/colormap';
+import { gridDomain, makeBandsForRange, type Palette } from '../lib/colormap';
 import { loadDemForBounds, type DemRaster } from '../lib/dem';
 import {
   evaluateGridViaWorker,
@@ -225,6 +226,13 @@ export function ProjectScreen() {
   /// the dialog.
   const [showStudy, setShowStudy] = useState(false);
   const [showCurtailment, setShowCurtailment] = useState(false);
+  const [showWindSweep, setShowWindSweep] = useState(false);
+  /// True while a wind sweep is solving. The automatic regrid below stands
+  /// down for the duration: the grid pool is newest-wins, so a background
+  /// regrid would terminate the sweep's workers mid-run. Deliberately STATE
+  /// rather than a ref, so the effect re-runs when the sweep ends and the
+  /// map catches up on anything that was edited while it ran.
+  const [sweepRunning, setSweepRunning] = useState(false);
   const [pdfExtent, setPdfExtent] = useState<{ sw: [number, number]; ne: [number, number] } | null>(null);
 
   function openPdfExport() {
@@ -756,6 +764,12 @@ export function ProjectScreen() {
   // meantime — stops a slow run from clobbering the latest geometry.
   const pointGenRef = useRef(0);
   const gridGenRef = useRef(0);
+  /// The inputs the grid currently on screen was computed from. Checked before
+  /// an automatic regrid so that merely UN-suspending that effect — which is
+  /// what the end of a wind sweep does — cannot re-solve a grid that is already
+  /// correct. Exact rather than heuristic: it skips only when the inputs are
+  /// identical, so no real edit can be missed.
+  const gridKeyRef = useRef<string | null>(null);
 
   // Sync persisted project (from the hook) into the editor's working
   // state. Fires on initial load and on remote collaborator updates that
@@ -1154,9 +1168,17 @@ export function ProjectScreen() {
   // jank. The worker layer now terminates the stale job when a new one posts
   // (newest geometry wins), and this path drives the same status + progress
   // surface as a manual run so the recompute is visible and cancellable.
+  //
+  // A wind sweep holds this off entirely (`sweepRunning`): it queues N grids on
+  // the same newest-wins pool, and a regrid landing between two of them would
+  // kill the run. When the sweep finishes, this effect re-runs and picks up
+  // whatever was edited meanwhile.
   useEffect(() => {
-    if (!project || !gridShownRef.current) return;
+    if (!project || !gridShownRef.current || sweepRunning) return;
+    const key = `${gridStructuralKey}|${sourcePosKey}`;
+    if (gridKeyRef.current === key) return;
     const handle = setTimeout(() => {
+      gridKeyRef.current = key;
       const gen = ++gridGenRef.current;
       const height = project.settings?.general.defaultReceiverHeight ?? 1.5;
       setGridStatus('computing');
@@ -1180,12 +1202,15 @@ export function ProjectScreen() {
     }, 600);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gridStructuralKey, sourcePosKey]);
+  }, [gridStructuralKey, sourcePosKey, sweepRunning]);
 
   function runGrid() {
     if (!project) return;
     setGridStatus('computing');
     setGridProgress(null);
+    // Record what this grid is being computed FROM, so the automatic regrid
+    // above can tell "nothing has moved" from "I have never run".
+    gridKeyRef.current = `${gridStructuralKey}|${sourcePosKey}`;
     const heightAbove = project.settings?.general.defaultReceiverHeight ?? 1.5;
     // Primal, per-tile clustered, on the Web Worker.
     setTimeout(() => {
@@ -1564,6 +1589,15 @@ export function ProjectScreen() {
     [contourBounds.min, contourBounds.max],
   );
 
+  /// The display contour levels, for exports that trace their own grids (the
+  /// wind sweep). Same derivation the single-grid contour export uses, so a
+  /// swept 8 m/s layer and an on-screen export at 8 m/s hold identical lines.
+  const exportContourLevels = useMemo(
+    () => makeBandsForRange(contourBounds.min, contourBounds.max, contourBounds.step)
+      .map((b) => b.lo),
+    [contourBounds.min, contourBounds.max, contourBounds.step],
+  );
+
   /// Replace contourBounds with the grid's actual measured range, snapped
   /// to multiples of 5 dB for cleaner band boundaries. Wired to the
   /// "Auto-fit" button in the Layers tab.
@@ -1674,6 +1708,7 @@ export function ProjectScreen() {
         onOpenPdfExport={openPdfExport}
         onOpenStudy={() => setShowStudy(true)}
         onOpenCurtailment={() => setShowCurtailment(true)}
+        onOpenWindSweep={() => setShowWindSweep(true)}
         showReceiverLimits={showReceiverLimits} setShowReceiverLimits={setShowReceiverLimits}
         contourMode={contourMode} setContourMode={setContourMode}
         contourOpacity={contourOpacity} setContourOpacity={setContourOpacity}
@@ -1814,6 +1849,20 @@ export function ProjectScreen() {
           // Applied through setProject, so a schedule lands as one ordinary
           // undoable edit rather than through a side door that skips history.
           onApplySchedule={(cell) => setProject(applyCellToProject(project, cell))}
+        />
+      )}
+
+      {showWindSweep && (
+        <WindSweepStudy
+          project={project}
+          dem={dem}
+          gridSpacingM={gridSpacingM}
+          // The levels the user is looking at (Q25), not just the custom lines —
+          // so a swept contour set and the on-screen one are the same geometry.
+          contourLevels={exportContourLevels}
+          customContours={customContours}
+          onRunningChange={setSweepRunning}
+          onClose={() => setShowWindSweep(false)}
         />
       )}
 

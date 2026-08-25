@@ -189,6 +189,46 @@ export function involvesOff(v: ModeOverride | undefined): boolean {
   return PERIODS.some((p) => v[p] === MODE_OFF);
 }
 
+/// Periods that share one solve.
+///
+/// Day, evening and night differ ONLY in the modes their sources resolve to —
+/// nothing else in a scene is per-period — so two periods whose sources all run
+/// the same modes produce identical levels, and one solve serves both. A project
+/// that has never touched per-period modes therefore costs exactly one solve for
+/// all three, which is what the receiver export always did.
+///
+/// The key is the STORED override per source, not the resolved catalog name: the
+/// catalog default is a property of the model, so it cannot differ between
+/// periods, and the override is the whole of what varies.
+///
+/// Owned here rather than in the solver because more than one runner needs it
+/// now — the all-periods receiver export and the wind sweep — and two copies of
+/// "when may I reuse a solve?" is the kind of duplication that ends with one
+/// period's numbers printed under another period's heading.
+export function periodSolveKey(
+  project: { sources: Array<{ modeOverride?: ModeOverride }> },
+  period: Period,
+): string {
+  return JSON.stringify(
+    project.sources.map((s) => modeForPeriod(s.modeOverride, period) ?? null),
+  );
+}
+
+/// Group `periods` (default: all three) into the sets that may share a solve.
+/// `PERIODS` order is preserved both within each group and between groups, so
+/// the sweep runs day before night however the caller listed them.
+export function groupPeriodsBySolve(
+  project: { sources: Array<{ modeOverride?: ModeOverride }> },
+  periods: readonly Period[] = PERIODS,
+): Period[][] {
+  const byKey = new Map<string, Period[]>();
+  for (const period of PERIODS.filter((p) => periods.includes(p))) {
+    const key = periodSolveKey(project, period);
+    byKey.set(key, [...(byKey.get(key) ?? []), period]);
+  }
+  return [...byKey.values()];
+}
+
 /// Is the whole per-period capability switched on for this project? Default
 /// OFF — a project that has never heard of periods shows none of the UI.
 ///

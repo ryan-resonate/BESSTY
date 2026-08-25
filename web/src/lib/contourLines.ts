@@ -354,3 +354,34 @@ export async function buildContourLinesAsync(
     worker.postMessage({ id, gridId, grid: sendGrid ? grid : null, thresholds });
   });
 }
+
+// ============== The set an export writes ==============
+
+/// Trace the line set an export should contain: the stepped contours the user
+/// is looking at, plus every custom line whose export flag is on, each carrying
+/// its own name.
+///
+/// The subtlety this exists to own is the overlap. A custom line sitting exactly
+/// on a display step is ONE contour, and writing it twice — once anonymous, once
+/// named — makes a GIS consumer count it twice, dissolve it wrong, or draw it
+/// double-weight. `steppedTracesFrom` is told which levels the named lines have
+/// already claimed so that cannot happen.
+///
+/// One owner because there are now two exports (the single-grid contour export
+/// and the wind sweep) that must produce identical geometry for identical
+/// inputs — a sweep whose 8 m/s layer disagrees with the on-screen export at
+/// 8 m/s would be indefensible.
+export async function traceForExport(
+  grid: GridResult,
+  thresholds: readonly number[],
+  custom: readonly CustomContourLine[] | undefined,
+): Promise<ContourLineSet[]> {
+  const wanted = (custom ?? []).filter((c) => c.export && Number.isFinite(c.levelDb));
+  const levels = [...thresholds];
+  const traced = await buildContourLinesAsync(grid, unionContourLevels(levels, wanted));
+  const named = customTracesFrom(traced, wanted).map((c) => c.set);
+  return [
+    ...steppedTracesFrom(traced, levels, named.map((s) => s.threshold)),
+    ...named,
+  ];
+}

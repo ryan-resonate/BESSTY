@@ -34,7 +34,7 @@ import {
   type TonalityResult,
 } from './tonality';
 import { lookupEntry, resolveContainer, sourceHeightFor, spectrumFor } from './catalog';
-import { PERIODS, modeForPeriod, sourceIsOff, sourceModeName } from './modes';
+import { groupPeriodsBySolve, sourceIsOff, sourceModeName } from './modes';
 import { type DemRaster, type DemRegion, captureDemRegion } from './dem';
 import {
   propagationSettings,
@@ -576,19 +576,10 @@ export async function evaluateAllPeriods(
   dem: DemRaster | null,
   channel: SolveChannel = 'live',
 ): Promise<PeriodResults> {
-  const byMode = new Map<string, Period[]>();
-  for (const period of PERIODS) {
-    // The catalog default is per model, so it cannot differ between periods —
-    // the stored override is the whole of what varies, and is enough to tell
-    // two periods' scenes apart.
-    const key = JSON.stringify(
-      project.sources.map((s) => modeForPeriod(s.modeOverride, period) ?? null),
-    );
-    byMode.set(key, [...(byMode.get(key) ?? []), period]);
-  }
-
   const out = {} as PeriodResults;
-  for (const periods of byMode.values()) {
+  // Which periods may share a solve is one rule, owned by `modes.ts`, because
+  // the wind sweep asks the same question and must answer it identically.
+  for (const periods of groupPeriodsBySolve(project)) {
     const solved = await evaluateProject(
       { ...project, scenario: { ...project.scenario, period: periods[0] } },
       dem,

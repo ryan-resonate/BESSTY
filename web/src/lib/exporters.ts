@@ -7,6 +7,9 @@
 //   3. Per-band spectra at each receiver        — CSV / XLSX (10 octave or 31 third-oct)
 //   4. Contour lines    — KML  + Esri Shapefile (polylines, one feature per dB threshold)
 //   5. Grid raster      — GeoTIFF (Float32, lat/lng, single band Lp dB(A))
+//   6. Curtailment schedule — XLSX (turbine × wind speed, one sheet per period)
+//   7. Wind-speed sweep — XLSX (receivers) + SHP / KML / GeoTIFF zip (grids),
+//      every feature tagged with the wind speed and period that produced it
 //
 // Design notes:
 //   - XLSX uses SheetJS which is already a dep (catalog import).
@@ -29,6 +32,8 @@ import { describeWindFrom } from './directivity';
 import type { CurtailmentResult } from './curtailment';
 import type { GridResult, PeriodResults, ReceiverResult } from './solver';
 import type { ContourLineSet } from './contourLines';
+import type { SweepContourLayer, SweepReceiverRow, SweepResult } from './windSweep';
+import { sweepPeriods, sweepReceiverRows, sweepSpeeds } from './windSweep';
 
 // ---------- Trigger download from a Blob ----------
 
@@ -556,6 +561,12 @@ export function exportSourcesShp(project: Project): Blob {
 /// Spec ref: TIFF 6.0 + GeoTIFF 1.0 (https://docs.ogc.org/is/19-008r4/19-008r4.html).
 /// Verified to open in QGIS / ArcGIS / gdalinfo.
 export function exportGridGeoTiff(grid: GridResult): Blob {
+  return new Blob([gridGeoTiffBytes(grid)], { type: 'image/tiff' });
+}
+
+/// The GeoTIFF as raw bytes, so the wind sweep can pack N of them into one zip
+/// without round-tripping each through a Blob.
+function gridGeoTiffBytes(grid: GridResult): ArrayBuffer {
   const { cols, rows, bounds, dbA } = grid;
   const pixelCount = cols * rows;
 
@@ -708,7 +719,7 @@ export function exportGridGeoTiff(grid: GridResult): Blob {
     new Uint8Array(out, tagDataOffsets[i], tagDataBuf[i].length).set(tagDataBuf[i]);
   }
 
-  return new Blob([out], { type: 'image/tiff' });
+  return out;
 }
 
 // ---------- CSV helper ----------
@@ -843,4 +854,232 @@ export function exportCurtailmentXlsx(
 
   const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer;
   return new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+
+// ---------- 7. Wind-speed sweep ----------
+
+/// Per period: three stacked blocks of receiver rows × wind-speed columns —
+/// level, limit, margin — then a summary block naming each receiver's worst wind
+/// speed and where it fails.
+///
+/// Stacked blocks rather than the colour-coded single table the plan sketched,
+/// because SheetJS's community build writes no cell styling: a "conditional
+/// format" here would have to be a formula whose inputs the reader cannot see.
+/// Three explicit blocks say the same thing in numbers that can be checked, and
+/// they solve a problem colour could not — with limit tables in use the LIMIT
+/// varies along the row too, and a single table has nowhere to show it.
+export function exportWindSweepXlsx(project: Project, sweep: SweepResult): Blob {
+  const wb = XLSX.utils.book_new();
+  const speeds = sweepSpeeds(sweep, 'receivers');
+  const periods = sweepPeriods(sweep, 'receivers');
+  const wLabel = weightingLabel(weightingFor(project));
+
+  for (const period of periods) {
+    const rows = sweepReceiverRows(project, sweep, period);
+    const aoa: Array<Array<string | number>> = [];
+    const header = (title: string) => {
+      aoa.push([title, ...speeds.map((w) => `${w} m/s`)]);
+    };
+    const num = (v: number | null | undefined, dp = 1) => (v == null ? '' : Number(v.toFixed(dp)));
+
+    aoa.push([`${PERIOD_LABEL[period]} — ${wLabel}`]);
+    aoa.push([]);
+    header(`Level at receiver (${wLabel})`);
+    for (const r of rows) aoa.push([r.name, ...r.cells.map((c) => num(c.levelDb))]);
+    aoa.push([]);
+
+    header('Limit');
+    for (const r of rows) aoa.push([r.name, ...r.cells.map((c) => num(c.limitDb))]);
+    aoa.push([]);
+
+    header('Margin (limit − level; negative is over)');
+    for (const r of rows) aoa.push([r.name, ...r.cells.map((c) => num(c.marginDb))]);
+    aoa.push([]);
+
+    aoa.push([
+      'Receiver', 'Latitude', 'Longitude', 'Height (m)',
+      'Worst wind speed (m/s)', 'Level there', 'Limit there', 'Margin there',
+      'Verdict', 'Fails at (m/s)', 'Limit read from',
+    ]);
+    for (const r of rows) {
+      aoa.push([
+        r.name, r.lat, r.lng, r.heightAboveGroundM,
+        r.worst?.windSpeed ?? '', num(r.worst?.levelDb), num(r.worst?.limitDb),
+        num(r.worst?.marginDb),
+        // The verdict is over the WHOLE sweep: complying at the wind speed that
+        // happens to be on screen says nothing about the one next to it, and a
+        // sweep exists precisely because those differ.
+        r.cells.length === 0 ? '—' : r.failsAt.length > 0 ? 'fail' : 'pass',
+        r.failsAt.join(', '),
+        limitBasis(r),
+      ]);
+    }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), PERIOD_LABEL[period]);
+  }
+
+  const info: Array<Array<string | number>> = [
+    ['Project', project.name],
+    ['Generated', new Date().toISOString()],
+    ['What this is', 'One full solve per wind speed — not an extrapolation from a single run'],
+    ['Wind speeds (m/s)', speeds.join(', ')],
+    ['Periods', periods.map((p) => PERIOD_LABEL[p]).join(', ')],
+    ['Solves run', sweep.states.length],
+    ['Elapsed (s)', Number((sweep.elapsedMs / 1000).toFixed(1))],
+    ['Receivers solved', sweep.config.receivers ? 'yes' : 'no'],
+    ['Contour grids solved', sweep.config.grids ? 'yes' : 'no'],
+    ...(sweep.gridSpacingM != null ? [['Grid spacing (m)', sweep.gridSpacingM]] : []),
+    ...(sweep.receiverHeightM != null ? [['Receiver height (m)', sweep.receiverHeightM]] : []),
+    ['Assessment weighting', wLabel],
+    ['Limit comparison', limitComparisonFor(project)],
+    ['Wind-speed limits', windSpeedLimitsEnabled(project)
+      ? 'on — the limit is read per wind speed from each receiver’s table'
+      : 'off — one scalar limit per period, the same at every wind speed'],
+    ['Levels are', 'assessed levels: the solved level plus any tonality penalty, i.e. the '
+      + 'number each pass/fail verdict is made on'],
+    ['Wind direction', 'not modelled — every receiver is treated as downwind of every source, '
+      + 'as ISO 9613-2 does'],
+    ['Band system', project.scenario.bandSystem],
+    ['DOmega (dB)', projectDOmegaDb(project)],
+    ['Standard', `ISO 9613-2:${project.settings?.standard ?? '2024'}`],
+  ];
+  if (sweep.warnings.length > 0) {
+    info.push([], ['Notes']);
+    for (const w of sweep.warnings) info.push([w]);
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(info), 'Settings');
+
+  const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer;
+  return new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+
+/// Where a receiver's limits came from across the sweep. `'clamped'` is the one
+/// worth naming: it means a wind speed fell off the end of that receiver's table
+/// and the nearest entered column was used — a reading the author of the table
+/// never explicitly made.
+function limitBasis(row: SweepReceiverRow): string {
+  const kinds = new Set(row.cells.map((c) => c.limitSource));
+  if (kinds.size === 0) return '';
+  if (kinds.has('clamped')) {
+    const off = row.cells.filter((c) => c.limitSource === 'clamped').map((c) => c.windSpeed);
+    return `table (nearest column used at ${off.join(', ')} m/s)`;
+  }
+  return kinds.has('table') ? 'table' : 'scalar per-period limit';
+}
+
+/// Every swept contour in ONE zipped shapefile, each feature carrying the wind
+/// speed and period that produced it.
+///
+/// One bundle rather than one per state on purpose: the consultant wants to open
+/// the sweep, filter to `WS_MS = 10 AND PERIOD = 'night'`, and style it. Forty
+/// separate shapefiles hold the same data arranged so that comparing them is
+/// manual work.
+export function exportWindSweepContoursShp(
+  _project: Project,
+  layers: readonly SweepContourLayer[],
+): Blob {
+  const fields = [
+    { name: 'WS_MS', type: 'N' as const, width: 6, decimals: 1 },
+    { name: 'PERIOD', type: 'C' as const, width: 8 },
+    // Neutral name: the value follows the project's assessment weighting, and a
+    // DBF field called THRESH_DBA holding dB(C) is a trap for whoever opens it
+    // in GIS six months later.
+    { name: 'THRESH_DB', type: 'N' as const, width: 8, decimals: 2 },
+    { name: 'LABEL', type: 'C' as const, width: 40 },
+  ];
+  const features: { coords: Array<[number, number]>; properties: Record<string, number | string> }[] = [];
+  for (const layer of layers) {
+    for (const set of layer.sets) {
+      for (const seg of set.lines) {
+        features.push({
+          // Shapefile coords are (lng, lat) — same as GeoJSON Position.
+          coords: seg.map(([lat, lng]) => [lng, lat] as [number, number]),
+          properties: {
+            WS_MS: layer.windSpeed,
+            PERIOD: layer.period,
+            THRESH_DB: set.threshold,
+            LABEL: set.label ?? '',
+          },
+        });
+      }
+    }
+  }
+  // An empty bundle is still a valid bundle — the user gets a file that says
+  // "no contour crossed a display level" rather than a crash.
+  const bundle = buildPolylineShapefile(features, fields);
+  return buildZip([
+    { name: 'wind_sweep_contours.shp', bytes: new Uint8Array(bundle.shp) },
+    { name: 'wind_sweep_contours.shx', bytes: new Uint8Array(bundle.shx) },
+    { name: 'wind_sweep_contours.dbf', bytes: new Uint8Array(bundle.dbf) },
+    { name: 'wind_sweep_contours.prj', bytes: new TextEncoder().encode(bundle.prj) },
+  ]);
+}
+
+/// The KML sibling: one Folder per (period, wind speed), so Google Earth's tree
+/// gives the layer switching that the shapefile gets from an attribute filter.
+/// Every folder after the first is hidden — forty contour sets drawn on top of
+/// one another is not a map.
+export function exportWindSweepContoursKml(
+  project: Project,
+  layers: readonly SweepContourLayer[],
+): Blob {
+  const folders: string[] = [];
+  layers.forEach((layer, i) => {
+    const placemarks: string[] = [];
+    for (const set of layer.sets) {
+      for (let segIdx = 0; segIdx < set.lines.length; segIdx++) {
+        const coords = set.lines[segIdx].map(([lat, lng]) => `${lng},${lat},0`).join(' ');
+        const title = set.label
+          ? `${set.label} (${set.threshold} dB)`
+          : `${set.threshold} ${weightingLabel(weightingFor(project))}`;
+        placemarks.push(
+          `<Placemark><name>${kmlEscape(`${title} — line ${segIdx + 1}`)}</name>`
+          + '<ExtendedData>'
+          + `<Data name="wind_speed_ms"><value>${layer.windSpeed}</value></Data>`
+          + `<Data name="period"><value>${layer.period}</value></Data>`
+          + `<Data name="threshold_db"><value>${set.threshold}</value></Data>`
+          + (set.label ? `<Data name="label"><value>${kmlEscape(set.label)}</value></Data>` : '')
+          + '</ExtendedData>'
+          + `<LineString><coordinates>${coords}</coordinates></LineString></Placemark>`,
+        );
+      }
+    }
+    folders.push(
+      `<Folder><name>${kmlEscape(`${PERIOD_LABEL[layer.period]} — ${layer.windSpeed} m/s`)}</name>`
+      + `<open>0</open><visibility>${i === 0 ? 1 : 0}</visibility>`
+      + placemarks.join('')
+      + '</Folder>',
+    );
+  });
+  const xml =
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    + '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
+    + `<name>${kmlEscape(project.name)} — wind-speed sweep</name>`
+    + folders.join('')
+    + '</Document></kml>';
+  return new Blob([xml], { type: 'application/vnd.google-earth.kml+xml' });
+}
+
+function kmlEscape(s: string): string {
+  return s.replace(/[<>&'"]/g, (c) => ({
+    '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;',
+  }[c]!));
+}
+
+/// One GeoTIFF per solved state, zipped: `grid_ws08_night.tif`.
+///
+/// The wind speed is zero-padded so the files sort in wind-speed order in every
+/// file manager and in the zip's own listing — `ws10` before `ws8` is exactly
+/// the small wrongness that makes a reader doubt the rest of the export.
+///
+/// Periods that shared a solve share a raster, so their files are byte-identical.
+/// They are still written separately: the user asked for those periods, and a
+/// missing file reads as a failed solve rather than as "these two are the same".
+export function exportWindSweepGeoTiffZip(sweep: SweepResult): Blob {
+  const entries = sweep.states
+    .filter((s) => s.grid != null)
+    .map((s) => ({
+      name: `grid_ws${String(s.windSpeed).padStart(2, '0')}_${s.period}.tif`,
+      bytes: new Uint8Array(gridGeoTiffBytes(s.grid!)),
+    }));
+  return buildZip(entries);
 }

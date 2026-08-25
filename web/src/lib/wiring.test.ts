@@ -318,6 +318,62 @@ test('no source but a wind turbine is given a directivity correction', () => {
   );
 });
 
+test('both contour EXPORTS trace through one function, so they cannot drift apart', () => {
+  // There are two paths that write contour lines to a file: the side panel's
+  // KML / shapefile buttons, and the wind sweep. They must produce identical
+  // geometry for identical inputs — a sweep whose 8 m/s layer disagrees with an
+  // on-screen export at 8 m/s is indefensible in a report — and the subtle half
+  // of that is the overlap rule: a custom line sitting exactly on a display step
+  // is ONE contour, and writing it both as a stepped set and as a named one
+  // makes a GIS consumer count it twice.
+  //
+  // `traceForExport` owns that. The map and the PDF legitimately keep the
+  // stepped and named sets APART (they style them differently), so this rule is
+  // scoped to the two file exporters rather than banning the primitives outright.
+  const exportPaths = ['SidePanel.tsx', 'windSweep.ts'];
+  for (const name of exportPaths) {
+    const file = FILES.find((f) => f.path.endsWith(name));
+    assert.ok(file, `${name} not found`);
+    const code = file!.text.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.match(
+      code, /\btraceForExport\s*\(/,
+      `${name} writes contours to a file but does not go through traceForExport`,
+    );
+    for (const primitive of ['steppedTracesFrom', 'customTracesFrom', 'unionContourLevels']) {
+      assert.ok(
+        !new RegExp(`\\b${primitive}\\s*\\(`).test(code),
+        `${name} assembles its own export line set (${primitive}); use traceForExport `
+        + 'so both exports apply the same stepped/named overlap rule',
+      );
+    }
+  }
+});
+
+test('a study never mutates the project it was handed', () => {
+  // The studies (curtailment, wind sweep, factorial) re-solve the project under
+  // conditions the user is NOT looking at — a different wind speed, a different
+  // period, a pinned set of modes. The map, the badges and the autosave are all
+  // reading the live object, so writing to it would silently redefine what is
+  // on screen, and the autosave would then persist it.
+  //
+  // Assignment to a nested scenario field is the specific shape that does this
+  // without tripping any type check.
+  const offenders: string[] = [];
+  for (const { path, text } of FILES) {
+    const code = text.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const m of code.matchAll(/\.scenario\.\w+\s*=(?!=)/g)) {
+      const line = code.slice(0, m.index).split('\n').length;
+      offenders.push(`${path.replace(SRC, 'src')}:${line}`);
+    }
+  }
+  assert.deepEqual(
+    offenders, [],
+    'these assign into a project\'s scenario in place; build a copy '
+    + '({ ...project, scenario: { ...project.scenario, ... } }) instead:\n  '
+    + offenders.join('\n  '),
+  );
+});
+
 test('Escape is handled only through the shared stack', () => {
   // Multiple window-level Escape listeners are siblings: stopPropagation does
   // not separate them, so one keypress fires every overlay's handler at once.
