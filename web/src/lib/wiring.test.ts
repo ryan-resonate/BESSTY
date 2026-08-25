@@ -349,6 +349,42 @@ test('both contour EXPORTS trace through one function, so they cannot drift apar
   }
 });
 
+test('the grid cache key is stamped only where a grid is actually stored', () => {
+  // `gridKeyRef` lets the automatic regrid skip re-solving a grid whose inputs
+  // have not changed — which is what stops the end of a wind sweep triggering a
+  // pointless full regrid. The failure direction is asymmetric and nasty: a key
+  // stamped for a grid that never arrived makes the map SKIP a regrid it owed,
+  // leaving contours that do not match the project, labelled ready, and
+  // exportable.
+  //
+  // That is exactly what happened when it was stamped before the solve: a sweep
+  // starting mid-regrid terminates the pool (newest wins), the regrid's catch
+  // keeps the stale grid, and the catch-up afterwards saw a matching key.
+  //
+  // So: every write of the key must be immediately followed by storing a grid.
+  // A reset to null is always safe (it can only cause an extra solve).
+  const screen = FILES.find((f) => f.path.endsWith('ProjectScreen.tsx'));
+  assert.ok(screen, 'ProjectScreen not found');
+  const code = screen!.text.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  // `=(?!=)` so the guard's `gridKeyRef.current === key` is not read as a write.
+  const writes = [...code.matchAll(/gridKeyRef\.current\s*=(?!=)\s*([^;]+);/g)];
+  assert.ok(writes.length > 0, 'no gridKeyRef writes found — has it been renamed?');
+  const offenders: string[] = [];
+  for (const m of writes) {
+    if (/^\s*null\s*$/.test(m[1])) continue;                 // clearing is safe
+    const after = code.slice(m.index! + m[0].length, m.index! + m[0].length + 120);
+    if (!/^\s*setGrid\s*\(/.test(after)) {
+      offenders.push(`line ${code.slice(0, m.index).split('\n').length}: ${m[0].trim()}`);
+    }
+  }
+  assert.deepEqual(
+    offenders, [],
+    'these stamp the grid key somewhere other than immediately before setGrid(), so a '
+    + 'grid that never arrives can mark its inputs as current and suppress the regrid '
+    + 'that owes them:\n  ' + offenders.join('\n  '),
+  );
+});
+
 test('a study never mutates the project it was handed', () => {
   // The studies (curtailment, wind sweep, factorial) re-solve the project under
   // conditions the user is NOT looking at — a different wind speed, a different

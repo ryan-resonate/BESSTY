@@ -35,7 +35,7 @@ import { traceForExport } from './contourLines';
 import { GRID_CANCELLED, evaluateGridViaWorker, evaluateProject } from './solver';
 import { groupPeriodsBySolve } from './modes';
 import { assessedLevel, exceedsLimit, limitComparisonFor, resolveLimit } from './limits';
-import { windSpeedLimitsEnabled } from './limitTable';
+import { isUsableTable, windSpeedLimitsEnabled } from './limitTable';
 
 /// What to run. At least one of `receivers` / `grids` must be set, or there is
 /// nothing to solve.
@@ -98,6 +98,10 @@ export interface SweepDeps {
     dem: DemRaster | null,
     onTile?: (done: number, total: number) => void,
   ): Promise<GridResult>;
+  /// The wind speeds a source's catalog entry actually holds spectra for, or
+  /// null when there is no entry. Supplied so the run can say when a swept
+  /// speed lies outside them; omit it and that check is simply not made.
+  windSpeedsFor?(source: Project['sources'][number]): number[] | null;
 }
 
 /// The real solves. `spacingM` and `receiverHeightM` come from the screen, so a
@@ -107,6 +111,10 @@ export interface SweepDeps {
 export function liveSweepDeps(
   spacingM: number,
   receiverHeightM: number,
+  /// The catalog lookup, injected for the same reason `defaultSweepSpeeds` takes
+  /// one: this module stays out of the Firebase-backed catalog. Omit it and the
+  /// coverage warning is not raised.
+  windSpeedsFor?: SweepDeps['windSpeedsFor'],
   channel: SolveChannel = 'study',
 ): SweepDeps {
   return {
@@ -114,6 +122,7 @@ export function liveSweepDeps(
       evaluateProject(project, dem, new Diagnostics(), channel),
     solveGrid: (project, dem, onTile) =>
       evaluateGridViaWorker(project, dem, spacingM, receiverHeightM, onTile),
+    windSpeedsFor,
   };
 }
 
@@ -124,7 +133,12 @@ export function normaliseSpeeds(raw: readonly number[]): number[] {
   const seen = new Set<number>();
   for (const v of raw) {
     if (!Number.isFinite(v)) continue;
-    seen.add(Math.round(v));
+    const w = Math.round(v);
+    // Non-positive speeds are dropped, not swept. A typed "-3" would otherwise
+    // solve at the lowest spectrum the catalog has and write an honestly
+    // labelled `grid_ws-3_night.tif` describing a wind that does not exist.
+    if (w <= 0) continue;
+    seen.add(w);
   }
   return [...seen].sort((a, b) => a - b);
 }
@@ -187,9 +201,51 @@ export function sweepSolveCount(project: Project, config: SweepConfig): number {
 function windDependence(project: Project): { sources: boolean; limits: boolean } {
   return {
     sources: project.sources.some((s) => s.kind === 'wtg'),
+    // `isUsableTable`, not "has some wind speeds" — that is the same test
+    // `resolveLimit` applies before it will read a table at all. A ragged or
+    // half-filled table (a hand-edited document, a partial import) has wind
+    // speeds but is silently ignored in favour of the scalar limit, so counting
+    // it as wind-dependent suppressed the warning written for precisely that
+    // case, and on a turbine-less project actively claimed the limit was what
+    // varied across the sweep when nothing did.
     limits: windSpeedLimitsEnabled(project)
-      && project.receivers.some((r) => (r.limitTable?.windSpeeds?.length ?? 0) > 0),
+      && project.receivers.some((r) => isUsableTable(r.limitTable)),
   };
+}
+
+/// Swept speeds that lie outside a turbine's catalog data.
+///
+/// The symmetrical disclosure to the limit-table clamp. `pickWindSpeed` holds
+/// the end spectrum flat past either end of the data, so sweeping 14 m/s on a
+/// catalog covering 6–12 reports a level computed from the 12 m/s sound power —
+/// and sweeping 3 m/s reports the 6 m/s spectrum for a turbine that is not
+/// turning. Both come back as ordinary-looking columns.
+///
+/// The default speed list is already the intersection of what every turbine
+/// covers, precisely so this cannot happen by accident; but the speeds box is
+/// free text, and editing it reopened the hole in silence. Saying so costs one
+/// line in the notes and is the difference between an extrapolation and a
+/// hidden one.
+function coverageWarnings(
+  project: Project,
+  windSpeeds: readonly number[],
+  windSpeedsFor: SweepDeps['windSpeedsFor'],
+): string[] {
+  if (!windSpeedsFor) return [];
+  const out: string[] = [];
+  for (const s of project.sources) {
+    if (s.kind !== 'wtg') continue;
+    const covered = normaliseSpeeds(windSpeedsFor(s) ?? []);
+    if (covered.length === 0) continue;
+    const outside = windSpeeds.filter((w) => w < covered[0] || w > covered[covered.length - 1]);
+    if (outside.length === 0) continue;
+    out.push(
+      `${s.name}: ${outside.join(', ')} m/s ${outside.length === 1 ? 'is' : 'are'} outside its `
+      + `catalog data (${covered[0]}–${covered[covered.length - 1]} m/s). The nearest wind `
+      + 'speed’s spectrum was used, so those columns are an extrapolation.',
+    );
+  }
+  return out;
 }
 
 /// Run the sweep.
@@ -255,6 +311,11 @@ export async function runWindSweep(
 
       let grid: GridResult | null = null;
       if (config.grids) {
+        // Polled HERE, not only at the top of the loop. A cancel raised while
+        // the receivers were solving would otherwise go unseen until the next
+        // iteration — after this grid had run to completion, which on a large
+        // site is minutes of exactly the wait the user asked to end.
+        stop();
         report(`${stem} · contour grid`);
         grid = await guard(
           () => deps.solveGrid(scoped, dem, (d, t) => report(`${stem} · contour grid`, { done: d, total: t })),
@@ -262,6 +323,7 @@ export async function runWindSweep(
         );
         done++;
       }
+      stop();
 
       for (const period of group) states.push({ period, windSpeed, receivers, grid });
       report(`${stem} · done`);
@@ -290,6 +352,7 @@ export async function runWindSweep(
       + 'receiver was judged against its scalar per-period limit at every wind speed.',
     );
   }
+  warnings.push(...coverageWarnings(project, windSpeeds, deps.windSpeedsFor));
 
   // Order the states as the exports read them: wind speed ascending, then
   // period in the canonical order, rather than in solve-group order.

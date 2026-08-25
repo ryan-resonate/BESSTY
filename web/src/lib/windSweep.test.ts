@@ -351,3 +351,75 @@ test('turbines present and no warning about identical columns', async () => {
   const out = await runWindSweep(proj(), null, cfg(), deps);
   assert.ok(!out.warnings.some((w) => /varies with wind speed/.test(w)));
 });
+
+// ---------------------------------------------------- review-driven guards
+
+test('a non-positive wind speed is dropped, not swept', () => {
+  // A typed "-3" would otherwise solve at the lowest spectrum the catalog has
+  // and write an honestly-named grid_ws-3_night.tif describing a wind that does
+  // not exist.
+  assert.deepEqual(normaliseSpeeds([-3, 0, 8, 10]), [8, 10]);
+  assert.deepEqual(normaliseSpeeds([-1, -0.4]), []);
+});
+
+test('a swept speed outside a turbine’s catalog data is disclosed as an extrapolation', async () => {
+  // The symmetrical warning to the limit-table clamp. Spectra hold flat past
+  // either end of their data, so 16 m/s on a 6–12 catalog returns the 12 m/s
+  // sound power dressed as a 16 m/s level.
+  const { deps } = recordingDeps(() => 35);
+  const out = await runWindSweep(
+    proj(), null, cfg({ windSpeeds: [4, 8, 16] }),
+    { ...deps, windSpeedsFor: () => [6, 8, 10, 12] },
+  );
+  const note = out.warnings.find((w) => w.includes('outside its catalog data'));
+  assert.ok(note, out.warnings.join(' | '));
+  assert.match(note!, /4, 16 m\/s/);
+  assert.match(note!, /6–12 m\/s/);
+});
+
+test('speeds inside the catalog raise no extrapolation note', async () => {
+  const { deps } = recordingDeps(() => 35);
+  const out = await runWindSweep(
+    proj(), null, cfg({ windSpeeds: [8, 10] }),
+    { ...deps, windSpeedsFor: () => [6, 8, 10, 12] },
+  );
+  assert.ok(!out.warnings.some((w) => w.includes('outside its catalog data')));
+});
+
+test('a ragged limit table is not counted as wind-dependent', async () => {
+  // `resolveLimit` ignores an unusable table and falls back to the scalar
+  // limit, so counting one as "the limit varies" suppressed the warning
+  // written for exactly that case.
+  const ragged = { windSpeeds: [6, 8, 10], limits: { night: [38, 39] } } as unknown as LimitTable;
+  const p = proj({
+    receivers: [rx('R1', { limitTable: ragged })],
+    settings: { compliance: { windSpeedLimits: true } } as Project['settings'],
+  });
+  const { deps } = recordingDeps(() => 35);
+  const out = await runWindSweep(p, null, cfg(), deps);
+  assert.ok(
+    out.warnings.some((w) => /no receiver has a usable limit table/.test(w)),
+    out.warnings.join(' | '),
+  );
+});
+
+test('cancelling between the receivers and the grid does not still run the grid', async () => {
+  // The flag used to be polled once per (speed, period) iteration, so a cancel
+  // during a receiver solve went unseen until after the following grid — which
+  // on a real site is minutes of exactly the wait being cancelled.
+  let receiverSolves = 0;
+  let gridSolves = 0;
+  const deps: SweepDeps = {
+    async solveReceivers() { receiverSolves++; return []; },
+    async solveGrid() { gridSolves++; return grid; },
+  };
+  await assert.rejects(
+    () => runWindSweep(
+      proj(), null, cfg({ windSpeeds: [8, 10], grids: true }), deps, undefined,
+      () => receiverSolves >= 1,
+    ),
+    (e: Error) => e.message === SWEEP_CANCELLED,
+  );
+  assert.equal(receiverSolves, 1);
+  assert.equal(gridSolves, 0, 'the grid after the cancelled receiver solve must not run');
+});

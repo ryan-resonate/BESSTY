@@ -15,6 +15,7 @@ import {
   exportWindSweepContoursShp,
   exportWindSweepGeoTiffZip,
   exportWindSweepXlsx,
+  exportGridGeoTiff,
 } from './exporters';
 import type { SweepContourLayer, SweepResult } from './windSweep';
 import type { GridResult, ReceiverResult } from './solver';
@@ -266,4 +267,110 @@ test('a receivers-only sweep still exports, and produces an empty raster zip rat
   const kv = new Map(rows.map((r) => [String(r[0]), String(r[1] ?? '')]));
   assert.equal(kv.get('Contour grids solved'), 'no');
   assert.ok(!kv.has('Grid spacing (m)'));
+});
+
+// ------------------------------------------------- review-driven guards
+
+/// Decode a DBF's records into plain objects. The sweep's whole grid export
+/// rests on every feature carrying the state that produced it, and asserting
+/// that field NAMES appear in the zip cannot tell a correct file from one where
+/// every record repeated the first feature's values — which is precisely the
+/// bug the hand-rolled shapefile writer exists to have fixed.
+function decodeDbf(bytes: Uint8Array): Array<Record<string, string>> {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const nRecords = dv.getUint32(4, true);
+  const headerLen = dv.getUint16(8, true);
+  const recordLen = dv.getUint16(10, true);
+  const fields: Array<{ name: string; len: number }> = [];
+  for (let off = 32; off < headerLen - 1; off += 32) {
+    if (bytes[off] === 0x0d) break;
+    const raw = new TextDecoder('latin1').decode(bytes.subarray(off, off + 11));
+    fields.push({ name: raw.replace(/\0.*$/, ''), len: bytes[off + 16] });
+  }
+  const out: Array<Record<string, string>> = [];
+  for (let i = 0; i < nRecords; i++) {
+    let p = headerLen + i * recordLen + 1;      // +1 skips the deletion flag
+    const rec: Record<string, string> = {};
+    for (const f of fields) {
+      rec[f.name] = new TextDecoder('latin1').decode(bytes.subarray(p, p + f.len)).trim();
+      p += f.len;
+    }
+    out.push(rec);
+  }
+  return out;
+}
+
+/// Pull one entry's bytes out of a store-mode zip by name.
+function zipEntry(bytes: Uint8Array, name: string): Uint8Array | null {
+  const text = new TextDecoder('latin1').decode(bytes);
+  const at = text.indexOf(name);
+  if (at < 0) return null;
+  // Local file header: sig(4) ver(2) flag(2) method(2) time(4) crc(4)
+  // compSize(4) uncompSize(4) nameLen(2) extraLen(2) = 30 bytes, then the name.
+  const lfh = at - 30;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (dv.getUint32(lfh, true) !== 0x04034b50) return null;
+  const size = dv.getUint32(lfh + 18, true);
+  const nameLen = dv.getUint16(lfh + 26, true);
+  const extraLen = dv.getUint16(lfh + 28, true);
+  const start = lfh + 30 + nameLen + extraLen;
+  return bytes.subarray(start, start + size);
+}
+
+test('each contour feature carries ITS OWN wind speed and period, record by record', async () => {
+  const zip = new Uint8Array(
+    await exportWindSweepContoursShp(project(), layers).arrayBuffer(),
+  );
+  const dbf = zipEntry(zip, 'wind_sweep_contours.dbf');
+  assert.ok(dbf, 'no .dbf in the bundle');
+  const records = decodeDbf(dbf!);
+  // layers = [8 m/s × 1 set] then [12 m/s × 2 sets] — three features in order.
+  assert.equal(records.length, 3);
+  assert.deepEqual(records.map((r) => r.WS_MS), ['8.0', '12.0', '12.0']);
+  assert.deepEqual(records.map((r) => r.PERIOD), ['night', 'night', 'night']);
+  assert.deepEqual(records.map((r) => r.THRESH_DB), ['35.00', '35.00', '37.50']);
+  assert.deepEqual(records.map((r) => r.LABEL), ['', '', 'Night limit']);
+});
+
+test('each swept raster holds its own grid, not a copy of the first', async () => {
+  const s = sweep({ speeds: [8, 10], periods: ['night'], grids: true, receivers: false });
+  const zip = new Uint8Array(await exportWindSweepGeoTiffZip(s).arrayBuffer());
+  const a = zipEntry(zip, 'grid_ws08_night.tif');
+  const b = zipEntry(zip, 'grid_ws10_night.tif');
+  assert.ok(a && b);
+  // `gridAt(ws)` seeds each raster from its own wind speed, so identical bytes
+  // would mean one state's grid was written under both names.
+  assert.notDeepEqual(Array.from(a!), Array.from(b!));
+  // …and each is byte-identical to the standalone writer for the same grid.
+  const solo = new Uint8Array(await exportGridGeoTiff(gridAt(8)).arrayBuffer());
+  assert.deepEqual(Array.from(a!), Array.from(solo));
+});
+
+test('a receiver that never solved is not reported as compliant', async () => {
+  // `exceedsLimit` answers false for a null level — absence is not exceedance —
+  // so an unsolved receiver has no failures and used to read "pass" with every
+  // other cell in its row blank. That is a compliance claim made on no data.
+  const p = project({ receivers: [rx('R1'), rx('R2')] });
+  const s = sweep();
+  for (const st of s.states) {
+    st.receivers = st.receivers!.filter((r) => r.receiverId === 'R1');
+  }
+  const rows = await sheet(exportWindSweepXlsx(p, s), 'Night');
+  const head = rows.findIndex((r) => r[0] === 'Receiver');
+  const cols = rows[head] as string[];
+  const byName = new Map(rows.slice(head + 1).map((r) => [r[0], r]));
+  assert.equal(byName.get('R2')![cols.indexOf('Verdict')], '—');
+  assert.equal(byName.get('R2')![cols.indexOf('Worst wind speed (m/s)')], '');
+  // The solved one is unaffected.
+  assert.equal(byName.get('R1')![cols.indexOf('Verdict')], 'fail');
+});
+
+test('a margin that decided a verdict is not rounded away', async () => {
+  // At one decimal, 40.04 against a 40 dB limit printed level 40, limit 40,
+  // margin 0 — and "fail". A row that contradicts its own caption.
+  const p = project({ receivers: [rx('R1', { limitNightDbA: 40 })] });
+  const s = sweep({ speeds: [10] });
+  s.states[0].receivers = [result('R1', 40.04)];
+  const rows = await sheet(exportWindSweepXlsx(p, s), 'Night');
+  assert.deepEqual(blockAt(rows, 'Margin')[0], ['R1', -0.04]);
 });

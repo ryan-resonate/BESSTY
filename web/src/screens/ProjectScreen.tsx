@@ -1178,7 +1178,6 @@ export function ProjectScreen() {
     const key = `${gridStructuralKey}|${sourcePosKey}`;
     if (gridKeyRef.current === key) return;
     const handle = setTimeout(() => {
-      gridKeyRef.current = key;
       const gen = ++gridGenRef.current;
       const height = project.settings?.general.defaultReceiverHeight ?? 1.5;
       setGridStatus('computing');
@@ -1188,6 +1187,14 @@ export function ProjectScreen() {
       })
         .then((g) => {
           if (gen !== gridGenRef.current) return;        // superseded
+          // Stamped ONLY here, where a grid actually landed. Stamping it before
+          // the solve meant a grid that never finished still marked its inputs
+          // as current: a wind sweep starting mid-regrid terminates the pool
+          // (newest wins), the catch below keeps the stale grid on screen as
+          // 'ready', and the catch-up after the sweep then saw a matching key
+          // and skipped. The edit that triggered the regrid was silently never
+          // drawn, and the contour export would have written the stale grid.
+          gridKeyRef.current = key;
           setGrid(g);
           setGridStatus('ready');
           setGridProgress(null);
@@ -1208,9 +1215,10 @@ export function ProjectScreen() {
     if (!project) return;
     setGridStatus('computing');
     setGridProgress(null);
-    // Record what this grid is being computed FROM, so the automatic regrid
-    // above can tell "nothing has moved" from "I have never run".
-    gridKeyRef.current = `${gridStructuralKey}|${sourcePosKey}`;
+    // What this grid is being computed FROM, stamped on the ref only once it
+    // lands — see the note in the automatic regrid above for why a grid that
+    // never finished must not claim its inputs are current.
+    const key = `${gridStructuralKey}|${sourcePosKey}`;
     const heightAbove = project.settings?.general.defaultReceiverHeight ?? 1.5;
     // Primal, per-tile clustered, on the Web Worker.
     setTimeout(() => {
@@ -1223,6 +1231,7 @@ export function ProjectScreen() {
       }, gridDiag)
         .then((g) => {
           if (gen !== gridGenRef.current) return;
+          gridKeyRef.current = key;
           setGrid(g);
           setGridStatus('ready');
           setGridProgress(null);
@@ -1709,6 +1718,7 @@ export function ProjectScreen() {
         onOpenStudy={() => setShowStudy(true)}
         onOpenCurtailment={() => setShowCurtailment(true)}
         onOpenWindSweep={() => setShowWindSweep(true)}
+        sweepRunning={sweepRunning}
         showReceiverLimits={showReceiverLimits} setShowReceiverLimits={setShowReceiverLimits}
         contourMode={contourMode} setContourMode={setContourMode}
         contourOpacity={contourOpacity} setContourOpacity={setContourOpacity}

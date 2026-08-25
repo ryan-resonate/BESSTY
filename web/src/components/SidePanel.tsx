@@ -105,6 +105,10 @@ interface Props {
   setProject(p: Project): void;
   onRunGrid(): void;
   computing: boolean;
+  /// A wind sweep is queueing grids on the shared pool. Running one from here
+  /// would take the workers off it — whichever posts last wins — so the button
+  /// stands down for the duration, exactly as the automatic regrid does.
+  sweepRunning?: boolean;
   lastSolveMs: number | null;
   /// Replace the project's DEM (used by the Import tab's DEM uploader).
   setDem(d: DemRaster | null, source: 'auto' | 'upload'): void;
@@ -1477,7 +1481,22 @@ function ResultsTab(props: Props) {
     }
   }
 
+  // Tracing moved onto the contour worker when this became async, which means it
+  // can now REJECT — a worker that fails to load used to be impossible here.
+  // Without a catch the click just does nothing and the button looks dead.
   async function exportContours(format: 'kml' | 'shp') {
+    try {
+      await exportContoursInner(format);
+    } catch (e) {
+      console.error('[BESSTY] contour export failed:', e);
+      notify.error(
+        e instanceof Error ? e.message : String(e),
+        { title: 'Could not trace the contours' },
+      );
+    }
+  }
+
+  async function exportContoursInner(format: 'kml' | 'shp') {
     if (!grid) return;
     // Build the line set with the same dB bands the user is currently
     // viewing so the export matches the on-screen contours exactly. Custom
@@ -1499,8 +1518,13 @@ function ResultsTab(props: Props) {
   return (
     <>
       <Card title="Run">
-        <button className="btn primary block" disabled={computing} onClick={onRunGrid}>
-          {computing ? 'Running grid…' : '▶ Run grid'}
+        <button
+          className="btn primary block"
+          disabled={computing || props.sweepRunning}
+          title={props.sweepRunning ? 'A wind sweep is using the solver workers' : undefined}
+          onClick={onRunGrid}
+        >
+          {props.sweepRunning ? 'Wind sweep running…' : computing ? 'Running grid…' : '▶ Run grid'}
         </button>
         {lastSolveMs != null && (
           <div className="meta-line">point solve: {lastSolveMs.toFixed(0)} ms · {project.sources.length} src × {project.receivers.length} rcv</div>

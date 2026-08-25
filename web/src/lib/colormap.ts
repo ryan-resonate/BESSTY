@@ -65,7 +65,16 @@ export function makeBandsForRange(
   const lo = Math.floor(min / 5) * 5;
   const hi = Math.ceil(max / 5) * 5;
   const bands: Array<{ lo: number; hi: number; label: string }> = [];
-  for (let v = lo; v < hi; v += s) {
+  // Computed as lo + k·s rather than accumulated. Repeated addition drifts at
+  // any step that is not binary-exact: at 0.3 the sixth band's edge came out as
+  // 26.500000000000004, so a custom contour line the user placed ON that step
+  // at 26.5 no longer matched it. The export's rule that one contour is written
+  // once — named if a custom line claims it — compares levels by value, so both
+  // were traced and the same line was written twice, which a GIS consumer
+  // counts twice.
+  const n = Math.max(0, Math.ceil((hi - lo) / s));
+  for (let k = 0; k < n; k++) {
+    const v = lo + k * s;
     bands.push({ lo: v, hi: v + s, label: `${v} – ${v + s}` });
   }
   return bands;

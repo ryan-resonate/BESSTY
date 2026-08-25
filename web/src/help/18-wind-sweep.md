@@ -21,18 +21,22 @@ The sweep re-solves the scene at every wind speed instead. It costs N solves rat
 ## Setting up a run
 
 - **Periods** — day, evening, night, in any combination. Periods whose sources resolve to the **same modes** share one solve, so a project that does not use per-period modes costs one solve per wind speed, not three.
-- **Wind speeds** — whole m/s. Defaults to the speeds every turbine's catalog covers (the intersection: a speed one turbine has no spectrum for cannot honestly be swept). With no turbines, it offers the speeds your limit tables name.
+- **Wind speeds** — whole m/s. When the window opens it offers the speeds every turbine's catalog covers (the intersection: a speed one turbine has no spectrum for cannot honestly be swept). With no turbine data, and wind-speed limits switched on, it offers the speeds your limit tables name instead.
+
+  You can type any speeds you like. One outside a turbine's catalog data is solved at the nearest speed that data *does* cover, which is an extrapolation — the run says so in its notes, and the note travels into the XLSX.
 - **Receivers** and **Contour grids** — either or both.
 
 The Run button states the number of solves before you start it. Contour grids are the expensive half: each one is a full grid at the map's current spacing, once per wind speed and period.
 
 ## While it runs
 
-The map's automatic regrid stands down for the duration. Grid solves are newest-wins across a shared pool of workers, so a background regrid landing between two sweep states would kill the run; holding it off is what stops that. When the sweep ends, the map catches up on anything edited meanwhile.
+The map's automatic regrid stands down for the duration, and so does the **Run grid** button. Grid solves are newest-wins across a shared pool of workers, so a background regrid landing between two sweep states would kill the run; holding both off is what stops that. When the sweep ends, the map catches up on anything edited meanwhile.
 
-**Cancel** terminates the workers rather than just hiding the progress bar, and closing the window while a sweep is running cancels it. A cancelled sweep keeps nothing — a table missing the wind speeds it never reached is worse than no table.
+**Cancel** stops the sweep, and closing the window — or navigating away from the project — cancels it too. A cancelled sweep keeps nothing: a table missing the wind speeds it never reached is worse than no table.
 
-If something else does start a grid — a manual **Run grid**, say — the sweep stops and says so rather than quietly returning a partial answer.
+Cancelling ends a contour grid immediately, because a grid's workers are terminated outright. A receiver solve already in flight finishes first — those take seconds, not minutes — and the sweep then stops before the next one.
+
+If something else does manage to start a grid while the sweep's own grid is running, the sweep stops and says so rather than quietly returning a partial answer.
 
 ## Reading the table
 
@@ -50,7 +54,9 @@ Three blocks rather than a colour-coded single table for two reasons: the spread
 - **KML** — the same content with one folder per period and wind speed. Only the first folder is visible on load; forty contour sets drawn at once is not a map.
 - **GeoTIFF** — one raster per state in a zip (`grid_ws08_night.tif`). Periods that shared a solve produce identical files; both are written, because a missing file reads as a failed solve.
 
-Every export carries a settings sheet or attribute set recording what the run assumed.
+The **XLSX** carries a settings sheet recording what the run assumed — speeds, periods, spacing, weighting, limit comparison, and any notes the run raised. The shapefile and KML tag every feature with the wind speed, period and level that produced it, but record no settings; the GeoTIFF zip carries only its filenames. Send the XLSX alongside them if the assumptions need to travel.
+
+Exports describe the project **as it was when the sweep ran**. Edit a limit afterwards and the table on screen keeps the run's own limits, so it cannot show old levels judged against new limits — but the run does become stale, and the window says so. Re-run before relying on it.
 
 ## What the sweep does not do
 

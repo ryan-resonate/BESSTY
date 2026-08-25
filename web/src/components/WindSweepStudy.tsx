@@ -9,7 +9,7 @@
 // The on-screen table and the XLSX are built from the same `sweepReceiverRows`,
 // so what the user checks here is what the spreadsheet says.
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { FloatingWindow } from './FloatingWindow';
 import { notify } from '../lib/notify';
@@ -61,21 +61,27 @@ export function WindSweepStudy(props: {
     project, dem, gridSpacingM, contourLevels, customContours, onRunningChange, onClose,
   } = props;
 
-  const catalogSpeeds = useMemo(
-    () => defaultSweepSpeeds(project, (s) => {
-      const entry = lookupEntry(project, s);
-      if (!entry) return null;
-      const ws = new Set<number>();
-      for (const m of entry.modes) for (const w of m.windSpeeds ?? []) ws.add(Math.round(w));
-      return [...ws];
-    }),
-    // Deliberately keyed on the project object: the catalog is read through it,
-    // and a sweep dialog left open across a model swap should re-offer the new
-    // model's speeds rather than the old one's.
-    [project],
-  );
+  /// The wind speeds a source's catalog entry holds spectra for.
+  ///
+  /// Used twice: to seed the speeds box, and — passed into the run — to warn
+  /// when a swept speed falls outside a turbine's data. The second is what
+  /// covers the case the first cannot: the box is free text and its default is
+  /// only correct at the moment the window opened, so a model swapped while the
+  /// window sits open leaves speeds the new turbine has no spectrum for. Those
+  /// solve at the nearest speed it does have, and the warning is what stops
+  /// that being silent.
+  const windSpeedsFor = useMemo(() => (s: Project['sources'][number]) => {
+    const entry = lookupEntry(project, s);
+    if (!entry) return null;
+    const ws = new Set<number>();
+    for (const m of entry.modes) for (const w of m.windSpeeds ?? []) ws.add(Math.round(w));
+    return [...ws];
+  }, [project]);
 
-  const [speeds, setSpeeds] = useState<number[]>(catalogSpeeds);
+  // Seeds the box on first render only — `useState` runs its initialiser once,
+  // which is what we want: re-deriving would throw away speeds the user typed.
+  const [speeds, setSpeeds] = useState<number[]>(() => defaultSweepSpeeds(project, windSpeedsFor));
+
   const [periods, setPeriods] = useState<Period[]>([project.scenario.period]);
   const [doReceivers, setDoReceivers] = useState(true);
   const [doGrids, setDoGrids] = useState(false);
@@ -113,7 +119,7 @@ export function WindSweepStudy(props: {
     try {
       const out = await runWindSweep(
         project, dem, config,
-        liveSweepDeps(gridSpacingM, receiverHeightM),
+        liveSweepDeps(gridSpacingM, receiverHeightM, windSpeedsFor),
         (p) => setProgress(p),
         () => cancelRef.current,
       );
@@ -146,6 +152,20 @@ export function WindSweepStudy(props: {
     cancelGridRun();
   }
 
+  /// Stop the sweep if this component goes away by any route other than its own
+  /// close button.
+  ///
+  /// The close button was the only cancellation path, but the header sits above
+  /// the router: one click on "Projects" unmounts the screen and the window
+  /// while the run continues as a zombie — solving every remaining wind speed
+  /// into state nobody can reach, and, worse, posting grid jobs that terminate
+  /// the pool under whatever project the user opened next. A run that cannot be
+  /// seen or cancelled must not still be competing for the workers.
+  useEffect(() => () => {
+    cancelRef.current = true;
+    cancelGridRun();
+  }, []);
+
   /// Closing the window while a sweep is running stops the sweep.
   ///
   /// The alternative is a run nobody can see, cancel or collect: the results
@@ -162,16 +182,16 @@ export function WindSweepStudy(props: {
     if (!result) return;
     setExporting(kind);
     try {
-      const stem = defaultFilenameStem(project, 'wind_sweep');
+      const stem = defaultFilenameStem(shownProject, 'wind_sweep');
       if (kind === 'tif') {
         triggerDownload(`${stem}_grids.zip`, exportWindSweepGeoTiffZip(result));
         return;
       }
       const layers = await traceSweepContours(result, contourLevels, customContours);
       if (kind === 'shp') {
-        triggerDownload(`${stem}_contours.zip`, exportWindSweepContoursShp(project, layers));
+        triggerDownload(`${stem}_contours.zip`, exportWindSweepContoursShp(shownProject, layers));
       } else {
-        triggerDownload(`${stem}_contours.kml`, exportWindSweepContoursKml(project, layers));
+        triggerDownload(`${stem}_contours.kml`, exportWindSweepContoursKml(shownProject, layers));
       }
     } catch (e) {
       notify.error(e instanceof Error ? e.message : String(e), { title: 'Contour export failed' });
@@ -180,9 +200,22 @@ export function WindSweepStudy(props: {
     }
   }
 
+  /// The project the results describe.
+  ///
+  /// Levels come from the run; limits, receivers and weighting are re-derived
+  /// on demand — so deriving them from the LIVE project pairs old levels with
+  /// new limits. Lower a receiver's limit after a run and the margins silently
+  /// drop under a table headed by the old run's wind speeds; delete a receiver
+  /// and it vanishes from an export that swept it. `ranAgainst` is the project
+  /// the sweep actually ran on, which is the only one the levels are true of.
+  /// Same rule the curtailment export follows for its margin.
+  const shownProject = ranAgainst ?? project;
+
   const rows = useMemo(
-    () => (result && result.config.receivers ? sweepReceiverRows(project, result, viewPeriod) : []),
-    [project, result, viewPeriod],
+    () => (result && result.config.receivers
+      ? sweepReceiverRows(shownProject, result, viewPeriod)
+      : []),
+    [shownProject, result, viewPeriod],
   );
   const shownSpeeds = result ? sweepSpeeds(result, 'receivers') : [];
   const donePeriods = result ? sweepPeriods(result, 'receivers') : [];
@@ -224,7 +257,15 @@ export function WindSweepStudy(props: {
 
         <label className="fld" style={{ fontSize: 11 }}>
           <span>Wind speeds</span>
+          {/*
+            `key` re-mounts on every change to `speeds`, so the box shows what
+            will actually be swept. Without it, typing "8, 8.4, twelve" left the
+            box reading exactly that forever while the run used [8] — the
+            normalisation was invisible, and the box and the table disagreed
+            with no way to tell which was right.
+          */}
           <input
+            key={speeds.join(',')}
             defaultValue={speeds.join(', ')}
             disabled={running}
             onBlur={(e) => setSpeeds(normaliseSpeeds(e.target.value.split(/[,\s]+/).map(Number)))}
@@ -310,8 +351,8 @@ export function WindSweepStudy(props: {
               <button
                 className="btn small"
                 onClick={() => triggerDownload(
-                  `${defaultFilenameStem(project, 'wind_sweep')}.xlsx`,
-                  exportWindSweepXlsx(project, result),
+                  `${defaultFilenameStem(shownProject, 'wind_sweep')}.xlsx`,
+                  exportWindSweepXlsx(shownProject, result),
                 )}
               >↓ Receivers XLSX</button>
             )}

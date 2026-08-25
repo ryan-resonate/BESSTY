@@ -887,7 +887,11 @@ export function exportWindSweepXlsx(project: Project, sweep: SweepResult): Blob 
     const header = (title: string) => {
       aoa.push([title, ...speeds.map((w) => `${w} m/s`)]);
     };
-    const num = (v: number | null | undefined, dp = 1) => (v == null ? '' : Number(v.toFixed(dp)));
+    // Two decimals, because the verdict is computed UNROUNDED. At one decimal a
+    // level of 40.04 against a 40 dB limit printed "40 / 40 / 0 / fail" — a row
+    // contradicting its own margin caption, with the 0.04 dB that decided it
+    // nowhere in the file. The single-run receiver export already uses 2 dp.
+    const num = (v: number | null | undefined, dp = 2) => (v == null ? '' : Number(v.toFixed(dp)));
 
     aoa.push([`${PERIOD_LABEL[period]} — ${wLabel}`]);
     aoa.push([]);
@@ -916,7 +920,17 @@ export function exportWindSweepXlsx(project: Project, sweep: SweepResult): Blob 
         // The verdict is over the WHOLE sweep: complying at the wind speed that
         // happens to be on screen says nothing about the one next to it, and a
         // sweep exists precisely because those differ.
-        r.cells.length === 0 ? '—' : r.failsAt.length > 0 ? 'fail' : 'pass',
+        //
+        // "No level" is NOT "pass". `exceedsLimit` answers false for a null
+        // level — correctly, since absence is not exceedance — so a receiver
+        // that never solved has an empty `failsAt` and used to fall through to
+        // "pass" with every other cell in its row blank. A receiver dropped for
+        // non-finite coordinates, or added after the run, was certified
+        // compliant in a planning submission on the strength of no data at all.
+        // The single-run receiver export has always answered '—' here.
+        r.cells.some((c) => c.levelDb != null)
+          ? (r.failsAt.length > 0 ? 'fail' : 'pass')
+          : '—',
         r.failsAt.join(', '),
         limitBasis(r),
       ]);
