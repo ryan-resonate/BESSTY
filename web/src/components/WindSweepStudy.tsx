@@ -55,10 +55,15 @@ export function WindSweepStudy(props: {
   /// automatic regrid: the grid pool is newest-wins, and a background regrid
   /// landing mid-sweep would kill it.
   onRunningChange(running: boolean): void;
+  /// Hands a finished sweep up to the screen. The results live in this
+  /// component's state and would die with it, but a share published later
+  /// wants the states a sweep solved — closing the window should not throw
+  /// away minutes of solving.
+  onResult?(result: SweepResult): void;
   onClose(): void;
 }) {
   const {
-    project, dem, gridSpacingM, contourLevels, customContours, onRunningChange, onClose,
+    project, dem, gridSpacingM, contourLevels, customContours, onRunningChange, onResult, onClose,
   } = props;
 
   /// The wind speeds a source's catalog entry holds spectra for.
@@ -126,6 +131,7 @@ export function WindSweepStudy(props: {
       out.gridSpacingM = doGrids ? gridSpacingM : undefined;
       out.receiverHeightM = doGrids ? receiverHeightM : undefined;
       setResult(out);
+      onResult?.(out);
       setRanAgainst(project);
       if (!periods.includes(viewPeriod)) setViewPeriod(periods[0]);
       notify.success(

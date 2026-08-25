@@ -329,6 +329,26 @@ export interface SharePayload {
   states: ShareState[];
 }
 
+/// Turn a Cloud-Functions failure into something a publisher can act on.
+///
+/// The one that matters is `internal` / `not-found` on a project where the
+/// function has never been deployed: Firebase reports it the same way it
+/// reports a genuine crash, and "internal error" sends someone hunting through
+/// their own data for a problem that is a billing tier.
+export function describePublishError(e: unknown): string {
+  const code = (e as { code?: string })?.code ?? '';
+  const message = (e as { message?: string })?.message ?? String(e);
+  if (code === 'functions/not-found' || code === 'functions/internal') {
+    return 'The publish service is not available. Share links need Firebase Cloud '
+      + 'Functions, which are not deployed on this project yet (see docs/blaze-upgrade.md).';
+  }
+  if (code === 'functions/unauthenticated') return 'Sign in again and retry.';
+  if (code === 'functions/permission-denied') {
+    return 'Only the project owner or a collaborator can publish a share link.';
+  }
+  return message;
+}
+
 /// Is this share readable right now?
 ///
 /// The rules enforce this server-side — that is what actually protects the

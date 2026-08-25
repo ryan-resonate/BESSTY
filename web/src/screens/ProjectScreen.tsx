@@ -10,9 +10,11 @@ import { PdfExportDialog } from '../components/PdfExportDialog';
 import { FactorialStudy } from '../components/FactorialStudy';
 import { CurtailmentStudy, applyCellToProject } from '../components/CurtailmentStudy';
 import { WindSweepStudy } from '../components/WindSweepStudy';
+import { ShareDialog } from '../components/ShareDialog';
 import { attributionFor, tileUrlFor } from '../components/MapView';
 import { Legend, ResultsDock, StatusBar } from '../components/MapChrome';
 import { SidePanel, type AddMode, type Tab } from '../components/SidePanel';
+import type { SweepResult } from '../lib/windSweep';
 import { listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { gridDomain, makeBandsForRange, type Palette } from '../lib/colormap';
 import { loadDemForBounds, type DemRaster } from '../lib/dem';
@@ -227,6 +229,11 @@ export function ProjectScreen() {
   const [showStudy, setShowStudy] = useState(false);
   const [showCurtailment, setShowCurtailment] = useState(false);
   const [showWindSweep, setShowWindSweep] = useState(false);
+  const [showShare, setShowShare] = useState(false);
+  /// The last finished wind sweep, kept at screen level rather than inside the
+  /// sweep window. A share published afterwards wants the states it solved, and
+  /// closing the window should not discard minutes of work.
+  const [lastSweep, setLastSweep] = useState<SweepResult | null>(null);
   /// True while a wind sweep is solving. The automatic regrid below stands
   /// down for the duration: the grid pool is newest-wins, so a background
   /// regrid would terminate the sweep's workers mid-run. Deliberately STATE
@@ -1718,6 +1725,7 @@ export function ProjectScreen() {
         onOpenStudy={() => setShowStudy(true)}
         onOpenCurtailment={() => setShowCurtailment(true)}
         onOpenWindSweep={() => setShowWindSweep(true)}
+        onOpenShare={() => setShowShare(true)}
         sweepRunning={sweepRunning}
         showReceiverLimits={showReceiverLimits} setShowReceiverLimits={setShowReceiverLimits}
         contourMode={contourMode} setContourMode={setContourMode}
@@ -1882,7 +1890,21 @@ export function ProjectScreen() {
           contourLevels={exportContourLevels}
           customContours={customContours}
           onRunningChange={setSweepRunning}
+          onResult={setLastSweep}
           onClose={() => setShowWindSweep(false)}
+        />
+      )}
+
+      {showShare && (
+        <ShareDialog
+          project={project}
+          projectId={projectId ?? ''}
+          results={results}
+          grid={grid}
+          sweep={lastSweep}
+          contourLevels={exportContourLevels}
+          customContours={customContours}
+          onClose={() => setShowShare(false)}
         />
       )}
 

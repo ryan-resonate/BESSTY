@@ -99,6 +99,34 @@ service cloud.firestore {
       match /catalogs/{entryId} {
         allow read, write: if isMe(uid) || isAdmin();
       }
+
+      // The user's own index of share links they have published.
+      //
+      // This exists because `shares` denies `list` to everyone, including
+      // owners -- a listable collection of live capability tokens would make
+      // the tokens meaningless. The index is metadata only (label, dates,
+      // revoked flag); it carries no payload and no project data, and it sits
+      // under the user's own document so nobody else can read it.
+      //
+      // NOT admin-readable, unlike the catalog above: these documents are
+      // named by live tokens, and an admin reading one gains the capability
+      // itself rather than information about it. Nothing in the app needs
+      // that, so it is not granted.
+      match /shares/{token} {
+        allow read: if isMe(uid);
+
+        // Revoking, mirroring the rule on the share document itself. Same
+        // shape and same reason: name what may CHANGE, so a field added later
+        // does not become client-writable by omission.
+        allow update: if isMe(uid)
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['revoked'])
+          && request.resource.data.revoked == true;
+
+        // The function writes these alongside the share itself, in one batch,
+        // so the index can never name a share that was not created.
+        allow create, delete: if false;
+      }
     }
 
     // ===== projects/{id} =====

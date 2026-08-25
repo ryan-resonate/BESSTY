@@ -144,6 +144,8 @@ interface Props {
   onOpenCurtailment?(): void;
   /// Open the wind-speed sweep runner.
   onOpenWindSweep?(): void;
+  /// Open the read-only share-link dialog.
+  onOpenShare?(): void;
   /// Called when the user reverts to a saved version. The handler should
   /// merge the snapshot's content into the live project while preserving
   /// current ownership + privacy metadata. Wired up in ProjectScreen.
@@ -1635,6 +1637,12 @@ function ResultsTab(props: Props) {
             disabled={!props.onOpenWindSweep}
             title="Re-solve receivers and contours at each wind speed, and export the lot"
           >🌬 Wind-speed sweep…</button>
+          <button
+            className="btn small block"
+            onClick={() => props.onOpenShare?.()}
+            disabled={!props.onOpenShare}
+            title="Publish a read-only link a client can open without an account"
+          >🔗 Share a read-only link…</button>
           <button className="btn small" style={mutedWhenNoGrid} title={gridHint} onClick={() => { if (requireGrid() && grid) download(exportGridGeoTiff(grid), 'grid', 'tif'); }}>
             ↓ GeoTIFF
           </button>

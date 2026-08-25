@@ -152,15 +152,28 @@ export const publishShare = onCall(
     const now = new Date();
     const expiresAt = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
 
-    await db.collection('shares').doc(token).create({
-      ownerUid: uid,
+    const meta = {
       createdAt: now.toISOString(),
       expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
       revoked: false,
       label: safeLabel,
       draftOrFinal,
-      payload,
-    });
+    };
+
+    // Two writes, atomically. The second is the owner's private INDEX of their
+    // own links, and it exists because `shares` denies `list` to everyone —
+    // which it must, since a listable collection of live capability tokens
+    // would make the tokens pointless. Without an index there is no way to
+    // answer "show me my links", and therefore no way to build the revocation
+    // UI that Q29 requires.
+    //
+    // Metadata only: no payload, no project data. It lives under
+    // `users/{uid}/` where only that user can read it, and the tokens in it
+    // are ones they already hold.
+    const batch = db.batch();
+    batch.create(db.collection('shares').doc(token), { ownerUid: uid, ...meta, payload });
+    batch.create(db.collection('users').doc(uid).collection('shares').doc(token), meta);
+    await batch.commit();
 
     // The token is the credential. It is never logged — not here, not in an
     // error, not in analytics. A log line naming it would put a live capability
@@ -195,6 +208,12 @@ export const revokeShare = onCall(
       throw new HttpsError('permission-denied', 'Only the share’s owner can revoke it.');
     }
     await ref.update({ revoked: true });
+    // Keep the owner's index in step, best-effort: the share doc above is what
+    // actually kills the link, so a failure here leaves a stale row rather
+    // than a live share.
+    await db.collection('users').doc(String(data.ownerUid)).collection('shares')
+      .doc(token).set({ revoked: true }, { merge: true })
+      .catch((e) => logger.warn('share index update failed', { error: String(e) }));
     if (typeof data.payloadPath === 'string' && data.payloadPath.startsWith(`shares/${token}/`)) {
       // Storage rules serve share payloads to anyone holding the path, so the
       // flag flip alone is not enough — the object has to go.
