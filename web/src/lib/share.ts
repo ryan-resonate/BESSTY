@@ -341,10 +341,19 @@ export function shareIsLive(doc: Pick<ShareDoc, 'revoked' | 'expiresAt'>, now = 
 }
 
 /// The public URL for a token, from the app's own origin.
+///
+/// The `#` is not decoration. The app mounts a HashRouter (GitHub Pages serves
+/// static files and would 404 a deep path on reload), so `/share/<token>`
+/// without it lands on the login screen with the token ignored — every link
+/// dead, in a way that looks like an auth problem rather than a URL one.
+///
+/// It also happens to be the better place for a credential: a fragment is
+/// never transmitted to a server, so the token stays out of web-server access
+/// logs and out of the Referer header even before the referrer policy applies.
 export function shareUrl(token: string, origin = window.location.origin): string {
   // `import.meta.env.BASE_URL` carries the GitHub-Pages subpath in production
   // ("/BESSTY/") and "/" in dev, so the link works in both without a build-time
   // constant that can drift.
   const base = (import.meta.env?.BASE_URL ?? '/').replace(/\/$/, '');
-  return `${origin}${base}/share/${token}`;
+  return `${origin}${base}/#/share/${token}`;
 }

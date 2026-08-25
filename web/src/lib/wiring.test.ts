@@ -349,6 +349,49 @@ test('both contour EXPORTS trace through one function, so they cannot drift apar
   }
 });
 
+test('the public share viewer cannot solve, cannot reach the catalog, and cannot write', () => {
+  // `/share/:token` renders for anyone on the internet with no account. Its
+  // safety rests on a claim in its own header — that it holds no project, runs
+  // no solver, and has no mutation path — and a claim like that is worth
+  // exactly as much as whatever enforces it.
+  //
+  // The specific ways this erodes: someone "reuses" MapView (which imports the
+  // catalog and the solver) to avoid duplicate map code; someone adds a
+  // "recalculate at this wind speed" convenience; someone lets a viewer leave
+  // a comment. Each is reasonable-sounding and each turns a frozen public
+  // snapshot into a live one.
+  const viewer = FILES.find((f) => f.path.endsWith('ShareViewerScreen.tsx'));
+  assert.ok(viewer, 'ShareViewerScreen not found');
+  const code = viewer!.text.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+
+  const banned = [
+    ['solver', /from '\.\.\/lib\/solver'/],
+    ['catalog', /from '\.\.\/lib\/catalog'/],
+    ['spectra', /from '\.\.\/lib\/spectra'/],
+    ['curtailment', /from '\.\.\/lib\/curtailment'/],
+    ['windSweep', /from '\.\.\/lib\/windSweep'/],
+    ['MapView', /from '\.\.\/components\/MapView'/],
+    ['firestoreProjects', /from '\.\.\/lib\/firestoreProjects'/],
+  ] as const;
+  for (const [name, re] of banned) {
+    assert.ok(
+      !re.test(code),
+      `the share viewer imports ${name}; it must render only what the share document `
+      + 'carries, with no route to a solve, the catalog, or a project',
+    );
+  }
+
+  // No Firestore WRITE may exist here. A viewer is unauthenticated, so any
+  // write it attempted would fail — but the presence of one means someone
+  // expected it to work, and the next step is relaxing a rule to make it.
+  for (const write of ['setDoc', 'updateDoc', 'addDoc', 'deleteDoc', 'writeBatch']) {
+    assert.ok(
+      !new RegExp(`\\b${write}\\s*\\(`).test(code),
+      `the share viewer calls ${write}(); the viewer is strictly read-only (Q30)`,
+    );
+  }
+});
+
 test('the grid cache key is stamped only where a grid is actually stored', () => {
   // `gridKeyRef` lets the automatic regrid skip re-solving a grid whose inputs
   // have not changed — which is what stops the end of a wind sweep triggering a

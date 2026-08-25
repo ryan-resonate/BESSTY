@@ -4,6 +4,23 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Share links are public capability URLs: the token in the path IS the
+      authorisation. Two consequences, both handled here because they are
+      document-level and the app is a single page.
+
+      noindex/nofollow — a crawler that reached a share link would publish it
+      into a search index, turning "unguessable" into "first result". Applied
+      to the whole app rather than only to /share/: the rest of BESSTY is
+      behind a sign-in wall and has nothing to gain from being indexed.
+
+      Referrer-Policy — without it, every outbound request from the viewer
+      (map tiles, fonts) carries the full URL, including the token, in the
+      Referer header to a third party. `no-referrer` is the only value that
+      withholds it from cross-origin requests unconditionally.
+    -->
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="referrer" content="no-referrer" />
     <title>BESSTY — WTG + BESS Noise Modeller</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
