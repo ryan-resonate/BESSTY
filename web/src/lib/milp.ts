@@ -15,7 +15,7 @@
 //     open the optimiser.
 //
 // Keeping the model a plain data structure is what lets the two be
-// cross-checked on random problems — see milp.test.ts.
+// cross-checked on random problems — see milp.wasm.test.ts.
 
 /// One option within a group: `cost` to choose it, `use[j]` of resource j.
 export interface MilpOption {
@@ -161,9 +161,36 @@ function varName(g: number, o: number): string {
 
 /// Format a coefficient for LP text. Exponent notation is accepted by HiGHS and
 /// keeps the very small scaled energies from rounding to zero in the file.
+///
+/// The non-finite branch is a last resort that must never be reached — writing
+/// a NaN as '0' produces a valid-looking file describing a different problem —
+/// so `solveWithHighs` rejects such a model before it gets here.
 function coef(v: number): string {
   if (!Number.isFinite(v)) return '0';
   return v.toExponential(12);
+}
+
+/// The first non-finite number in the model, described well enough to fix, or
+/// null when everything is a real number.
+function nonFiniteInputs(model: MilpModel): string | null {
+  for (let j = 0; j < model.capacities.length; j++) {
+    if (!Number.isFinite(model.capacities[j])) {
+      return `resource ${j} has a non-finite capacity (${model.capacities[j]})`;
+    }
+  }
+  for (const g of model.groups) {
+    for (const o of g.options) {
+      if (!Number.isFinite(o.cost)) {
+        return `option ${o.key} has a non-finite cost (${o.cost})`;
+      }
+      for (let j = 0; j < o.use.length; j++) {
+        if (!Number.isFinite(o.use[j])) {
+          return `option ${o.key} has a non-finite use of resource ${j} (${o.use[j]})`;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 /// Render the model as CPLEX LP text.
@@ -277,10 +304,22 @@ async function loadHighs(): Promise<HighsInstance> {
 /// quietest available assignment exceeds a limit, and the caller reports which
 /// receiver and by how much.
 export async function solveWithHighs(model: MilpModel): Promise<MilpSolution> {
-  if (model.groups.length === 0) return { status: 'optimal', chosen: [], cost: 0 };
+  // A model with no groups is still infeasible if a capacity is already
+  // breached — "nothing to choose" is not the same as "nothing to worry about".
+  // Checked BEFORE the empty-groups shortcut so the two solvers this module
+  // offers agree: `solveByEnumeration` calls it infeasible, and the two are
+  // cross-checked against each other in the tests.
   if (unsatisfiableResources(model).length > 0) {
     return { status: 'infeasible', chosen: [], cost: 0 };
   }
+  if (model.groups.length === 0) return { status: 'optimal', chosen: [], cost: 0 };
+  // A non-finite number would be written to the LP text as '0', turning an
+  // undefined capacity into "total silence required" and a NaN coefficient into
+  // a term that silently vanishes from its constraint — either way a wrong
+  // schedule returned as PROVEN OPTIMAL. Nothing upstream can produce one
+  // today; this is here so that if something ever does, it fails loudly.
+  const bad = nonFiniteInputs(model);
+  if (bad) return { status: 'error', chosen: [], cost: 0, detail: bad };
   let res: HighsSolveResult;
   try {
     const highs = await loadHighs();

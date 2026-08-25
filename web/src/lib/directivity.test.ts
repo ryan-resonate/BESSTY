@@ -164,3 +164,19 @@ test('a swept direction is labelled by where the wind comes FROM', () => {
   assert.match(describeWindFrom(270), /^270° \(W\)$/);
   assert.match(describeWindFrom(225), /^225° \(SW\)$/);
 });
+
+test('a 22.5 degree sweep is a real 16-point rose, not a 23 degree step', () => {
+  // Rounding the STEP turned the UI's "22.5° (16 directions)" option into
+  // 0, 23, 46 … 345: not the compass half-winds it names, with a 15° gap
+  // closing the circle, and an operator's 16-sector wind rose out by up to
+  // 7.5° in every sector but the first.
+  const rose = sweepDirections(22.5);
+  assert.equal(rose.length, 16);
+  assert.deepEqual(rose.slice(0, 4), [0, 22.5, 45, 67.5]);
+  assert.equal(rose[rose.length - 1], 337.5);
+  // Every gap identical — including the one that wraps back to north.
+  const gaps = rose.map((d, i) => (i === 0 ? 360 - rose[rose.length - 1] : d - rose[i - 1]));
+  assert.ok(gaps.every((g) => Math.abs(g - 22.5) < 1e-9), gaps.join(','));
+  // The label must agree with the direction actually swept.
+  assert.match(describeWindFrom(22.5), /^22\.5° \(NNE\)$/);
+});

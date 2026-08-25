@@ -28,7 +28,7 @@ import { projectDOmegaDb } from './types';
 // testable without the Firebase SDK.
 import { lookupEntry } from './catalog';
 import { spectrumFor, spectrumForMode } from './spectra';
-import { MODE_OFF, sourceModeName } from './modes';
+import { MODE_OFF, sourceIsOff, sourceModeName } from './modes';
 import { evaluateProject, sourceHagl, type ReceiverResult } from './solver';
 import type { DemRaster } from './dem';
 import { limitComparisonFor, resolveLimit } from './limits';
@@ -101,6 +101,15 @@ export interface CurtailmentResult {
   /// Non-fatal notes worth showing beside the table — a receiver whose wind
   /// speed fell off its limit table, say.
   warnings: string[];
+  /// The margin this run actually enforced.
+  ///
+  /// Stamped here rather than read off the UI at export time. The margin box
+  /// can be edited after a run without invalidating the table on screen, and
+  /// the settings sheet was reading that live value — so a study run at 0 dB
+  /// could be exported claiming 3 dB of headroom it never had. An evidence file
+  /// has to describe the run that produced it, not the state of the form
+  /// beside it.
+  marginDb: number;
 }
 
 // ------------------------------------------------------------------- power
@@ -155,6 +164,7 @@ export function precheckCurtailment(project: Project): Precheck {
 
   const covered: number[][] = [];
   const missingPower: string[] = [];
+  const partialPower: string[] = [];
   const missingEntry: string[] = [];
   for (const t of turbines) {
     const entry = lookupEntry(project, t);
@@ -162,6 +172,20 @@ export function precheckCurtailment(project: Project): Precheck {
     const withoutPower = entry.modes.filter((m) => powerKwAt(m, 10) == null);
     if (withoutPower.length > 0) {
       missingPower.push(`${t.name} (${entry.displayName}: ${withoutPower.map((m) => m.name).join(', ')})`);
+    }
+    // A curve covering only PART of the mode's wind speeds is worse than none.
+    // `powerKwAt` holds flat past either end, so a curve entered for 8–12 m/s
+    // prices the mode at its 8 m/s output all the way down to 4 — and the
+    // optimiser then reports a confident "least generation given up" that is
+    // simply wrong about the generation. The check used to be "at least one
+    // finite point anywhere", which such a curve passes.
+    const gaps = entry.modes.filter((m) => {
+      if (powerKwAt(m, 10) == null) return false;      // already named above
+      const pk = m.powerKw ?? {};
+      return (m.windSpeeds ?? []).some((w) => !Number.isFinite(pk[String(w)]));
+    });
+    if (gaps.length > 0) {
+      partialPower.push(`${t.name} (${entry.displayName}: ${gaps.map((m) => m.name).join(', ')})`);
     }
     const ws = new Set<number>();
     for (const m of entry.modes) for (const w of m.windSpeeds ?? []) ws.add(Math.round(w));
@@ -174,6 +198,14 @@ export function precheckCurtailment(project: Project): Precheck {
     reasons.push(
       'These modes have no power curve, so the generation they cost is unknown: '
       + `${missingPower.join('; ')}. Add a power row in the catalog editor.`,
+    );
+  }
+  if (partialPower.length > 0) {
+    reasons.push(
+      'These modes have a power curve that does not cover every wind speed they '
+      + `have a spectrum for: ${partialPower.join('; ')}. The missing speeds would be `
+      + 'priced at the nearest entered one, which would make the lost-kW figures — and '
+      + 'therefore the schedule — wrong without saying so. Fill in the whole kW row.',
     );
   }
 
@@ -193,18 +225,32 @@ export function precheckCurtailment(project: Project): Precheck {
 
 // --------------------------------------------------------- transfer matrix
 
-/// A copy of the project with every source running a definite catalog mode,
-/// together with the sound power each one was pinned to.
+/// A copy of the project set up to measure transfers for `period`, together with
+/// the sound power each source was measured at.
 ///
-/// Two reasons this is not simply the live project. A source switched Off is
-/// dropped from the solve entirely, so its transfer would be missing and it
-/// could never be scheduled back on. And the transfer is `Lp − Lw`, so the Lw
-/// that produced each Lp has to be known exactly.
+/// TURBINES are pinned to a definite catalog mode. A source switched Off is
+/// dropped from the solve entirely, so an Off turbine's transfer would be
+/// missing and it could never be scheduled back on — and since the transfer is
+/// `Lp − Lw`, the Lw that produced each Lp has to be known exactly.
+///
+/// EVERYTHING ELSE is left exactly as the project has it. This is the part that
+/// used to be wrong: pinning fixed sources On as well put the CONTAINER of a
+/// unit that is Off in this period back into the scene, where it screened paths
+/// that the compliance solve — which drops an Off source and its box together —
+/// leaves open. The optimiser then measured a quieter world than the one it was
+/// planning for and under-curtailed, which is the one direction this module's
+/// comments promise it will not err in. Turbines never carry a container
+/// (`resolveContainer` returns undefined for a WTG), so pinning them costs no
+/// geometry at all.
+///
+/// A fixed source needs no pinning to be measurable: its Lw is simply whatever
+/// mode it already resolves to, read through the same `spectrumFor` the solver
+/// itself calls, so the two cannot disagree.
 ///
 /// The project and the Lw map are built TOGETHER and returned together. Deriving
-/// them separately meant two places encoding the same pinning rule, and a
-/// transfer matrix silently offset by the difference if they ever disagreed.
-export function projectForTransfer(project: Project): {
+/// them separately meant two places encoding the same rule, and a transfer
+/// matrix silently offset by the difference if they ever disagreed.
+export function projectForTransfer(project: Project, period: Period): {
   pinned: Project;
   lwBySource: Map<string, Float64Array>;
 } {
@@ -213,20 +259,50 @@ export function projectForTransfer(project: Project): {
   const sources = project.sources.map((s) => {
     const entry = lookupEntry(project, s);
     if (!entry) return s;
-    const mode = entry.modes.find((m) => m.name === entry.defaultMode) ?? entry.modes[0];
-    if (!mode) return s;
-    lwBySource.set(s.id, spectrumForMode(mode, bandSystem, windSpeed));
-    return { ...s, modeOverride: mode.name };
+    if (s.kind === 'wtg') {
+      const mode = entry.modes.find((m) => m.name === entry.defaultMode) ?? entry.modes[0];
+      if (!mode) return s;
+      lwBySource.set(s.id, spectrumForMode(mode, bandSystem, windSpeed));
+      return { ...s, modeOverride: mode.name };
+    }
+    const name = sourceModeName(s, entry, period);
+    if (name == null) return s;              // Off this period — absent, box and all
+    lwBySource.set(s.id, spectrumFor(entry, name, windSpeed, bandSystem));
+    return s;
   });
-  return { pinned: { ...project, sources }, lwBySource };
+  // The period must travel with the project now that fixed sources resolve
+  // against it: leaving the live scenario's period here would read one period's
+  // modes while the caller believed it was measuring another's.
+  return {
+    pinned: { ...project, sources, scenario: { ...project.scenario, period } },
+    lwBySource,
+  };
 }
 
-/// Solve once and reduce to per-band transfers.
+/// The sources absent from the scene in `period`, as a comparable key.
+///
+/// Two periods whose absent-set matches have identical geometry and can share
+/// one transfer solve. Only a source that is GONE changes what screens what —
+/// a source merely running a quieter mode still occupies the same box — so this
+/// splits far less often than the mode-based grouping the solver uses. For every
+/// project that does not park a fixed unit for part of the day, which is nearly
+/// all of them, all three periods share one key and the sweep costs exactly the
+/// one solve it always did.
+function transferGeometryKey(project: Project, period: Period): string {
+  return project.sources
+    .filter((s) => s.kind !== 'wtg' && sourceIsOff(s, period))
+    .map((s) => s.id)
+    .sort()
+    .join('|');
+}
+
+/// Solve once per distinct geometry and reduce to per-band transfers.
 export async function buildTransferMatrix(
   project: Project,
   dem: DemRaster | null,
+  period: Period,
 ): Promise<TransferMatrix> {
-  const { pinned, lwBySource } = projectForTransfer(project);
+  const { pinned, lwBySource } = projectForTransfer(project, period);
   const results = await evaluateProject(pinned, dem, undefined, 'export');
   return transferFromResults(lwBySource, results);
 }
@@ -305,8 +381,23 @@ export function capDbFor(
   marginDb: number,
 ): { capDb: number; clamped: boolean } {
   const resolved = resolveLimit(project, receiver, period, windSpeed);
-  let cap = resolved.db - marginDb;
-  if (limitComparisonFor(project) === 'integer') cap += 0.5 - 1e-6;
+  // The rounding allowance is a property of the LIMIT, so it is computed from
+  // the limit alone and the margin is taken off afterwards.
+  //
+  // `exceedsLimit` rounds the LEVEL and compares it with the limit as entered:
+  // it passes iff `round(L) <= limit`, and since `round(L)` is an integer that
+  // is `round(L) <= floor(limit)`, i.e. `L < floor(limit) + 0.5`. Adding 0.5 to
+  // the limit itself is only the same thing when the limit is a whole number.
+  // At 37.3 dB it produced a cap of 37.8, so the optimiser certified any
+  // schedule up to 37.79 as compliant while every badge, contour and export in
+  // the app failed it from 37.5 — a schedule shipped as evidence that the app
+  // itself contradicts. Fractional limits are ordinary ("background + 5 dB",
+  // pasted limit tables keep their decimals), so this was reachable.
+  const limitDb = resolved.db;
+  let cap = limitComparisonFor(project) === 'integer'
+    ? Math.floor(limitDb) + 0.5 - 1e-6
+    : limitDb;
+  cap -= marginDb;
   cap -= projectDOmegaDb(project);
   const tonality = tonalitySettingsFor(project);
   if (tonality.enabled && tonality.applyPenalty) cap -= tonality.penaltyDb;
@@ -397,6 +488,21 @@ export function buildCellModel(
   const groups = turbines.map((t) => {
     const entry = lookupEntry(project, t);
     const modes = entry?.modes ?? [];
+    // The symmetrical warning to the limit-table clamp above. Both spectra and
+    // power curves hold flat past the ends of their data, so a wind speed the
+    // catalog never covered still produces a full column of confident modes and
+    // kW — computed from the nearest speed that WAS covered. Saying so is the
+    // difference between an extrapolation and a silent one.
+    const coveredSpeeds = new Set<number>();
+    for (const m of modes) for (const w of m.windSpeeds ?? []) coveredSpeeds.add(Math.round(w));
+    if (coveredSpeeds.size > 0 && !coveredSpeeds.has(Math.round(windSpeed))) {
+      const lo = Math.min(...coveredSpeeds);
+      const hi = Math.max(...coveredSpeeds);
+      warnings.push(
+        `${t.name}: ${windSpeed} m/s is outside its catalog data (${lo}–${hi} m/s); `
+        + 'the nearest wind speed’s spectrum and power were used.',
+      );
+    }
     const powers = modes.map((m) => powerKwAt(m, windSpeed) ?? 0);
     const pMax = powers.length > 0 ? Math.max(...powers) : 0;
     const byRx = transfer.get(t.id);
@@ -446,12 +552,19 @@ export function describeCell(
     // Name the receiver that cannot be met and by how much — that is the whole
     // content of an infeasible answer.
     const blocked = unsatisfiableResources(cell.model);
+    // Ranked by how many DECIBELS over the cap each receiver is, not by an
+    // energy difference. Energies carry the absolute scale of the cap with
+    // them, so `fixed − available` ranked a receiver 0.2 dB over its 40 dB cap
+    // above one 10 dB over a 20 dB cap, and the export then reported the 0.2 dB
+    // as the exceedance — a cell that is far beyond help presented as nearly
+    // solvable.
+    const overBy = (r: CellReceiver) =>
+      10 * Math.log10(Math.max(r.fixedEnergy, Number.MIN_VALUE)) - r.capDb;
     const worst = blocked
       .map((j) => cell.receivers[j])
-      .sort((a, b) => (b.fixedEnergy - b.availableEnergy) - (a.fixedEnergy - a.availableEnergy))[0];
-    const overDb = worst
-      ? 10 * Math.log10(Math.max(worst.fixedEnergy, Number.MIN_VALUE)) - worst.capDb
-      : undefined;
+      .filter((r): r is CellReceiver => r != null)
+      .sort((a, b) => overBy(b) - overBy(a))[0];
+    const overDb = worst ? overBy(worst) : undefined;
     return {
       period, windSpeed,
       status: solution.status,
@@ -507,7 +620,22 @@ export async function optimiseCurtailment(
   onProgress?: (done: number, total: number) => void,
 ): Promise<CurtailmentResult> {
   const turbines = project.sources.filter((s) => s.kind === 'wtg');
-  const transfer = await buildTransferMatrix(project, dem);
+
+  // One transfer solve per distinct GEOMETRY, not per period. Periods differing
+  // only in which mode something runs share a matrix, because the transfer is
+  // `Lp − Lw` and does not depend on how loud a source is; periods differing in
+  // which sources are PRESENT do not, because an absent unit screens nothing.
+  const transferByPeriod = new Map<Period, TransferMatrix>();
+  const byGeometry = new Map<string, TransferMatrix>();
+  for (const period of opts.periods) {
+    const key = transferGeometryKey(project, period);
+    let transfer = byGeometry.get(key);
+    if (!transfer) {
+      transfer = await buildTransferMatrix(project, dem, period);
+      byGeometry.set(key, transfer);
+    }
+    transferByPeriod.set(period, transfer);
+  }
 
   const cells: CellResult[] = [];
   const warnings = new Set<string>();
@@ -524,7 +652,7 @@ export async function optimiseCurtailment(
     for (const windSpeed of opts.windSpeeds) {
       for (const windDirectionDeg of directions) {
         const { cell, warnings: w } = buildCellModel(
-          project, transfer, period, windSpeed, opts.marginDb,
+          project, transferByPeriod.get(period)!, period, windSpeed, opts.marginDb,
           windDirectionDeg === undefined ? undefined : { windDirectionDeg, model },
         );
         for (const msg of w) warnings.add(msg);
@@ -543,6 +671,7 @@ export async function optimiseCurtailment(
     turbines: turbines.map((t) => ({ id: t.id, name: t.name })),
     cells,
     warnings: [...warnings],
+    marginDb: opts.marginDb,
   };
 }
 

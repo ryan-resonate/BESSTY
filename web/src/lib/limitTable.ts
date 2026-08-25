@@ -175,6 +175,11 @@ function parseNumber(raw: string): number | null {
   if (raw === '') return null;
   // Tolerate thousands separators and a trailing unit ("42 dB", "1,013").
   const cleaned = raw.replace(/,(?=\d{3}\b)/g, '').replace(/\s*d?B?\(?[ACZ]?\)?$/i, '').trim();
+  // A cell holding ONLY a unit — "dB", "dBA", a stray "A" from a merged header
+  // — is consumed entirely by the strip above, and `Number('')` is 0. Without
+  // this line that becomes an accepted 0 dB limit: a value nobody entered,
+  // which is the one thing this module exists to prevent.
+  if (cleaned === '') return null;
   const v = Number(cleaned);
   return Number.isFinite(v) ? v : null;
 }
@@ -312,7 +317,9 @@ export function parseBulkLimits(text: string): BulkParseResult {
 export interface BulkMatch {
   /// Receiver id → the row that will be written to it.
   matched: Map<string, BulkLimitRow>;
-  /// Rows whose name matched no receiver.
+  /// Rows whose name matched no receiver, or that collided with another row on
+  /// the same receiver — see `matchBulkRows`. Either way the row was not used,
+  /// which is what the importer reports.
   unmatchedRows: string[];
   /// Receivers the file said nothing about. Reported rather than left silently
   /// on stale limits — "not in the file" and "unchanged on purpose" look
@@ -321,11 +328,25 @@ export interface BulkMatch {
 }
 
 /// Match rows to receivers by name: exact first, then case-insensitive and
-/// whitespace-trimmed. Ambiguous loose matches are left unmatched rather than
-/// guessed.
+/// whitespace-trimmed. Ambiguous matches are left unmatched rather than guessed
+/// — in BOTH directions.
+///
+/// One row naming two receivers was always refused. Two rows naming the SAME
+/// receiver used to be last-wins: both counted as used, so neither appeared in
+/// `unmatchedRows`, and the importer reported a clean success. A spreadsheet
+/// with a corrected row above a stale one — the single most common way these
+/// blocks are edited — would then write the stale limit and say nothing. Worse,
+/// a later LOOSE match overwrote an earlier EXACT one, inverting the precedence
+/// this function documents.
+///
+/// Both rows are now refused and reported. Refusing is right rather than merely
+/// safe: the file genuinely does not say which limit the user meant, and a
+/// limit nobody chose is exactly what must never reach a receiver.
 export function matchBulkRows(rows: BulkLimitRow[], receivers: Receiver[]): BulkMatch {
   const matched = new Map<string, BulkLimitRow>();
   const usedRows = new Set<BulkLimitRow>();
+  /// Receiver ids more than one row claimed, and every row that claimed them.
+  const contested = new Map<string, BulkLimitRow[]>();
   const byExact = new Map<string, Receiver[]>();
   const byLoose = new Map<string, Receiver[]>();
   const push = (m: Map<string, Receiver[]>, k: string, r: Receiver) => {
@@ -338,18 +359,33 @@ export function matchBulkRows(rows: BulkLimitRow[], receivers: Receiver[]): Bulk
     push(byLoose, r.name.trim().toLowerCase(), r);
   }
 
+  const claim = (id: string, row: BulkLimitRow) => {
+    const held = matched.get(id);
+    if (held && held !== row) {
+      // Second claim on this receiver: neither row wins.
+      contested.set(id, [...(contested.get(id) ?? [held]), row]);
+      return;
+    }
+    matched.set(id, row);
+    usedRows.add(row);
+  };
+
   for (const row of rows) {
     const exact = byExact.get(row.name);
     if (exact?.length === 1) {
-      matched.set(exact[0].id, row);
-      usedRows.add(row);
+      claim(exact[0].id, row);
       continue;
     }
     const loose = byLoose.get(row.name.trim().toLowerCase());
-    if (loose?.length === 1) {
-      matched.set(loose[0].id, row);
-      usedRows.add(row);
-    }
+    if (loose?.length === 1) claim(loose[0].id, row);
+  }
+
+  // Drop every contested receiver and un-use the rows that claimed it, so they
+  // surface as unmatched and the receiver surfaces as missing. The importer's
+  // "imported with gaps" path then names both.
+  for (const [id, rowsForId] of contested) {
+    matched.delete(id);
+    for (const r of rowsForId) usedRows.delete(r);
   }
 
   return {

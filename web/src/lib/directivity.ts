@@ -143,15 +143,30 @@ const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
   'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
 
 /// "270° (W)" — the direction the wind is coming FROM.
+///
+/// A fractional bearing keeps one decimal rather than rounding: a 16-point
+/// sweep is on the half-degree, and printing 22.5° as "23°" made the label
+/// disagree with the direction actually swept.
 export function describeWindFrom(deg: number): string {
   const i = Math.round((((deg % 360) + 360) % 360) / 22.5) % 16;
-  return `${Math.round(deg)}° (${COMPASS[i]})`;
+  const shown = Number.isInteger(deg) ? String(deg) : deg.toFixed(1);
+  return `${shown}° (${COMPASS[i]})`;
 }
 
 /// Wind directions to sweep, in degrees FROM, at the given step.
+///
+/// Divides the compass into whole sectors rather than accumulating the step.
+/// Rounding the STEP broke the one option that needs a fraction: 22.5° rounded
+/// to 23, so the "16 directions" the UI offers were 0°, 23°, 46° … 345°, which
+/// is not a 16-point wind rose, leaves a 15° gap at north, and hands an operator
+/// a schedule against sectors up to 7.5° away from the ones they asked for.
+///
+/// Counting sectors instead makes 22.5 exact, leaves 10 / 30 / 45 unchanged, and
+/// avoids float drift accumulating across a full turn.
 export function sweepDirections(stepDeg: number): number[] {
-  const step = Math.max(1, Math.round(stepDeg));
+  if (!Number.isFinite(stepDeg) || stepDeg <= 0) return [0];
+  const n = Math.max(1, Math.round(360 / stepDeg));
   const out: number[] = [];
-  for (let d = 0; d < 360; d += step) out.push(d);
+  for (let i = 0; i < n; i++) out.push((i * 360) / n);
   return out;
 }

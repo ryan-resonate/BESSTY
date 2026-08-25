@@ -113,7 +113,18 @@ export function LimitTableEditor(props: {
         <div style={{ marginTop: 4 }}>
           <label className="fld" style={{ fontSize: 11 }}>
             <span>Wind speeds</span>
+            {/*
+              `key` re-mounts the input whenever the table's speeds change from
+              anywhere else, so `defaultValue` is re-applied. Without it the box
+              kept whatever it was first rendered with: paste a 3–12 m/s grid
+              over a 5–7 table and the box still read "5, 6, 7" — then simply
+              clicking into it and tabbing away re-parsed that stale text and
+              truncated the freshly pasted table back to three columns. The
+              surviving columns kept their pasted values, which made the loss
+              even harder to notice.
+            */}
             <input
+              key={table.windSpeeds.join(',')}
               defaultValue={table.windSpeeds.join(', ')}
               onBlur={(e) => setSpeeds(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
@@ -147,7 +158,16 @@ export function LimitTableEditor(props: {
                         <input
                           type="number" step={0.5}
                           value={table.limits[p][i]}
-                          onChange={(e) => setCell(p, i, +e.target.value)}
+                          // An empty box is `+'' === 0`, and 0 dB is a real
+                          // limit that nothing downstream would question. Hold
+                          // the previous value while the field is being retyped
+                          // instead of banking a silent zero.
+                          onChange={(e) => {
+                            const v = e.target.value.trim();
+                            if (v === '') return;
+                            const n = Number(v);
+                            if (Number.isFinite(n)) setCell(p, i, n);
+                          }}
                           style={{ width: 46, fontSize: 11, padding: '1px 3px', textAlign: 'right' }}
                         />
                       </td>

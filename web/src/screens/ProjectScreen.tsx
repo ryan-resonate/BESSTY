@@ -1848,7 +1848,17 @@ export function ProjectScreen() {
           onClose={() => setShowCurtailment(false)}
           // Applied through setProject, so a schedule lands as one ordinary
           // undoable edit rather than through a side door that skips history.
-          onApplySchedule={(cell) => setProject(applyCellToProject(project, cell))}
+          // Built from the COMMITTED project, not this render's closure. The
+          // apply path awaits a confirmation dialog for directional cells, and
+          // `useProjectDoc` silently swaps in a remote snapshot while no local
+          // edit is pending — so with a second window open on the same project,
+          // a colleague's edit landing during that dialog would be reverted by
+          // the stale closure, and the undo entry would be the stale project
+          // too. See `projectRef` above.
+          onApplySchedule={(cell) => {
+            const base = projectRef.current ?? project;
+            setProject(applyCellToProject(base, cell));
+          }}
         />
       )}
 

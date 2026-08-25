@@ -19,6 +19,7 @@ import type { Period, Project, Source } from '../lib/types';
 import { MODE_OFF, MODE_OFF_LABEL, PERIODS, PERIOD_LABEL, withPeriodMode } from '../lib/modes';
 import { DEFAULT_DIRECTIVITY, describeWindFrom, sweepDirections } from '../lib/directivity';
 import {
+  modeOverridesForCell,
   optimiseCurtailment,
   precheckCurtailment,
   type CellResult,
@@ -74,11 +75,32 @@ export function CurtailmentStudy(props: {
       setResult(out);
       setViewDirection(dirs[0]);
       setRanAgainst(project);
-      const failed = out.cells.filter((c) => c.status !== 'optimal').length;
-      if (failed > 0) {
+      // Point the view at a period this run actually covered. `viewPeriod`
+      // starts at the scenario's period, and the period tabs live INSIDE the
+      // results block — so a night-only study on a project whose scenario is
+      // Day rendered no table and no tabs to reach one. The run had worked
+      // perfectly; there was simply no way to see it.
+      if (!out.cells.some((c) => c.period === viewPeriod)) {
+        const first = PERIODS.find((p) => out.cells.some((c) => c.period === p));
+        if (first) setViewPeriod(first);
+      }
+      // Counted separately. A cell the solver could not RUN — the HiGHS wasm
+      // failing to load offline makes every cell one — is not a farm that can
+      // never comply, and telling someone their site is unbuildable because a
+      // download failed is the wrong error twice over.
+      const infeasible = out.cells.filter((c) => c.status === 'infeasible').length;
+      const errored = out.cells.filter((c) => c.status === 'error').length;
+      if (infeasible > 0) {
         notify.warning(
-          `${failed} of ${out.cells.length} cells could not be met even with every turbine off.`,
+          `${infeasible} of ${out.cells.length} cells could not be met even with every turbine off.`,
           { title: 'Some cells are infeasible' },
+        );
+      }
+      if (errored > 0) {
+        notify.error(
+          `${errored} of ${out.cells.length} cells could not be solved. `
+          + (out.cells.find((c) => c.status === 'error')?.detail ?? ''),
+          { title: 'The solver failed on some cells' },
         );
       }
     } catch (e) {
@@ -233,7 +255,7 @@ export function CurtailmentStudy(props: {
                 className="btn small"
                 onClick={() => triggerDownload(
                   `${defaultFilenameStem(project, 'curtailment')}.xlsx`,
-                  exportCurtailmentXlsx(project, result, { marginDb }),
+                  exportCurtailmentXlsx(project, result),
                 )}
               >↓ XLSX</button>
             )}
@@ -274,13 +296,20 @@ export function CurtailmentStudy(props: {
                         // Worst first is the wrong default, but knowing which
                         // directions actually cost generation is the point of
                         // the sweep, so each option carries its own cost.
-                        const cost = result.cells
-                          .filter((c) => c.period === viewPeriod && c.windDirectionDeg === d)
+                        const forDir = result.cells
+                          .filter((c) => c.period === viewPeriod && c.windDirectionDeg === d);
+                        const cost = forDir
                           .reduce((a, c) => a + (c.status === 'optimal' ? c.lostKw : 0), 0);
+                        // A direction whose expensive cells are INFEASIBLE sums
+                        // to zero lost kW, and "no curtailment" is the last
+                        // thing it should be labelled — blank reading as fine
+                        // is the trap this whole window is built to avoid.
+                        const unmet = forDir.filter((c) => c.status !== 'optimal').length;
+                        const label = unmet > 0
+                          ? ` — ${unmet} wind speed${unmet === 1 ? '' : 's'} unmet`
+                          : cost > 0 ? ` — ${cost.toFixed(0)} kW` : ' — no curtailment';
                         return (
-                          <option key={d} value={d}>
-                            {describeWindFrom(d)}{cost > 0 ? ` — ${cost.toFixed(0)} kW` : ' — no curtailment'}
-                          </option>
+                          <option key={d} value={d}>{describeWindFrom(d)}{label}</option>
                         );
                       })}
                     </select>
@@ -346,12 +375,21 @@ export function CurtailmentStudy(props: {
                     />
                     <SummaryRow
                       label="Headroom"
-                      title="How far the binding receiver sits below its limit"
+                      title={'How far the binding receiver sits below the CAP it was held to '
+                        + '— the limit less any margin and tonality penalty, plus the rounding '
+                        + 'grace. Positive is under; an over-limit cell reads "N over".'}
                       speeds={shownSpeeds}
                       cells={shown}
+                      // Positive means headroom, the same sign the XLSX writes.
+                      // This used to be negated for display, so a cell with
+                      // 2.3 dB to spare read "-2.3" under a heading promising
+                      // how far BELOW the limit it sat — and the spreadsheet
+                      // exported from the same run said "2.30".
                       render={(c) => (c.marginAtBindingDb == null
                         ? '—'
-                        : `${c.marginAtBindingDb >= 0 ? '' : '+'}${(-c.marginAtBindingDb).toFixed(1)}`)}
+                        : c.marginAtBindingDb >= 0
+                          ? c.marginAtBindingDb.toFixed(1)
+                          : `${(-c.marginAtBindingDb).toFixed(1)} over`)}
                     />
                     <SummaryRow
                       label=""
@@ -428,13 +466,20 @@ function SummaryRow(props: {
 ///
 /// Only the cell's own period is written: applying a night schedule must leave
 /// what the turbines do during the day exactly as it was.
+/// Built from `modeOverridesForCell` rather than reading `cell.modes` again.
+/// Two places deciding which period a schedule touches is how they come to
+/// disagree, and the one that would have been wrong is this one — the one that
+/// writes to the project.
 export function applyCellToProject(project: Project, cell: CellResult): Project {
+  const edits = new Map(
+    modeOverridesForCell(cell).map((e) => [e.sourceId, e]),
+  );
   return {
     ...project,
     sources: project.sources.map((s) => {
-      const mode = cell.modes[s.id];
-      if (mode === undefined) return s;
-      return { ...s, modeOverride: withPeriodMode(s.modeOverride, cell.period, mode) };
+      const edit = edits.get(s.id);
+      if (!edit) return s;
+      return { ...s, modeOverride: withPeriodMode(s.modeOverride, edit.period, edit.mode) };
     }),
   };
 }

@@ -402,10 +402,43 @@ export function CatalogEntryEditor(props: {
     setDraft((d) => ({ ...d, [k]: v }));
   }
   function updateMode(idx: number, patch: Partial<CatalogModeData>) {
-    setDraft((d) => ({
-      ...d,
-      modes: d.modes.map((m, i) => (i === idx ? { ...m, ...patch } : m)),
-    }));
+    setDraft((d) => {
+      const modes = d.modes.map((m, i) => (i === idx ? { ...m, ...patch } : m));
+      // A rename must carry `defaultMode` with it. The default is stored BY
+      // NAME, and `spectrumFor` falls back to the first mode on a name it does
+      // not recognise — so renaming the default used to leave every source that
+      // inherits it silently running whichever mode happened to be listed
+      // first, with no error and a changed level.
+      const before = d.modes[idx]?.name;
+      const after = patch.name;
+      const defaultMode = after !== undefined && before !== undefined && d.defaultMode === before
+        ? after
+        : d.defaultMode;
+      return { ...d, modes, defaultMode };
+    });
+  }
+
+  /// Why this draft cannot be saved, or null.
+  ///
+  /// Mode NAMES are the interchange currency of the whole app: `defaultMode`
+  /// points at one, every `modeOverride` on every source stores one, and an
+  /// applied curtailment schedule writes one per turbine. `spectrumFor` answers
+  /// an unrecognised name with the catalog's FIRST mode rather than an error, so
+  /// a blank or duplicated name does not fail — it quietly runs the wrong plant.
+  /// That is the one failure the mode design exists to make impossible, and the
+  /// editor was the hole in it.
+  function draftProblem(d: CatalogEntry): string | null {
+    const names = d.modes.map((m) => m.name.trim());
+    if (names.some((n) => n === '')) return 'Every mode needs a name.';
+    const dupes = names.filter((n, i) => names.indexOf(n) !== i);
+    if (dupes.length > 0) {
+      return `Two modes are both called "${dupes[0]}". Mode names are how sources refer to `
+        + 'them, so they have to be distinct.';
+    }
+    if (!names.includes(d.defaultMode.trim())) {
+      return `The default mode "${d.defaultMode}" is not one of this model's modes.`;
+    }
+    return null;
   }
   function addMode() {
     const base = draft.modes[0] ?? blankEntry(draft.kind).modes[0];
@@ -773,8 +806,14 @@ export function CatalogEntryEditor(props: {
                                   // the optimiser reports by name — not a zero,
                                   // which would read as a turbine that generates
                                   // nothing and is therefore free to switch off.
-                                  if (e.target.value === '') delete next[k];
-                                  else next[k] = +e.target.value;
+                                  // Negative power is not a datum, it is a typo.
+                                  // Left in, it makes that mode's MILP cost
+                                  // exceed the cost of switching the turbine
+                                  // off, so the optimiser quietly prefers
+                                  // stopping a turbine that generates fine.
+                                  const n = Number(e.target.value);
+                                  if (e.target.value === '' || !Number.isFinite(n)) delete next[k];
+                                  else next[k] = Math.max(0, n);
                                   updateMode(activeModeIdx, { powerKw: next });
                                 }}
                                 onPaste={(e) => {
@@ -791,8 +830,8 @@ export function CatalogEntryEditor(props: {
                                   let written = 0;
                                   parsed.values.forEach((v, off) => {
                                     const key = wsKeys[ci + off];
-                                    if (key === undefined || v == null) return;
-                                    next[key] = v;
+                                    if (key === undefined || v == null || !Number.isFinite(v)) return;
+                                    next[key] = Math.max(0, v);
                                     written++;
                                   });
                                   updateMode(activeModeIdx, { powerKw: next });
@@ -837,8 +876,35 @@ export function CatalogEntryEditor(props: {
         </div>
 
         <div className="modal-footer">
+          {draftProblem(draft) && (
+            <span style={{ fontSize: 11, color: 'var(--red)', marginRight: 'auto' }}>
+              ⚠ {draftProblem(draft)}
+            </span>
+          )}
           <button className="btn" onClick={props.onClose}>Cancel</button>
-          <button className="btn primary" onClick={() => props.onSave(draft)}>Save</button>
+          <button
+            className="btn primary"
+            disabled={draftProblem(draft) != null}
+            onClick={() => {
+              const problem = draftProblem(draft);
+              if (problem) { notify.warning(problem, { title: 'Cannot save this model' }); return; }
+              // Renaming a mode does NOT follow the name into projects that
+              // already store it — those are separate documents this editor
+              // cannot reach. Say so rather than let it be discovered as a
+              // level that changed for no visible reason.
+              const renamed = props.entry
+                && props.entry.modes.some((before) => !draft.modes.some((m) => m.name === before.name));
+              if (renamed) {
+                notify.warning(
+                  'A mode was renamed. Sources in existing projects that reference the old '
+                  + 'name will not follow it — re-pick their mode, or an applied curtailment '
+                  + 'schedule may no longer resolve.',
+                  { title: 'Renamed modes do not follow into saved projects' },
+                );
+              }
+              props.onSave(draft);
+            }}
+          >Save</button>
         </div>
       </div>
     </ModalBackdrop>

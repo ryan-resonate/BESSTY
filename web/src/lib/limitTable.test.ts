@@ -264,3 +264,43 @@ test('an unmatched receiver is not touched at all', () => {
   const out = applyBulkLimits(p, 'night', { windSpeeds: [4], rows: [] }, new Map());
   assert.equal(out[0], r, 'same object — no table invented for it');
 });
+
+// ---------------------------------------------------- review-driven guards
+
+test('a cell holding only a unit is no data, not a limit of zero', () => {
+  // The unit-stripping regex can consume the whole cell, and `Number('')` is 0.
+  // A merged Excel header or a partial copy therefore produced a silently
+  // accepted 0 dB limit — a value nobody entered, judged against.
+  const grid = parseLimitGrid('\t4\t6\nDay\t40\tdB\nEvening\t38\t39\nNight\t35\t36');
+  assert.equal(grid.ok, false, 'a unit-only cell must be refused, not read as 0');
+
+  const bulk = parseBulkLimits('\t4\t6\nR1\t35\tdBA');
+  assert.equal(bulk.ok, false);
+
+  // The units that DO belong on a number are still tolerated.
+  const withUnits = parseLimitGrid('\t4\t6\nDay\t40 dB\t41dB(A)\nEvening\t38\t39\nNight\t35\t36');
+  assert.equal(withUnits.ok, true);
+  assert.deepEqual(withUnits.ok && withUnits.table.limits.day, [40, 41]);
+});
+
+test('two rows naming the same receiver are both refused, not silently last-wins', () => {
+  // The commonest way these blocks are edited is a corrected row above a stale
+  // one. Last-wins wrote the stale limit and reported a clean import; worse, a
+  // later LOOSE match beat an earlier EXACT one, inverting the documented
+  // precedence.
+  const r = rx({ id: 'a', name: 'House A' });
+  const rows = [
+    { name: 'House A', values: [30] },
+    { name: 'house a', values: [99] },
+  ];
+  const m = matchBulkRows(rows, [r]);
+  assert.equal(m.matched.size, 0, 'neither row may win');
+  assert.deepEqual(m.unmatchedRows, ['House A', 'house a']);
+  assert.deepEqual(m.missingReceivers, ['House A'], 'the receiver is reported as untouched');
+});
+
+test('a single unambiguous row still matches, loosely if it must', () => {
+  const r = rx({ id: 'a', name: 'House A' });
+  assert.equal(matchBulkRows([{ name: 'House A', values: [30] }], [r]).matched.get('a')?.values[0], 30);
+  assert.equal(matchBulkRows([{ name: ' house a ', values: [31] }], [r]).matched.get('a')?.values[0], 31);
+});

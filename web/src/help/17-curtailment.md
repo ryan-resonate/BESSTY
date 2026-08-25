@@ -9,7 +9,7 @@ Each answer is a *proven* optimum, not a good guess: the problem is handed to a 
 
 ## What it needs first
 
-- **A power curve for every turbine mode** — the kW row under the spectrum grid in the catalog editor. This is what a quieter mode is priced against. A mode with no power curve makes that turbine unschedulable, and the optimiser will name it rather than guess.
+- **A power curve for every turbine mode** — the kW row under the spectrum grid in the catalog editor, filled in at **every** wind speed the mode has a spectrum for. This is what a quieter mode is priced against. A mode with a missing or partial curve makes that turbine unschedulable, and the optimiser names it rather than guessing: a curve entered for 8–12 m/s would otherwise price the mode at its 8 m/s output all the way down to 4, and hand back a confident schedule that is simply wrong about the generation it costs.
 - **Receiver limits.** Scalar per-period limits work. If your conditions vary the limit with wind speed, switch on **Wind-speed limits** in Settings and fill in each receiver's grid.
 
 Wind speeds default to those every turbine's catalog covers — the intersection, because a speed one turbine has no spectrum for cannot be scheduled.
@@ -20,7 +20,7 @@ Turbines down, wind speeds across, one tab per period. Under the modes:
 
 - **Lost kW** — generation given up across the farm at that wind speed.
 - **Binding** — the receiver with the least headroom under that schedule. This is the one deciding the answer; everything else has room to spare.
-- **Headroom** — how far that receiver sits below its limit.
+- **Headroom** — how far that receiver sits below the **cap** it was held to, which is the limit less any margin and tonality penalty (see *What the schedule assumes*). Positive means room to spare; a cell that cannot be met reads "N over" instead.
 
 **Off** means the turbine is stopped for that period. It is always an available choice, which is why a schedule almost always exists.
 
@@ -28,7 +28,11 @@ Turbines down, wind speeds across, one tab per period. Under the modes:
 
 ## When a cell cannot be met
 
-Because switching a turbine off is always available, the turbines alone can never make a cell impossible. An infeasible cell therefore means something the optimiser **cannot** switch — a BESS, a substation — is already over the limit at that receiver on its own. The table names the receiver and how far over it is.
+Because switching a turbine off is always available, the turbines alone can never make a cell impossible. An infeasible cell therefore means something the optimiser **cannot** switch — a BESS, a substation — is already over the **cap** at that receiver on its own. The table names the receiver worst affected, in decibels, and how far over it is.
+
+Note "over the cap", not "over the limit": with a margin set, or with the tonality penalty applied, a cell can be infeasible while the receiver is still under its actual limit. Clearing the margin is the first thing to try.
+
+A cell can also fail because the solver itself could not run — if the optimiser's solver could not be downloaded, for instance. That is reported separately, and is not a statement about the site.
 
 ## What the schedule assumes
 

@@ -25,7 +25,7 @@ import { weightedTotal, weightingFor, weightingLabel, weightsFor, type Weighting
 import { assessedLevel, exceedsLimit, limitComparisonFor, limitFor } from './limits';
 import { describeTonalBands, tonalitySettingsFor } from './tonality';
 import {
-  PERIODS, PERIOD_LABEL, describeModes, modeForPeriod, modeLabel, perPeriodModesEnabled,
+  PERIODS, PERIOD_LABEL, describeModes, groupPeriodsBySolve, modeForPeriod, modeLabel,
 } from './modes';
 import { windSpeedLimitsEnabled } from './limitTable';
 import { describeWindFrom } from './directivity';
@@ -233,7 +233,7 @@ export function exportReceiversXlsx(project: Project, results: ExportResults): B
     ['Band system', project.scenario.bandSystem],
     ['Assessment weighting', weightingLabel(weightingFor(project))],
     // Whether the three level columns are three solves or three copies of one.
-    ['Modes per period', perPeriodModesEnabled(project) ? 'on' : 'off'],
+    ['Periods solved separately', groupPeriodsBySolve(project).length > 1 ? 'yes — the sources run different modes in different periods' : 'no — one solve serves all three'],
     ['Generated', new Date().toISOString()],
   ];
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(info), 'Info');
@@ -509,7 +509,7 @@ export function exportSourcesShp(project: Project): Blob {
         ROTOR_M: s.rotorDiameterM ?? NaN,
         ELEV_OFF: s.elevationOffset ?? NaN,
         YAW_DEG: s.yawDeg ?? NaN,
-        MODE: modeLabel(modeForPeriod(s.modeOverride, period), ''),
+        MODE: modeLabel(modeForPeriod(s.modeOverride, period), INHERITED),
         MODE_DEN: describeModes(s.modeOverride, INHERITED),
         GROUP_ID: s.groupId ?? '',          // empty for standalone sources
         SLOT_KEY: s.slotKey ?? '',
@@ -523,8 +523,12 @@ export function exportSourcesShp(project: Project): Blob {
   // so GIS would show a mode that doesn't exist. DBF fields are fixed-width per
   // FILE, not per row, so size it to this export's longest value (254 is the
   // dBASE hard ceiling; beyond that truncation is unavoidable).
-  const denWidth = Math.min(254, features.reduce(
-    (m, f) => Math.max(m, String(f.properties.MODE_DEN).length), 80));
+  // MODE is sized from the data for the same reason — a name long enough to be
+  // truncated is a mode that does not exist, presented as one that does.
+  const widthOf = (field: string, floor: number) => Math.min(254, features.reduce(
+    (m, f) => Math.max(m, String(f.properties[field]).length), floor));
+  const denWidth = widthOf('MODE_DEN', 80);
+  const modeWidth = widthOf('MODE', 40);
   const bundle = buildPointShapefile(features, [
     { name: 'SRC_ID', type: 'C', width: 36 },
     { name: 'NAME', type: 'C', width: 80 },
@@ -535,7 +539,7 @@ export function exportSourcesShp(project: Project): Blob {
     { name: 'ROTOR_M', type: 'N', width: 8, decimals: 1 },
     { name: 'ELEV_OFF', type: 'N', width: 8, decimals: 1 },
     { name: 'YAW_DEG', type: 'N', width: 7, decimals: 1 },
-    { name: 'MODE', type: 'C', width: 40 },
+    { name: 'MODE', type: 'C', width: modeWidth },
     { name: 'MODE_DEN', type: 'C', width: denWidth },
     { name: 'GROUP_ID', type: 'C', width: 36 },
     { name: 'SLOT_KEY', type: 'C', width: 44 },
@@ -754,10 +758,13 @@ export function defaultFilenameStem(project: Project, suffix: string): string {
 /// the rows that let a reader check the schedule rather than take it on trust —
 /// generation given up, which receiver is binding, and how much headroom is
 /// left at it. A settings sheet records what the run assumed.
+/// The margin comes off the RESULT, not from the caller. It used to be passed
+/// in from the study window's live input, which can be edited after a run
+/// without invalidating the table — so a study run at 0 dB could be exported
+/// with a settings sheet claiming 3 dB of margin it never had.
 export function exportCurtailmentXlsx(
   project: Project,
   result: CurtailmentResult,
-  opts: { marginDb: number },
 ): Blob {
   const wb = XLSX.utils.book_new();
   const periods = PERIODS.filter((p) => result.cells.some((c) => c.period === p));
@@ -816,7 +823,7 @@ export function exportCurtailmentXlsx(
     ['Generated', new Date().toISOString()],
     ['Objective', 'Minimise generation lost, per wind speed and period, subject to every receiver complying'],
     ['Solver', 'HiGHS (MILP) — each cell solved to a proven global optimum'],
-    ['Margin below limit (dB)', opts.marginDb],
+    ['Margin below limit (dB)', result.marginDb],
     ['Assessment weighting', weightingLabel(weightingFor(project))],
     ['Limit comparison', limitComparisonFor(project)],
     ['Wind-speed limits', windSpeedLimitsEnabled(project) ? 'on' : 'off (scalar per-period limits)'],
