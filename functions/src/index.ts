@@ -152,3 +152,9 @@ export const adminSetUserFlag = onCall(
     return { ok: true };
   },
 );
+
+// ===== Share links =====
+// Publishing and revoking read-only public share links. Kept in its own module
+// because it is the security boundary of that feature: `share.ts` decides,
+// field by field, what a public capability URL can expose.
+export { publishShare, revokeShare } from './share';

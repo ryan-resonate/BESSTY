@@ -75,6 +75,31 @@ service firebase.storage {
       allow delete: if canEditProject(projectId);
     }
 
+    // ===== Share payloads =====
+    //
+    // Where a share's payload lands when it is too big for a Firestore
+    // document (a multi-state share with full rasters runs to megabytes).
+    // The object name is the share token, so reaching this object requires
+    // the same ~190-bit capability as reading the share doc itself.
+    //
+    // Read is PUBLIC and unconditional, which is a deliberate and narrow
+    // trade. Storage rules cannot read a Firestore document cheaply enough to
+    // re-check `revoked` and `expiresAt` on every object read, so revocation
+    // is enforced by DELETING the object — the revoke path removes it, and
+    // republishing writes a new token. That means the only window where a
+    // revoked share's payload is still fetchable is between the flag flip and
+    // the delete, and the flag flip alone already stops the viewer resolving
+    // the token to this path.
+    //
+    // Writes are the function's (admin SDK bypasses these rules). No client
+    // may write here, and — as in Firestore — LIST IS NEVER GRANTED, so the
+    // bucket cannot be walked for tokens.
+    match /shares/{token}/{objectName} {
+      allow get: if true;
+      allow list: if false;
+      allow write, delete: if false;
+    }
+
     // ===== Default: deny =====
     match /{allPaths=**} {
       allow read, write: if false;

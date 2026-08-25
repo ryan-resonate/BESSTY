@@ -164,5 +164,52 @@ service cloud.firestore {
     match /authAllowlist/{hashedEmail} {
       allow read, write: if isAdmin();
     }
+
+    // ===== shares/{token} — read-only public share links =====
+    //
+    // The ONLY collection in this database readable without signing in. The
+    // token is a capability: ~190 bits from a CSPRNG, and holding it is the
+    // whole of the authorisation. That design only holds if two things are
+    // true, and both are enforced here rather than in the client:
+    //
+    //   1. LIST IS DENIED ABSOLUTELY. `get` is granted on a single document
+    //      whose id the caller already knows; `list` would let anyone walk the
+    //      collection and harvest every live share, which turns an unguessable
+    //      token into no protection at all. There is deliberately no rule
+    //      granting `list` below — not a narrow one, not an admin one. Note
+    //      that `allow read` would grant BOTH, so this collection must always
+    //      spell out `get` on its own.
+    //
+    //   2. THE DOCUMENT CANNOT BE WRITTEN BY THE CLIENT that reads it.
+    //      Payloads are assembled by a Cloud Function using the admin SDK,
+    //      which bypasses these rules entirely. A client write is refused even
+    //      for the owner, with one exception: revoking, below.
+    //
+    // Expiry and revocation are checked HERE, not just in the viewer. A viewer
+    // check is a courtesy that produces a readable message; this is what makes
+    // an expired link actually stop working.
+    match /shares/{token} {
+
+      allow get: if resource.data.revoked == false
+        && request.time < resource.data.expiresAt;
+
+      // Owner-only, and the ONLY field a client may change is `revoked`, in the
+      // one direction. Everything else is the function's.
+      //
+      // Written as "every other field is unchanged" rather than "these fields
+      // are allowed": a share doc that grows a field later must not become
+      // client-writable by omission. `diff().affectedKeys()` names exactly what
+      // this write touches, whatever the document happens to contain.
+      allow update: if signedIn()
+        && request.auth.uid == resource.data.ownerUid
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['revoked'])
+        && request.resource.data.revoked == true;
+
+      // Never from a client. Create is the function's job (it is the thing
+      // holding the allowlist); delete would orphan any Storage payload, so
+      // revocation is the supported way to kill a link.
+      allow create, delete: if false;
+    }
   }
 }
