@@ -10,11 +10,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { capDbFor, describeCell, powerKwAt, transferFromResults } from './curtailment';
+import {
+  capDbFor, describeCell, powerKwAt, precheckCurtailment, transferFromResults,
+} from './curtailment';
 import type { CellModel } from './curtailment';
 import { exceedsLimit } from './limits';
 import type { LimitComparison } from './limits';
-import type { Project, Receiver } from './types';
+import type { CatalogEntry, Project, Receiver } from './types';
 import type { ReceiverResult } from './solver';
 
 function rx(over: Partial<Receiver> = {}): Receiver {
@@ -160,4 +162,73 @@ test('a source whose Lw length disagrees with the solve is dropped, not mixed', 
   }];
   const t = transferFromResults(new Map([['S1', new Float64Array([100, 100])]]), results);
   assert.equal(t.get('S1'), undefined);
+});
+
+// -------------------------------------------- power curves that stop at cut-in
+
+/// A V163-shaped catalog entry: spectra from 3 m/s (as the datasheet gives
+/// them), and a power curve entered from cut-in upward — which is what a real
+/// datasheet carries and what anyone actually types in.
+function v163(powerFrom: number, powerTo: number): CatalogEntry {
+  const windSpeeds = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+  const spectra: Record<string, number[]> = {};
+  const powerKw: Record<string, number> = {};
+  for (const w of windSpeeds) {
+    spectra[String(w)] = new Array(10).fill(90);
+    if (w >= powerFrom && w <= powerTo) powerKw[String(w)] = Math.min(4500, (w - 2) * 500);
+  }
+  return {
+    id: 'V163', kind: 'wtg', displayName: 'V163 4.5 MW', defaultMode: 'PO4500',
+    origin: 'user',
+    modes: [{
+      name: 'PO4500', bandSystem: 'octave', weighting: 'A',
+      frequencies: [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000],
+      spectra, windSpeeds, powerKw,
+    }],
+  } as unknown as CatalogEntry;
+}
+
+function farm(entry: CatalogEntry): Project {
+  return {
+    ...project('exact'),
+    localCatalog: [entry],
+    sources: [{
+      id: 'T1', name: 'WTG-1', kind: 'wtg', latLng: [-33.61, 138.71],
+      modelId: entry.id, catalogScope: 'local',
+    }],
+  } as unknown as Project;
+}
+
+test('a power curve that starts at cut-in is accepted, not refused', () => {
+  // THE REGRESSION THIS PINS. The precheck used to demand a kW entry at every
+  // wind speed the mode has a SPECTRUM for. A V163's spectra start at 3 m/s
+  // and its power curve sensibly starts at cut-in, so complete, ordinary data
+  // was refused — naming all 55 turbines and blocking the optimiser outright,
+  // with no way to tell which speeds it wanted.
+  const pre = precheckCurtailment(farm(v163(4, 15)));
+  assert.deepEqual(pre.reasons, []);
+  assert.equal(pre.ok, true);
+});
+
+test('a mode with no power curve at all is still refused, and named', () => {
+  // The check that was worth having is untouched: without any kW, the cost of
+  // a quieter mode is unknown and a schedule would be invented.
+  const pre = precheckCurtailment(farm(v163(99, 99)));   // no keys written
+  assert.equal(pre.ok, false);
+  assert.ok(pre.reasons.some((r: string) => /no power curve/.test(r)), pre.reasons.join(' | '));
+  assert.ok(pre.reasons.some((r: string) => /WTG-1/.test(r)));
+});
+
+test('a gap INSIDE the curve is interpolated without complaint', () => {
+  // Reading a power curve between its entered points is what a power curve is
+  // for. Only the flat hold past an end is an extrapolation.
+  const entry = v163(4, 15);
+  delete entry.modes[0].powerKw!['9'];
+  const pre = precheckCurtailment(farm(entry));
+  assert.deepEqual(pre.reasons, []);
+  // …and the interpolated value is the honest midpoint of its neighbours:
+  // 8 m/s is 3000 kW and 10 m/s is 4000 kW, so 9 reads 3500.
+  assert.equal(powerKwAt(entry.modes[0], 8), 3000);
+  assert.equal(powerKwAt(entry.modes[0], 10), 4000);
+  assert.equal(powerKwAt(entry.modes[0], 9), 3500);
 });

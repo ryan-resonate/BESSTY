@@ -164,7 +164,6 @@ export function precheckCurtailment(project: Project): Precheck {
 
   const covered: number[][] = [];
   const missingPower: string[] = [];
-  const partialPower: string[] = [];
   const missingEntry: string[] = [];
   for (const t of turbines) {
     const entry = lookupEntry(project, t);
@@ -173,20 +172,17 @@ export function precheckCurtailment(project: Project): Precheck {
     if (withoutPower.length > 0) {
       missingPower.push(`${t.name} (${entry.displayName}: ${withoutPower.map((m) => m.name).join(', ')})`);
     }
-    // A curve covering only PART of the mode's wind speeds is worse than none.
-    // `powerKwAt` holds flat past either end, so a curve entered for 8–12 m/s
-    // prices the mode at its 8 m/s output all the way down to 4 — and the
-    // optimiser then reports a confident "least generation given up" that is
-    // simply wrong about the generation. The check used to be "at least one
-    // finite point anywhere", which such a curve passes.
-    const gaps = entry.modes.filter((m) => {
-      if (powerKwAt(m, 10) == null) return false;      // already named above
-      const pk = m.powerKw ?? {};
-      return (m.windSpeeds ?? []).some((w) => !Number.isFinite(pk[String(w)]));
-    });
-    if (gaps.length > 0) {
-      partialPower.push(`${t.name} (${entry.displayName}: ${gaps.map((m) => m.name).join(', ')})`);
-    }
+    // A PARTIAL power curve used to be refused here, which was wrong twice
+    // over. A real curve legitimately stops at cut-in — a V163's spectra run
+    // from 3 m/s while nobody enters kW below about 4 — so the check refused
+    // ordinary, complete data. And it refused the whole optimiser over wind
+    // speeds that might not even be in the run.
+    //
+    // What actually deserves saying is narrower, and is said per run instead
+    // (see `buildCellModel`): interpolating a power curve BETWEEN entered
+    // points is standard practice and needs no warning, while holding it flat
+    // PAST either end is an extrapolation — and only matters for the wind
+    // speeds actually being optimised.
     const ws = new Set<number>();
     for (const m of entry.modes) for (const w of m.windSpeeds ?? []) ws.add(Math.round(w));
     covered.push([...ws]);
@@ -198,14 +194,6 @@ export function precheckCurtailment(project: Project): Precheck {
     reasons.push(
       'These modes have no power curve, so the generation they cost is unknown: '
       + `${missingPower.join('; ')}. Add a power row in the catalog editor.`,
-    );
-  }
-  if (partialPower.length > 0) {
-    reasons.push(
-      'These modes have a power curve that does not cover every wind speed they '
-      + `have a spectrum for: ${partialPower.join('; ')}. The missing speeds would be `
-      + 'priced at the nearest entered one, which would make the lost-kW figures — and '
-      + 'therefore the schedule — wrong without saying so. Fill in the whole kW row.',
     );
   }
 
@@ -502,6 +490,29 @@ export function buildCellModel(
         `${t.name}: ${windSpeed} m/s is outside its catalog data (${lo}–${hi} m/s); `
         + 'the nearest wind speed’s spectrum and power were used.',
       );
+    }
+    // The power-curve half of the same question, and the reason the precheck no
+    // longer refuses a partial curve. Interpolating BETWEEN entered kW points
+    // is how a power curve is meant to be read and needs no comment; holding it
+    // flat PAST either end is an extrapolation, and it only matters for the
+    // wind speeds actually being optimised. A curve entered from cut-in
+    // upwards — the normal case — says nothing here unless a run reaches below
+    // cut-in, where the flat hold would credit the turbine with power it is not
+    // making.
+    for (const m of modes) {
+      const entered = Object.keys(m.powerKw ?? {})
+        .map(Number)
+        .filter((w) => Number.isFinite(w) && Number.isFinite(m.powerKw![String(w)]));
+      if (entered.length === 0) continue;                  // no curve: named by the precheck
+      const lo = Math.min(...entered);
+      const hi = Math.max(...entered);
+      if (windSpeed < lo || windSpeed > hi) {
+        warnings.push(
+          `${t.name} (${m.name}): no power entered at ${windSpeed} m/s — the curve covers `
+          + `${lo}–${hi} m/s, so its ${windSpeed < lo ? lo : hi} m/s output was used. `
+          + 'The lost-kW figures for this wind speed are an extrapolation.',
+        );
+      }
     }
     const powers = modes.map((m) => powerKwAt(m, windSpeed) ?? 0);
     const pMax = powers.length > 0 ? Math.max(...powers) : 0;
