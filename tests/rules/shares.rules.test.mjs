@@ -9,15 +9,25 @@
 // Run with:  npm run test:rules   (from web/)
 // which starts the emulator, runs this file, and shuts the emulator down.
 //
-// REQUIRES A JDK 21+ ON PATH. The Firestore emulator is a Java program, and
-// firebase-tools 15 refuses anything older; this machine currently has JRE 1.8
-// only, so the suite is written and wired but has never been run here. That
-// matters more than a normal "TODO": the plan makes a green emulator suite a
-// non-negotiable gate before share links ship, precisely because these rules
-// are the only thing actually protecting a public URL. Treat every claim in
-// this file as unverified until it has run.
+// REQUIRES A JDK 21+ ON PATH — firebase-tools 15 refuses anything older, and
+// on Windows the Oracle `java8path` shim usually wins the PATH race even after
+// a JDK 21 is installed, so `java -version` is worth checking rather than
+// assuming.
 //
-//   winget install Microsoft.OpenJDK.21     (or any JDK 21+)
+// THIS SUITE CANNOT RUN ON THE DEVELOPMENT MACHINE, and the reason is worth
+// recording so nobody re-derives it. With JDK 21 correctly on PATH, the JVM
+// there still cannot create a loopback socket pair: `Selector.open()` throws
+// "Unable to establish loopback connection" for a six-line program with no
+// Firebase involved, under both the WEPoll and legacy Windows selector
+// providers — while Node opens loopback sockets on the same machine without
+// complaint. That is endpoint security scoped to `java.exe`; no emulator
+// version, temp-directory or JVM flag gets around it.
+//
+// So it runs in CI instead: `.github/workflows/rules-tests.yml`, on every push
+// that touches the rules. Check the Actions tab for the result — the claims in
+// this file are only worth what that run says about them.
+//
+// Locally, where the JVM can open a selector:
 //   cd web && npm run test:rules
 //
 // The five denials the plan names are each a separate test below, plus the

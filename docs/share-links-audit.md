@@ -29,11 +29,29 @@ Status keys: **[✓]** verified · **[ ]** not yet verified · **[!]** blocked �
   actionable message rather than writing a share whose payload cannot be
   fetched. Storage rules for `shares/{token}/…` are in the repo, undeployed.
 
-- **[!] The rules emulator suite has never run.** It needs a **JDK 21+**; this
-  machine has JRE 1.8. `tests/rules/shares.rules.test.mjs` is written and wired
-  to `npm run test:rules`. **Every claim in section 2 is unverified until it
-  runs.** Install a JDK 21+ and run it — this is the single highest-value item
-  on this page.
+- **[!] The rules emulator suite cannot run on the development machine.**
+  Diagnosed 2026-08-28, and recorded here so it is not re-derived:
+
+  1. `firebase-tools` 15 requires a JDK 21+. JDK 21 **is** installed
+     (`C:\Program Files\Microsoft\jdk-21.0.12.101-hotspot`), but `java`
+     resolves to the Oracle `java8path` shim, which sits earlier on PATH — so
+     `java -version` reports 1.8 and the emulator refuses to start.
+  2. With JDK 21 forced onto PATH, the emulator still dies. The cause is not
+     Firebase: `Selector.open()` fails in a six-line Java program with
+     "Unable to establish loopback connection", under BOTH the WEPoll and the
+     legacy Windows selector providers. Node opens loopback sockets on the same
+     machine without complaint, so this is endpoint security scoped to
+     `java.exe`. No emulator version, temp directory or JVM flag works around
+     it.
+
+  **Resolved by running the suite in CI instead** —
+  `.github/workflows/rules-tests.yml`, on every push touching the rules. Until
+  that workflow has gone green at least once, **every claim in section 2 below
+  remains unverified.** Check the Actions tab.
+
+  To run locally anyway, an IT exclusion allowing `java.exe` to open loopback
+  connections would do it; `netsh winsock reset` (admin, then reboot) is worth
+  trying if the machine has stale Winsock LSPs.
 
 ---
 

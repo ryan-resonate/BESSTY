@@ -1,0 +1,81 @@
+# Run the Firestore security-rules suite against the emulator.
+#
+# WHY THIS EXISTS AS CI RATHER THAN A LOCAL SCRIPT.
+#
+# `shares/{token}` is the only publicly readable collection in the database:
+# the token in a share URL is the entire access control, and these rules are
+# the only thing enforcing expiry, revocation, and the fact that the collection
+# cannot be listed. They are the highest-consequence code in the repo and the
+# least visible — nothing else in the pipeline exercises them.
+#
+# They could not be run on the development machine. The Firestore emulator is a
+# Java program, and on that machine the JVM cannot create a loopback socket
+# pair at all: `Selector.open()` throws "Unable to establish loopback
+# connection" for a six-line program with no Firebase involved, under both the
+# WEPoll and the legacy Windows selector providers, while Node opens loopback
+# sockets on the same machine without complaint. That is endpoint security
+# scoped to `java.exe`, and it is not something the repo can fix.
+#
+# A Linux runner has no such restriction. So the suite runs here, on every
+# push that touches the rules or the tests — which is better than a local
+# script anyway: a security rule that is only checked when someone remembers
+# to check it is not really checked.
+#
+# Deliberately NOT part of the Pages deploy workflow: this must be able to fail
+# without blocking a deploy of the app, and it must run on pull requests, which
+# the deploy workflow does not.
+
+name: Firestore rules
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'firestore.rules'
+      - 'storage.rules'
+      - 'firebase.json'
+      - 'tests/rules/**'
+      - 'web/package.json'
+      - '.github/workflows/rules-tests.yml'
+  pull_request:
+    paths:
+      - 'firestore.rules'
+      - 'storage.rules'
+      - 'firebase.json'
+      - 'tests/rules/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rules:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # The Firestore emulator needs a JDK; firebase-tools 15 refuses anything
+      # older than 21.
+      - name: JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # `npm ci` in web/ brings both @firebase/rules-unit-testing and the
+      # firebase SDK the tests import.
+      - name: Install
+        working-directory: web
+        run: npm ci
+
+      - name: Run the rules suite
+        working-directory: web
+        run: npm run test:rules
