@@ -21,6 +21,7 @@ import {
 } from '../lib/contourLines';
 import { footprintFor, lookupEntry, resolveContainer } from '../lib/catalog';
 import { sourceIsOff } from '../lib/modes';
+import { BoundedCache, resolveTile } from '../lib/esriTiles';
 
 export type ContourMode = 'filled' | 'lines' | 'both';
 
@@ -288,8 +289,10 @@ export const TILE_URLS: Record<BaseMap, { url: string; attribution: string; max:
 // covered globally).
 //
 // All loaded tile images are cached by (z, x, y) so a single parent
-// tile reused by all four children only fetches once. Cache is
-// per-layer-instance and cleared on layer removal.
+// tile reused by all four children only fetches once. The cache is
+// per-layer-instance, size-bounded, and cleared when the layer is
+// removed -- an unbounded one retains every decoded tile of the
+// session, and panning and zooming is what fills it fastest.
 
 /// Pixel-sampling detector for Esri's placeholder PNG. Heuristic:
 /// sample 8 corner-ish pixels (avoiding the central text area), require
@@ -349,6 +352,15 @@ function loadEsriTileImage(url: string): Promise<HTMLImageElement | null> {
 /// Custom canvas-based tile layer for Esri. Detects placeholders and
 /// substitutes with the parent tile at 2x scale, recursing as needed.
 /// Subclasses L.GridLayer so each tile is a fresh <canvas> we control.
+/// How many decoded tile images the layer may hold at once.
+///
+/// Sized so the cache never evicts a tile that is still on screen: a 4K
+/// viewport is about 15x9 tiles, and `keepBuffer: 4` rings that to roughly
+/// 23x17 ~= 390, plus the ancestors fetched for upscaling. Evicting an
+/// on-screen tile would not blank anything -- Leaflet keeps the canvas it was
+/// already handed -- but it would refetch on every pan.
+const TILE_CACHE_LIMIT = 512;
+
 const EsriCanvasTileLayer = L.GridLayer.extend({
   initialize: function (options: L.GridLayerOptions & { urlTemplate: string }) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -356,10 +368,20 @@ const EsriCanvasTileLayer = L.GridLayer.extend({
     // Per-layer-instance image cache: key = "z/x/y" -> Promise<image|null>.
     // Shared across siblings so a parent tile fetched on behalf of one
     // quadrant is reused for the other three without an extra request.
-    this._tileCache = new Map<string, Promise<HTMLImageElement | null>>();
+    this._tileCache = new BoundedCache<Promise<HTMLImageElement | null>>(TILE_CACHE_LIMIT);
+  },
+  onRemove: function (map: L.Map) {
+    // Leaflet drops the tile elements, but the decoded source images are ours
+    // and would otherwise stay reachable through the cache for the life of the
+    // page -- including across a base-map switch, which builds a new layer.
+    this._tileCache.clear();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (L.GridLayer.prototype as any).onRemove.call(this, map);
   },
   // Floor for the recursive fallback. Z=10 always has global imagery
   // (e.g. for Australia, even ocean tiles return something at z=10).
+  // It caps how far UP the search climbs; it is NOT a minimum zoom, and
+  // `resolveTile` is careful never to let it sit above the requested tile.
   _floorZoom: 10,
 
   _tileKey: function (z: number, x: number, y: number) {
@@ -395,53 +417,29 @@ const EsriCanvasTileLayer = L.GridLayer.extend({
     // walk up if needed, paint to canvas, call done().
     const that = this;
     (async () => {
-      // Walk up the zoom tree until we find a non-placeholder tile,
-      // or until we hit the floor. Track how many levels we climbed
-      // so we know the upscale factor + quadrant offset for drawing.
-      let z = coords.z, x = coords.x, y = coords.y;
-      let scale = 1;        // 2^(levelsUp) -- how much to scale the source image when drawing
-      let img: HTMLImageElement | null = null;
-      while (z >= that._floorZoom) {
-        img = await that._loadImage(z, x, y);
-        if (img && !isEsriPlaceholder(img, ctx)) break;
-        // Placeholder (or load failure): try the parent. Each level
-        // up doubles the scale at which we'll draw the source.
-        z -= 1;
-        x = Math.floor(x / 2);
-        y = Math.floor(y / 2);
-        scale *= 2;
-      }
-      if (!img) {
-        // Total miss (even the floor failed). Leave the canvas blank
-        // -- the leaflet background colour shows; same as a 404.
+      // Find real imagery for this tile, climbing to an ancestor and
+      // upscaling if Esri served the placeholder. `_floorZoom` bounds the
+      // climb only -- a tile requested below it still loads at its own zoom,
+      // which is what keeps the base map alive when zoomed right out.
+      const plan = await resolveTile<HTMLImageElement>(
+        coords,
+        that._floorZoom,
+        (z, x, y) => that._loadImage(z, x, y),
+        (img) => isEsriPlaceholder(img, ctx),
+      );
+      if (!plan) {
+        // Nothing between here and the floor. Leave the canvas blank -- the
+        // Leaflet background shows through, same as a 404, and that beats
+        // stretching Esri's grey card across the tile.
         done(null, canvas);
         return;
       }
-      // Figure out which quadrant of the source tile we want. Each
-      // step up halves the coordinate; the LOST low bits tell us
-      // which quadrant the original (coords.x, coords.y) lived in
-      // relative to the ancestor we ended up at.
-      const levelsUp = Math.log2(scale);                     // integer
-      const subTilesPerSide = scale;                         // e.g. 1 / 2 / 4 / 8...
-      const localX = coords.x & (subTilesPerSide - 1);       // lower N bits
-      const localY = coords.y & (subTilesPerSide - 1);
-      // Source rect within the parent (256 px wide) that we want to
-      // sample and stretch to fill our 256x256 canvas.
-      const srcSize = 256 / subTilesPerSide;
-      const srcX = localX * srcSize;
-      const srcY = localY * srcSize;
       ctx.imageSmoothingEnabled = false;     // crisp pixelation, matches Leaflet CSS upscale
       ctx.clearRect(0, 0, 256, 256);
-      ctx.drawImage(img, srcX, srcY, srcSize, srcSize, 0, 0, 256, 256);
-      // If we drew an upscaled parent (levelsUp > 0), faintly tag
-      // the tile so the user can tell the resolution dropped --
-      // optional, lightly subtle.
-      if (levelsUp > 0) {
-        // Intentionally no-op: the natural pixelation is the
-        // indicator. Keep this block as a deliberate decision rather
-        // than a forgotten TODO -- if visual annotation becomes
-        // desired, add a thin border or watermark here.
-      }
+      ctx.drawImage(plan.img, plan.srcX, plan.srcY, plan.srcSize, plan.srcSize, 0, 0, 256, 256);
+      // `plan.levelsUp > 0` means an upscaled ancestor was drawn. Deliberately
+      // left unmarked: the natural pixelation is the indicator. If a visual
+      // annotation is ever wanted, a thin border belongs here.
       done(null, canvas);
     })().catch(() => {
       // Should never happen with the resolve-on-error pattern above,
