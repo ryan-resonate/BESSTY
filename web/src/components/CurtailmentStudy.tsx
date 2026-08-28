@@ -33,8 +33,10 @@ export function CurtailmentStudy(props: {
   onClose(): void;
   /// Write a cell's schedule into the project's per-period mode overrides.
   onApplySchedule(cell: CellResult): void;
+  /// Undo an applied schedule for one period.
+  onClearSchedule(period: Period): void;
 }) {
-  const { project, dem, onClose, onApplySchedule } = props;
+  const { project, dem, onClose, onApplySchedule, onClearSchedule } = props;
   const pre = useMemo(() => precheckCurtailment(project), [project]);
 
   const [periods, setPeriods] = useState<Period[]>([...PERIODS]);
@@ -51,6 +53,7 @@ export function CurtailmentStudy(props: {
   const [result, setResult] = useState<CurtailmentResult | null>(null);
   const [ranAgainst, setRanAgainst] = useState<Project | null>(null);
   const [viewPeriod, setViewPeriod] = useState<Period>(project.scenario.period);
+  const [warningsOpen, setWarningsOpen] = useState(false);
   const runId = useRef(0);
 
   const stale = ranAgainst != null && ranAgainst !== project;
@@ -133,8 +136,22 @@ export function CurtailmentStudy(props: {
     }
     onApplySchedule(c);
     notify.success(
-      `${PERIOD_LABEL[c.period]} modes at ${c.windSpeed} m/s applied to the project.`,
+      `${PERIOD_LABEL[c.period]} modes at ${c.windSpeed} m/s applied. Edit them per turbine `
+      + 'in the side panel, or use Revert here to clear them.',
     );
+  }
+
+  /// Put every turbine back to its catalog default for the shown period.
+  async function revert() {
+    const ok = await notify.confirm({
+      title: `Clear the applied ${PERIOD_LABEL[viewPeriod].toLowerCase()} schedule?`,
+      body: 'Every wind turbine goes back to inheriting its catalog mode for this period. '
+        + 'Other periods, and anything that is not a turbine, are left alone.',
+      confirmLabel: 'Revert',
+    });
+    if (!ok) return;
+    onClearSchedule(viewPeriod);
+    notify.success(`${PERIOD_LABEL[viewPeriod]} turbine modes reverted.`);
   }
 
   const turbineName = new Map(
@@ -143,6 +160,9 @@ export function CurtailmentStudy(props: {
   const shown = (result?.cells ?? [])
     .filter((c) => c.period === viewPeriod && c.windDirectionDeg === viewDirection);
   const shownSpeeds = [...new Set(shown.map((c) => c.windSpeed))].sort((a, b) => a - b);
+  // Computed over the WHOLE run, not the shown period, so a mode keeps its
+  // colour when the period or direction tab changes.
+  const modeOrder = modeOrderOf(result?.cells ?? []);
   const ranDirections = [...new Set((result?.cells ?? []).map((c) => c.windDirectionDeg))]
     .filter((d): d is number => d !== undefined)
     .sort((a, b) => a - b);
@@ -152,7 +172,7 @@ export function CurtailmentStudy(props: {
       title="Curtailment"
       onClose={onClose}
       persistKey="curtailment"
-      defaultRect={{ x: 120, y: 70, w: 880, h: 620 }}
+      defaultRect={{ x: 90, y: 60, w: 1180, h: 660 }}
       minW={560}
     >
       {!pre.ok ? (
@@ -259,6 +279,12 @@ export function CurtailmentStudy(props: {
                 )}
               >↓ XLSX</button>
             )}
+            <button
+              className="btn small"
+              onClick={() => void revert()}
+              title={'Clear any applied schedule for the period shown, putting every turbine '
+                + 'back to its catalog mode'}
+            >↺ Revert applied</button>
             {stale && (
               <span style={{ fontSize: 11, color: 'var(--amber, #b26a00)' }}>
                 ⚠ the project has changed since this ran
@@ -267,9 +293,27 @@ export function CurtailmentStudy(props: {
           </div>
 
           {result && result.warnings.length > 0 && (
-            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, color: 'var(--amber, #b26a00)' }}>
-              {result.warnings.map((w) => <li key={w}>{w}</li>)}
-            </ul>
+            // Collapsed by default. These are notes about how the data was
+            // read, not problems with the schedule — worth being able to reach,
+            // not worth pushing the table off the screen every run.
+            <div>
+              <button
+                className="btn small"
+                style={{ color: 'var(--amber, #b26a00)' }}
+                onClick={() => setWarningsOpen(!warningsOpen)}
+              >
+                {warningsOpen ? '▾' : '▸'} {result.warnings.length} note
+                {result.warnings.length === 1 ? '' : 's'} about the input data
+              </button>
+              {warningsOpen && (
+                <ul style={{
+                  margin: '4px 0 0', paddingLeft: 18, fontSize: 11,
+                  color: 'var(--amber, #b26a00)', maxHeight: 120, overflow: 'auto',
+                }}>
+                  {result.warnings.map((w) => <li key={w}>{w}</li>)}
+                </ul>
+              )}
+            </div>
           )}
 
           {/* ---- results ---- */}
@@ -347,8 +391,12 @@ export function CurtailmentStudy(props: {
                                 <span
                                   style={{
                                     padding: '1px 5px', borderRadius: 3, fontSize: 10,
-                                    background: off ? 'var(--red)' : 'var(--light)',
-                                    color: off ? '#fff' : 'inherit',
+                                    // `nowrap` because a mode name broken across
+                                    // two lines makes the row taller than its
+                                    // neighbours and the grid stops scanning as
+                                    // a grid.
+                                    whiteSpace: 'nowrap',
+                                    ...modeChipStyle(mode, modeOrder),
                                   }}
                                 >{off ? MODE_OFF_LABEL : mode}</span>
                               )}
@@ -476,10 +524,89 @@ export function applyCellToProject(project: Project, cell: CellResult): Project 
   );
   return {
     ...project,
+    // Applying a schedule writes a mode for ONE period, which is by definition
+    // a per-period project — so the feature that edits per-period modes is
+    // switched on at the same time.
+    //
+    // Without this the schedule lands but becomes read-only: `ModePicker`
+    // deliberately refuses to edit per-period values while the setting is off
+    // (a stray click would flatten the other two periods), so the user was left
+    // with modes they could see, could not change, and could not undo except
+    // through Ctrl+Z. Applying a schedule and then being unable to touch it is
+    // worse than the stray click the guard was protecting against.
+    settings: {
+      ...project.settings,
+      periods: { ...project.settings?.periods, perPeriodModes: true },
+    } as Project['settings'],
     sources: project.sources.map((s) => {
       const edit = edits.get(s.id);
       if (!edit) return s;
       return { ...s, modeOverride: withPeriodMode(s.modeOverride, edit.period, edit.mode) };
     }),
+  };
+}
+
+/// Undo an applied schedule for one period: every turbine goes back to
+/// inheriting its catalog default.
+///
+/// `undefined` rather than the default's NAME, so a turbine returns to
+/// "whatever the model says" rather than being pinned to what the model says
+/// today — the two differ the moment someone edits the catalog.
+///
+/// Only turbines, and only this period. A BESS with a night mode set by hand
+/// was never part of the schedule and must not be swept up by undoing it.
+export function clearScheduleFromProject(project: Project, period: Period): Project {
+  return {
+    ...project,
+    sources: project.sources.map((s) => (
+      s.kind === 'wtg'
+        ? { ...s, modeOverride: withPeriodMode(s.modeOverride, period, undefined) }
+        : s
+    )),
+  };
+}
+
+/// Mode names in the order they appear across a run, so a colour means the same
+/// thing in every cell of the table.
+///
+/// Derived from the RESULT rather than the catalog: the table only ever shows
+/// modes the optimiser actually chose, and colouring by catalog position would
+/// waste the readable end of the ramp on modes nobody is using.
+export function modeOrderOf(cells: readonly CellResult[]): string[] {
+  const seen = new Set<string>();
+  for (const c of cells) {
+    for (const m of Object.values(c.modes)) if (m !== MODE_OFF) seen.add(m);
+  }
+  return [...seen].sort();
+}
+
+/// Colour for one mode chip.
+///
+/// A schedule is read by scanning for PATTERN — where curtailment starts, which
+/// turbines carry it, whether it deepens with wind speed. All-grey chips make
+/// that a reading exercise; a ramp makes it visible at a glance.
+///
+/// Green through amber to red, by position in the run's own mode list, so
+/// "further along the list" reads as "more curtailed" — which is how the modes
+/// are named (SO1…SO6) and ordered. Off is the red terminus, and always the
+/// same colour whatever else is on screen.
+function modeChipStyle(
+  mode: string | undefined,
+  order: readonly string[],
+): { background: string; color: string; border?: string } {
+  if (mode === MODE_OFF) return { background: 'var(--red, #c0392b)', color: '#fff' };
+  if (!mode) return { background: 'var(--light, #eee)', color: 'inherit' };
+  const i = order.indexOf(mode);
+  // The first mode in the list is the un-curtailed one in every catalog we
+  // have seen; give it a neutral chip so a schedule with no curtailment reads
+  // as quiet rather than as a wall of green.
+  if (i <= 0) return { background: 'var(--light, #eee)', color: 'inherit' };
+  // Hue from green (120°) to red (0°) across the remaining modes.
+  const t = order.length > 1 ? i / (order.length - 1) : 1;
+  const hue = 110 - 110 * t;
+  return {
+    background: `hsl(${hue}, 70%, 88%)`,
+    color: `hsl(${hue}, 70%, 25%)`,
+    border: `1px solid hsl(${hue}, 60%, 72%)`,
   };
 }

@@ -136,7 +136,10 @@ test('no result or limit label spells dB(A) into the source', () => {
       const around = code.slice(Math.max(0, m.index! - 90), m.index! + 10);
       // The Settings dropdown legitimately names all three weightings, and the
       // dBC-dBA screening column is defined as that pair whatever is selected.
-      if (/value="A"|dbc_minus_dba|dB\(C\)\s*−\s*dB\(A\)|Lw /.test(around)) continue;
+      // `Lw` / "Sound Power" are SOURCE emission, which is A-weighted in the
+      // catalog whatever the project assesses in — the same exemption the
+      // catalog editor gets, for the same reason.
+      if (/value="A"|dbc_minus_dba|dB\(C\)\s*−\s*dB\(A\)|Lw |Sound Power/.test(around)) continue;
       offenders.push(`${path.replace(SRC, 'src')}: …${around.replace(/\s+/g, ' ').slice(-70)}`);
     }
   }

@@ -11,7 +11,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  capDbFor, describeCell, powerKwAt, precheckCurtailment, transferFromResults,
+  buildCellModel, capDbFor, describeCell, powerKwAt, precheckCurtailment,
+  summariseWarnings, transferFromResults,
 } from './curtailment';
 import type { CellModel } from './curtailment';
 import { exceedsLimit } from './limits';
@@ -101,6 +102,7 @@ function blockedCell(): CellModel {
     receivers,
     turbineIds: ['t1'],
     optionModes: [['__off']],
+    optionCostKw: [[0]],
   };
 }
 
@@ -231,4 +233,101 @@ test('a gap INSIDE the curve is interpolated without complaint', () => {
   assert.equal(powerKwAt(entry.modes[0], 8), 3000);
   assert.equal(powerKwAt(entry.modes[0], 10), 4000);
   assert.equal(powerKwAt(entry.modes[0], 9), 3500);
+});
+
+// ------------------------------------------------- ties, and how they break
+
+test('when every mode costs the same, the LEAST curtailed one wins', () => {
+  // The bug this pins. Below cut-in a turbine's noise-reduced modes are
+  // usually identical to its normal one — same spectrum, same power — so every
+  // option costs exactly zero and the MILP is free to return any of them. A
+  // schedule came back reading "SO3" at 3 m/s, where SO3 is the same as normal
+  // and no curtailment is needed at all: correct arithmetic, useless
+  // instruction, and it reads as a solver that has gone wrong.
+  const entry = {
+    id: 'V', kind: 'wtg', displayName: 'V163', defaultMode: 'PO4500', origin: 'user',
+    modes: ['PO4500', 'SO1', 'SO2', 'SO3'].map((name) => ({
+      name,
+      bandSystem: 'octave',
+      weighting: 'Z',
+      frequencies: [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000],
+      // Identical in every mode, which is the whole point.
+      spectra: { 3: new Array(10).fill(80) },
+      windSpeeds: [3],
+      powerKw: { 3: 100 },
+    })),
+  } as unknown as CatalogEntry;
+
+  const p = {
+    ...project('exact'),
+    localCatalog: [entry],
+    sources: [{
+      id: 'T1', name: 'WTG-1', kind: 'wtg', latLng: [-33.61, 138.71],
+      modelId: 'V', catalogScope: 'local',
+    }],
+    // A limit nothing can breach, so the acoustic constraint is slack and the
+    // choice really is a free one.
+    receivers: [rx({ limitNightDbA: 200 })],
+  } as unknown as Project;
+
+  const { cell } = buildCellModel(p, new Map(), 'night', 3, 0);
+  const costs = cell.model.groups[0].options.map((o) => o.cost);
+  // Every running mode costs no generation…
+  assert.deepEqual(cell.optionCostKw[0].slice(0, 4), [0, 0, 0, 0]);
+  // …but the MILP costs are strictly increasing, so there is no tie left for a
+  // solver to break arbitrarily, and the default sorts first.
+  assert.ok(costs[0] < costs[1] && costs[1] < costs[2] && costs[2] < costs[3], costs.join(','));
+  assert.equal(cell.optionModes[0][0], 'PO4500');
+  // The separation is far below any real kW difference — it can only ever
+  // order genuine ties, never outrank one.
+  assert.ok(costs[3] - costs[0] < 1e-4, `tie-break spans ${costs[3] - costs[0]} kW`);
+});
+
+test('a real kW difference still outranks the tie-break', () => {
+  // The guard on the guard: if the ordering coefficient were large enough to
+  // compete with generation, the optimiser would start preferring a louder
+  // mode over a cheaper one and the whole objective would be wrong.
+  const entry = {
+    id: 'V', kind: 'wtg', displayName: 'V163', defaultMode: 'LOUD', origin: 'user',
+    modes: [
+      { name: 'LOUD', bandSystem: 'octave', weighting: 'Z', frequencies: [63], spectra: { 8: [100] }, windSpeeds: [8], powerKw: { 8: 100 } },
+      { name: 'QUIET', bandSystem: 'octave', weighting: 'Z', frequencies: [63], spectra: { 8: [90] }, windSpeeds: [8], powerKw: { 8: 99.9 } },
+    ],
+  } as unknown as CatalogEntry;
+  const p = {
+    ...project('exact'),
+    localCatalog: [entry],
+    sources: [{ id: 'T1', name: 'WTG-1', kind: 'wtg', latLng: [-33.61, 138.71], modelId: 'V', catalogScope: 'local' }],
+    receivers: [rx({ limitNightDbA: 200 })],
+  } as unknown as Project;
+  const { cell } = buildCellModel(p, new Map(), 'night', 8, 0);
+  const [loud, quiet] = cell.model.groups[0].options;
+  // 0.1 kW apart in reality; the ordering must not close that gap.
+  assert.ok(loud.cost < quiet.cost);
+  assert.ok(quiet.cost - loud.cost > 0.09, `${quiet.cost - loud.cost}`);
+});
+
+// ------------------------------------------------------- warning summaries
+
+test('the same note about 55 turbines collapses to one line', () => {
+  // Fifty-five separate warnings is the same as no warnings: nobody reads a
+  // wall of text, and the one that mattered is buried in it.
+  const many = Array.from({ length: 55 }, (_, i) => ({
+    subject: `WTG-${i + 1}`,
+    text: 'no power entered at 3 m/s.',
+  }));
+  const out = summariseWarnings(many);
+  assert.equal(out.length, 1);
+  assert.match(out[0], /^55 turbines \(WTG-1, WTG-2, …\): no power entered at 3 m\/s\.$/);
+});
+
+test('a handful are named outright, and different notes stay separate', () => {
+  const out = summariseWarnings([
+    { subject: 'WTG-1', text: 'note A' },
+    { subject: 'WTG-2', text: 'note A' },
+    { subject: 'R1', text: 'note B' },
+  ]);
+  assert.equal(out.length, 2);
+  assert.ok(out.includes('WTG-1, WTG-2: note A'));
+  assert.ok(out.includes('R1: note B'));
 });

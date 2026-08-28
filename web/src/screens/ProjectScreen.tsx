@@ -8,7 +8,9 @@ import { MapControls } from '../components/MapControls';
 import { SettingsWindow } from '../components/SettingsWindow';
 import { PdfExportDialog } from '../components/PdfExportDialog';
 import { FactorialStudy } from '../components/FactorialStudy';
-import { CurtailmentStudy, applyCellToProject } from '../components/CurtailmentStudy';
+import {
+  CurtailmentStudy, applyCellToProject, clearScheduleFromProject,
+} from '../components/CurtailmentStudy';
 import { WindSweepStudy } from '../components/WindSweepStudy';
 import { ShareDialog } from '../components/ShareDialog';
 import { attributionFor, tileUrlFor } from '../components/MapView';
@@ -1876,6 +1878,10 @@ export function ProjectScreen() {
           onApplySchedule={(cell) => {
             const base = projectRef.current ?? project;
             setProject(applyCellToProject(base, cell));
+          }}
+          onClearSchedule={(period) => {
+            const base = projectRef.current ?? project;
+            setProject(clearScheduleFromProject(base, period));
           }}
         />
       )}

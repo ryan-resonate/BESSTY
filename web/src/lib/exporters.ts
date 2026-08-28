@@ -25,7 +25,8 @@ import { weightedTotal, weightingFor, weightingLabel, weightsFor, type Weighting
 import { assessedLevel, exceedsLimit, limitComparisonFor, limitFor } from './limits';
 import { describeTonalBands, tonalitySettingsFor } from './tonality';
 import {
-  PERIODS, PERIOD_LABEL, describeModes, groupPeriodsBySolve, modeForPeriod, modeLabel,
+  MODE_OFF_LABEL, PERIODS, PERIOD_LABEL, describeModes, groupPeriodsBySolve,
+  modeForPeriod, modeLabel,
 } from './modes';
 import { windSpeedLimitsEnabled } from './limitTable';
 import { describeWindFrom } from './directivity';
@@ -752,6 +753,11 @@ export function defaultFilenameStem(project: Project, suffix: string): string {
 }
 
 
+/// What a stopped turbine reads as in the reduction legend. Not a real level —
+/// a floor far below any operating mode, so the legend's scale still sorts and
+/// a reader sees at a glance that Off is not a quiet mode but no mode.
+const OFF_REDUCTION_DB = -200;
+
 // ---------- 6. Curtailment schedule ----------
 
 /// One sheet per period: turbine rows × wind-speed columns of mode names, then
@@ -776,15 +782,49 @@ export function exportCurtailmentXlsx(
     .sort((a, b) => a - b);
   const dirKeys: Array<number | undefined> = directions.length > 0 ? directions : [undefined];
 
+  // Model display name per turbine, from the legend the run carried.
+  const modelOf = new Map<string, string>();
+  for (const t of result.turbines) modelOf.set(t.id, result.legend[0]?.modelName ?? '');
+
   for (const period of periods) {
     const speeds = [...new Set(
       result.cells.filter((c) => c.period === period).map((c) => c.windSpeed),
     )].sort((a, b) => a - b);
     const rows: Array<Array<string | number>> = [];
+    const speedHeads = speeds.map((w) => `${w} m/s`);
+
+    // Legend first, matching how these schedules are normally issued: what each
+    // mode gives up in sound power, per wind speed, with the un-curtailed mode
+    // reading zero. A table of mode names without it is a set of labels nobody
+    // downstream can check.
+    for (const legend of result.legend) {
+      rows.push([
+        result.legend.length > 1
+          ? `Sound Power Level Reduction dB(A) — ${legend.modelName}`
+          : 'Sound Power Level Reduction dB(A)',
+        ...speedHeads,
+      ]);
+      for (const m of legend.modes) {
+        rows.push([
+          m.name,
+          ...speeds.map((w) => {
+            const i = legend.windSpeeds.indexOf(w);
+            return i >= 0 ? m.reductionDb[i] : '';
+          }),
+        ]);
+      }
+      // The stopped state belongs in the legend as the floor of the same scale.
+      rows.push([MODE_OFF_LABEL, ...speeds.map(() => OFF_REDUCTION_DB)]);
+      rows.push([]);
+    }
+
+    rows.push(['Turbine Modes']);
     // A "Wind from" column only when there is something to put in it, so a
     // non-directional export keeps exactly the shape it had.
-    const lead = directions.length > 0 ? ['Wind from', 'Turbine'] : ['Turbine'];
-    rows.push([...lead, ...speeds.map((w) => `${w} m/s`)]);
+    const lead = directions.length > 0
+      ? ['Wind from', 'Turbine', 'Turbine Type', 'Latitude', 'Longitude']
+      : ['Turbine', 'Turbine Type', 'Latitude', 'Longitude'];
+    rows.push([...lead, ...speedHeads]);
 
     for (const dir of dirKeys) {
       const cells = speeds.map((w) => result.cells.find(
@@ -792,25 +832,31 @@ export function exportCurtailmentXlsx(
       ));
       const label = dir === undefined ? [] : [describeWindFrom(dir)];
       for (const t of result.turbines) {
+        const src = project.sources.find((s) => s.id === t.id);
         rows.push([
           ...label, t.name,
+          modelOf.get(t.id) ?? '',
+          src ? Number(src.latLng[0].toFixed(6)) : '',
+          src ? Number(src.latLng[1].toFixed(6)) : '',
           // An infeasible cell prescribes nothing; a blank would read as "no
           // curtailment needed", which is the opposite of what it means.
           ...cells.map((c) => (c?.status === 'optimal' ? modeLabel(c.modes[t.id], '') : 'n/a')),
         ]);
       }
-      const pad = dir === undefined ? [] : [''];
+      // The summary rows sit under the mode columns, so they need padding for
+      // the identity columns the turbine rows carry.
+      const pad = dir === undefined ? ['', '', ''] : ['', '', '', ''];
       rows.push([
-        ...pad, 'Lost kW',
+        'Lost kW', ...pad,
         ...cells.map((c) => (c?.status === 'optimal' ? Number(c.lostKw.toFixed(1)) : 'n/a')),
       ]);
-      rows.push([...pad, 'Binding receiver', ...cells.map((c) => c?.bindingReceiverName ?? '')]);
+      rows.push(['Binding receiver', ...pad, ...cells.map((c) => c?.bindingReceiverName ?? '')]);
       rows.push([
-        ...pad, 'Headroom dB',
+        'Headroom dB', ...pad,
         ...cells.map((c) => (c?.marginAtBindingDb == null ? '' : Number(c.marginAtBindingDb.toFixed(2)))),
       ]);
-      rows.push([...pad, 'Status', ...cells.map((c) => c?.status ?? '')]);
-      rows.push([...pad, 'Note', ...cells.map((c) => c?.detail ?? '')]);
+      rows.push(['Status', ...pad, ...cells.map((c) => c?.status ?? '')]);
+      rows.push(['Note', ...pad, ...cells.map((c) => c?.detail ?? '')]);
       rows.push([]);
     }
     XLSX.utils.book_append_sheet(

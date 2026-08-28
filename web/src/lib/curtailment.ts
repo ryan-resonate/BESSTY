@@ -27,7 +27,7 @@ import { projectDOmegaDb } from './types';
 // comes from the dependency-free leaf so this module's model half stays
 // testable without the Firebase SDK.
 import { lookupEntry } from './catalog';
-import { spectrumFor, spectrumForMode } from './spectra';
+import { overallLwFromBands, spectrumFor, spectrumForMode } from './spectra';
 import { MODE_OFF, sourceIsOff, sourceModeName } from './modes';
 import { evaluateProject, sourceHagl, type ReceiverResult } from './solver';
 import type { DemRaster } from './dem';
@@ -110,7 +110,34 @@ export interface CurtailmentResult {
   /// has to describe the run that produced it, not the state of the form
   /// beside it.
   marginDb: number;
+  /// Sound-power reduction each mode gives, per model and wind speed — the
+  /// legend the schedule is read against.
+  ///
+  /// Built here rather than in the exporter because it needs the catalog, and
+  /// `exporters.ts` deliberately keeps clear of it: that module's whole job is
+  /// writing files, and importing the catalog would drag the Firebase SDK in
+  /// behind it.
+  legend: ModeLegend[];
 }
+
+/// One turbine model's modes, and what each one costs in sound power.
+export interface ModeLegend {
+  modelName: string;
+  /// Ascending, matching the run's wind speeds.
+  windSpeeds: number[];
+  /// dB(A) relative to the reference mode, so the reference row reads 0 and
+  /// every other row is negative — the sign a reader expects from something
+  /// called a reduction.
+  modes: Array<{ name: string; reductionDb: number[] }>;
+}
+
+/// Coefficient that separates options costing the SAME generation.
+///
+/// Small enough that it can never outweigh a real difference in lost kW — with
+/// at most a dozen modes the whole ordering spans 1e-5 kW, far below any power
+/// figure a datasheet carries — and large enough that HiGHS, running to a 1e-9
+/// absolute gap, still resolves it.
+const TIE_BREAK_KW = 1e-6;
 
 // ------------------------------------------------------------------- power
 
@@ -392,12 +419,59 @@ export function capDbFor(
   return { capDb: cap, clamped: resolved.source === 'clamped' };
 }
 
+/// A note raised while building one cell, kept in two pieces so identical notes
+/// about different turbines can be folded together.
+///
+/// A 55-turbine farm swept from 3 m/s raises the same "no power entered at
+/// 3 m/s" note 55 times. As pre-formatted strings those are 55 distinct
+/// warnings and the dialog becomes a wall of text nobody reads — which is the
+/// same as having no warnings. Split into subject and text, they collapse to
+/// one line naming how many.
+export interface CellWarning {
+  /// What the note is about: a turbine, a turbine and mode, or a receiver.
+  subject: string;
+  /// The note itself, with no subject in it, so two subjects sharing a note
+  /// produce byte-identical text.
+  text: string;
+}
+
+/// Fold repeated notes into one line each, naming the subjects.
+///
+/// Up to three are listed by name — enough to go and look at them — and beyond
+/// that a count, because "55 turbines" is more useful than 55 names wrapped
+/// across a dialog.
+export function summariseWarnings(
+  warnings: readonly CellWarning[],
+  noun = 'turbines',
+): string[] {
+  const byText = new Map<string, Set<string>>();
+  for (const w of warnings) {
+    const set = byText.get(w.text) ?? new Set<string>();
+    set.add(w.subject);
+    byText.set(w.text, set);
+  }
+  return [...byText].map(([text, subjects]) => {
+    const names = [...subjects];
+    const who = names.length <= 3
+      ? names.join(', ')
+      : `${names.length} ${noun} (${names.slice(0, 2).join(', ')}, …)`;
+    return `${who}: ${text}`;
+  });
+}
+
 export interface CellModel {
   model: MilpModel;
   receivers: CellReceiver[];
   turbineIds: string[];
   /// Mode name per turbine per option index, parallel to the model's groups.
   optionModes: string[][];
+  /// Generation each option actually gives up, kW, parallel to `optionModes`.
+  ///
+  /// Separate from `model`'s costs, which carry the tie-break coefficient that
+  /// steers equal-cost options toward the least-curtailed one. A reported
+  /// "lost kW" has to be the real figure, not one with a preference ordering
+  /// added to it.
+  optionCostKw: number[][];
 }
 
 /// Build the MILP for one (period, wind speed).
@@ -411,8 +485,8 @@ export function buildCellModel(
     windDirectionDeg: number;
     model: DirectivityModel;
   },
-): { cell: CellModel; warnings: string[] } {
-  const warnings: string[] = [];
+): { cell: CellModel; warnings: CellWarning[] } {
+  const warnings: CellWarning[] = [];
   const bs = project.scenario.bandSystem;
   const weights = weightsFor(bs, weightingFor(project));
   const turbines = project.sources.filter((s) => s.kind === 'wtg');
@@ -458,9 +532,10 @@ export function buildCellModel(
   const receivers: CellReceiver[] = project.receivers.map((r) => {
     const { capDb, clamped } = capDbFor(project, r, period, windSpeed, marginDb);
     if (clamped) {
-      warnings.push(
-        `${r.name}: ${windSpeed} m/s is outside its limit table; the nearest wind speed was used.`,
-      );
+      warnings.push({
+        subject: r.name,
+        text: `${windSpeed} m/s is outside the limit table; the nearest wind speed was used.`,
+      });
     }
     const fixed = fixedEnergy.get(r.id) ?? 0;
     return {
@@ -473,6 +548,11 @@ export function buildCellModel(
   });
 
   const optionModes: string[][] = [];
+  /// True lost kW per option, parallel to `optionModes`. Kept apart from the
+  /// MILP cost because that carries the tie-break coefficient, and a schedule
+  /// must report the generation it actually gives up rather than a number with
+  /// a preference ordering baked into it.
+  const optionCostKw: number[][] = [];
   const groups = turbines.map((t) => {
     const entry = lookupEntry(project, t);
     const modes = entry?.modes ?? [];
@@ -486,10 +566,11 @@ export function buildCellModel(
     if (coveredSpeeds.size > 0 && !coveredSpeeds.has(Math.round(windSpeed))) {
       const lo = Math.min(...coveredSpeeds);
       const hi = Math.max(...coveredSpeeds);
-      warnings.push(
-        `${t.name}: ${windSpeed} m/s is outside its catalog data (${lo}–${hi} m/s); `
-        + 'the nearest wind speed’s spectrum and power were used.',
-      );
+      warnings.push({
+        subject: t.name,
+        text: `${windSpeed} m/s is outside the catalog data (${lo}–${hi} m/s); the nearest `
+          + 'wind speed’s spectrum and power were used.',
+      });
     }
     // The power-curve half of the same question, and the reason the precheck no
     // longer refuses a partial curve. Interpolating BETWEEN entered kW points
@@ -507,37 +588,68 @@ export function buildCellModel(
       const lo = Math.min(...entered);
       const hi = Math.max(...entered);
       if (windSpeed < lo || windSpeed > hi) {
-        warnings.push(
-          `${t.name} (${m.name}): no power entered at ${windSpeed} m/s — the curve covers `
-          + `${lo}–${hi} m/s, so its ${windSpeed < lo ? lo : hi} m/s output was used. `
-          + 'The lost-kW figures for this wind speed are an extrapolation.',
-        );
+        warnings.push({
+          subject: `${t.name} (${m.name})`,
+          text: `no power entered at ${windSpeed} m/s — the curve covers ${lo}–${hi} m/s, `
+            + `so the ${windSpeed < lo ? lo : hi} m/s output was used; lost-kW here is an `
+            + 'extrapolation.',
+        });
       }
     }
     const powers = modes.map((m) => powerKwAt(m, windSpeed) ?? 0);
     const pMax = powers.length > 0 ? Math.max(...powers) : 0;
+
+    // Preference order among options that cost the SAME generation.
+    //
+    // Below about 8 m/s a turbine's noise-reduced modes are usually identical
+    // to its normal one — same spectrum, same power — because there is nothing
+    // to trade yet. Every option then costs exactly zero and the problem is a
+    // tie, which a MILP solver breaks however it likes: the schedule came back
+    // saying "run SO3" at 3 m/s, where SO3 is the same as normal and no
+    // curtailment is needed at all. Correct arithmetic, useless instruction —
+    // and it reads as a solver that has gone wrong.
+    //
+    // So ties resolve toward the LEAST curtailed option: most generation first,
+    // then the catalog's default mode, then the order the catalog lists them.
+    // Ranked once here and applied as a coefficient far below any real kW
+    // difference, so it can only ever separate genuine ties.
+    const rank = new Map<number, number>();
+    modes
+      .map((m, i) => ({ i, power: powers[i], isDefault: m.name === entry?.defaultMode }))
+      .sort((a, b) => (b.power - a.power)
+        || (Number(b.isDefault) - Number(a.isDefault))
+        || (a.i - b.i))
+      .forEach((o, order) => rank.set(o.i, order));
+
     const byRx = transfer.get(t.id);
     const names: string[] = [];
+    const costsKw: number[] = [];
     const options = modes.map((m, i) => {
       // By the mode OBJECT, not its name: these come straight off the entry, so
       // there is no name for `spectrumFor`'s first-mode fallback to catch.
       const lw = spectrumForMode(m, bs, windSpeed);
       names.push(m.name);
+      const kw = pMax - powers[i];
+      costsKw.push(kw);
       return {
         key: `${t.id}::${m.name}`,
-        cost: pMax - powers[i],
+        cost: kw + TIE_BREAK_KW * (rank.get(i) ?? 0),
         use: project.receivers.map((r) => energyOf(lw, byRx?.get(r.id), weights, adjust(t, r))),
       };
     });
     // Off is always on the menu: it costs the turbine's whole output and emits
-    // nothing, which is what guarantees a schedule exists at all.
+    // nothing, which is what guarantees a schedule exists at all. It sorts last
+    // among ties too — stopping a turbine is never the tidy answer to "these
+    // options are equivalent".
     names.push(MODE_OFF);
+    costsKw.push(pMax);
     options.push({
       key: `${t.id}::${MODE_OFF}`,
-      cost: pMax,
+      cost: pMax + TIE_BREAK_KW * modes.length,
       use: receivers.map(() => 0),
     });
     optionModes.push(names);
+    optionCostKw.push(costsKw);
     return { key: t.id, options };
   });
 
@@ -547,6 +659,7 @@ export function buildCellModel(
       receivers,
       turbineIds: turbines.map((t) => t.id),
       optionModes,
+      optionCostKw,
     },
     warnings,
   };
@@ -610,7 +723,12 @@ export function describeCell(
     period, windSpeed,
     status: 'optimal',
     modes,
-    lostKw: solution.cost,
+    // Summed from the TRUE per-option kW, not from `solution.cost` — that
+    // carries the tie-break coefficient and would report a schedule as
+    // costing 0.000004 kW more than it does.
+    lostKw: cell.turbineIds.reduce(
+      (a, _id, i) => a + (cell.optionCostKw[i]?.[solution.chosen[i]] ?? 0), 0,
+    ),
     bindingReceiverId: binding?.id,
     bindingReceiverName: binding?.name,
     marginAtBindingDb: Number.isFinite(bindingMarginDb) ? bindingMarginDb : undefined,
@@ -618,6 +736,16 @@ export function describeCell(
 }
 
 // ------------------------------------------------------------ orchestration
+
+/// Give the browser a chance to paint.
+///
+/// `setTimeout` rather than a resolved promise or `queueMicrotask`: only a
+/// MACROTASK yields to the renderer. A microtask would let this loop finish
+/// before a single frame was drawn, which is the state the progress counter
+/// was stuck in.
+function yieldToPaint(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 /// Optimise every requested (period, wind speed).
 ///
@@ -649,7 +777,8 @@ export async function optimiseCurtailment(
   }
 
   const cells: CellResult[] = [];
-  const warnings = new Set<string>();
+  const warnings: CellWarning[] = [];
+  const seenWarning = new Set<string>();
   // `undefined` means "assume every receiver is downwind" — no direction, no
   // correction, which is the conservative reading and the default.
   const directions: Array<number | undefined> = opts.windDirectionsDeg?.length
@@ -666,7 +795,12 @@ export async function optimiseCurtailment(
           project, transferByPeriod.get(period)!, period, windSpeed, opts.marginDb,
           windDirectionDeg === undefined ? undefined : { windDirectionDeg, model },
         );
-        for (const msg of w) warnings.add(msg);
+        for (const msg of w) {
+          const k = `${msg.subject}|${msg.text}`;
+          if (seenWarning.has(k)) continue;
+          seenWarning.add(k);
+          warnings.push(msg);
+        }
         const solution = await solveWithHighs(cell.model);
         cells.push({
           ...describeCell(cell, solution, period, windSpeed),
@@ -674,6 +808,13 @@ export async function optimiseCurtailment(
         });
         done++;
         onProgress?.(done, total);
+        // Hand the event loop back so the progress the line above just reported
+        // can actually be painted. Every await in this loop resolves as a
+        // microtask — the HiGHS call included, once its wasm is warm — and
+        // microtasks all drain before the browser gets a frame. The counter was
+        // being updated hundreds of times and rendered once, at the end, which
+        // looks exactly like a run that has hung.
+        await yieldToPaint();
       }
     }
   }
@@ -681,7 +822,8 @@ export async function optimiseCurtailment(
   return {
     turbines: turbines.map((t) => ({ id: t.id, name: t.name })),
     cells,
-    warnings: [...warnings],
+    warnings: summariseWarnings(warnings),
+    legend: buildModeLegend(project, [...opts.windSpeeds].sort((a, b) => a - b)),
     marginDb: opts.marginDb,
   };
 }
@@ -704,6 +846,47 @@ export function turbineEntries(project: Project): Map<string, CatalogEntry> {
     if (s.kind !== 'wtg') continue;
     const e = lookupEntry(project, s);
     if (e) out.set(s.id, e);
+  }
+  return out;
+}
+
+/// Build the sound-power legend: what each mode gives up, per model.
+///
+/// The reference the reductions are measured against is the model's DEFAULT
+/// mode — the un-curtailed one — so its row reads 0 across the board and every
+/// other row is the dB it trades away. That is the shape these schedules are
+/// normally issued in, and it is what makes a table of mode names checkable:
+/// without it "SO3 at 8 m/s" is a label, not a quantity.
+export function buildModeLegend(project: Project, windSpeeds: number[]): ModeLegend[] {
+  const bs = project.scenario.bandSystem;
+  const byModel = new Map<string, CatalogEntry>();
+  for (const s of project.sources) {
+    if (s.kind !== 'wtg') continue;
+    const entry = lookupEntry(project, s);
+    if (entry && !byModel.has(entry.id)) byModel.set(entry.id, entry);
+  }
+
+  const out: ModeLegend[] = [];
+  for (const entry of byModel.values()) {
+    const lwAt = (m: CatalogEntry['modes'][number], ws: number): number => {
+      const bands = Array.from(spectrumForMode(m, bs, ws));
+      // Un-weighted centres are what `spectrumForMode` returns, so ask for the
+      // A-weighted total the same way the catalog editor's own column does.
+      return overallLwFromBands(m.frequencies, bands, 'Z').dbA;
+    };
+    const reference = entry.modes.find((m) => m.name === entry.defaultMode) ?? entry.modes[0];
+    if (!reference) continue;
+    out.push({
+      modelName: entry.displayName,
+      windSpeeds,
+      modes: entry.modes.map((m) => ({
+        name: m.name,
+        reductionDb: windSpeeds.map((ws) => {
+          const d = lwAt(m, ws) - lwAt(reference, ws);
+          return Number.isFinite(d) ? Math.round(d * 10) / 10 : 0;
+        }),
+      })),
+    });
   }
   return out;
 }
