@@ -32,12 +32,35 @@ export interface DemUploadOptions {
   /// Explicit CRS override. If provided, the GeoTIFF's own CRS tag is
   /// ignored. Useful when the tag is missing or wrong.
   epsgOverride?: number;
+  /// Name for the raster: the uploaded filename, or a service's own label when
+  /// the bytes never were a file.
+  filename?: string;
+  /// Sentinel meaning "no data" in this raster, mapped to NaN so
+  /// `terrainField`'s hole fill spreads a neighbour into it. An uploaded file
+  /// has no agreed sentinel; a service that documents one passes it here
+  /// (the QLD ImageServer exports −9999).
+  noDataValue?: number;
+  /// Provenance stamp. Defaults to the user-upload credit — an automatic
+  /// source that reaches this parser supplies its own.
+  sourceInfo?: Omit<DemSourceInfo, 'nativePitchM'>;
 }
 
-/// Parse a GeoTIFF into a DemRaster. Throws if the resolved CRS is not
-/// registered with our proj4 instance (see `lib/projections.ts`).
+/// Parse an uploaded GeoTIFF file into a DemRaster.
 export async function parseDemGeoTiff(file: File, opts: DemUploadOptions = {}): Promise<UploadedDem> {
-  const buf = await file.arrayBuffer();
+  return parseDemGeoTiffBuffer(await file.arrayBuffer(), { filename: file.name, ...opts });
+}
+
+/// Parse GeoTIFF bytes into a DemRaster. Throws if the resolved CRS is not
+/// registered with our proj4 instance (see `lib/projections.ts`).
+///
+/// The automatic sources that fetch a TIFF (QLD LiDAR) come through here too,
+/// rather than georeferencing from the bbox they asked for: a service is free
+/// to snap an export to its own grid, and the file's tie point and pixel scale
+/// are the only statement of where the pixels actually are.
+export async function parseDemGeoTiffBuffer(
+  buf: ArrayBuffer,
+  opts: DemUploadOptions = {},
+): Promise<UploadedDem> {
   const tiff: GeoTIFF = await fromArrayBuffer(buf);
   const image: GeoTIFFImage = await tiff.getImage();
   const width = image.getWidth();
@@ -89,7 +112,11 @@ export async function parseDemGeoTiff(file: File, opts: DemUploadOptions = {}): 
   // Multi-band → use band 0; single-band → it's already the data array.
   const band0 = Array.isArray(rasters) ? (rasters[0] as ArrayLike<number>) : (rasters as unknown as ArrayLike<number>);
   const data = new Float32Array(width * height);
-  for (let i = 0; i < width * height; i++) data[i] = +band0[i];
+  const noData = opts.noDataValue;
+  for (let i = 0; i < width * height; i++) {
+    const v = +band0[i];
+    data[i] = noData !== undefined && v === noData ? NaN : v;
+  }
 
   // Inner sampler operates in the GeoTIFF's native (x, y) coords — bilinear
   // interpolation, returning 0 outside the raster footprint.
@@ -132,11 +159,21 @@ export async function parseDemGeoTiff(file: File, opts: DemUploadOptions = {}): 
     epsg, xRange, yRange, width, height, bounds, linearUnitM(image),
   );
 
+  const filename = opts.filename ?? '';
   return {
-    width, height, filename: file.name, epsg, bounds, tilesLoaded: 1,
+    width, height, filename, epsg, bounds, tilesLoaded: 1,
     resolutionM,
-    source: uploadSourceInfo(file.name, resolutionM),
+    source: opts.sourceInfo
+      ? { ...opts.sourceInfo, nativePitchM: resolutionM }
+      : uploadSourceInfo(filename, resolutionM),
     elevation,
+    // A geographic raster IS the regular lat/lng grid every caller speaks, so
+    // `captureDemRegion` can copy out of `data` instead of paying a closure
+    // call per sample. A projected one is not (a UTM grid curves in lat/lng)
+    // and has to keep going through `elevation`.
+    grid: (epsg === 4326 || epsg === 4269)
+      ? () => ({ data, sw: bounds.sw, ne: bounds.ne, nx: width, ny: height })
+      : undefined,
   };
 }
 

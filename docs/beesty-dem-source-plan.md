@@ -208,7 +208,37 @@ cells; an old project with `despikeStrength: 'medium'` loads and solves;
 (Vicmap 10 m, script from the review) and record the flagged count in the
 memo (expected: single digits).
 
-## Phase 3 — QLD LiDAR adapter
+## Phase 3 — QLD LiDAR adapter — **BUILT**
+
+Deviations and findings, all recorded rather than re-litigated:
+
+- **Coverage probes five points, not one.** A site can sit half on a capture,
+  and a one-point `identify` would then export half 1 m LiDAR and half 30 m
+  SRTM with a step between them. Centre + four corners, all must be non-SRTM
+  with `lowps ≤ 5`; any error → no coverage, and the cascade moves on.
+- **The licence is still unconfirmed.** No QSpatial or data.qld.gov.au record
+  names the `Elevation/QldDem` endpoint. The two records for the sibling
+  `DEM_TimeSeries_AllUsers` service disagree — the portal says CC BY 3.0, the
+  ISO metadata says CC BY-SA — so `licence` reads `see service metadata` and
+  the service's `copyrightText` travels with the raster as `attribution`,
+  which is what the service's own terms require. **Confirm before Phase 4.**
+- **The service is flaky under load.** ~30–50 % of `exportImage` calls return
+  HTTP 200, `content-type: image/tiff`, and a JSON body
+  (`"General function failure"`) instead of a raster; a successful 2048²
+  export takes 8–20 s. The adapter sniffs the TIFF magic rather than the
+  content type and quotes the service's message, so the fall-through to DEM-S
+  is diagnosable. No retry was added — that is a product decision.
+- `parseDemGeoTiff` was split so `parseDemGeoTiffBuffer(buf, opts)` exists;
+  the QLD raster is georeferenced from the file's own tie point and pixel
+  scale, exactly as an upload is.
+- **Grid snapshot pitch** (decision 5) now follows `dem.resolutionM` instead of
+  a hard-coded ~30 m, capped at `TERRAIN_MAX_CELLS_PER_AXIS`. `DemRaster`
+  gained an optional `grid()` so `captureDemRegion` resamples typed array to
+  typed array for the lat/lng-gridded sources.
+- Measured (`tools/dem-probe.mjs`, 10 km Brisbane box, 1 m native → 5.37 m
+  sampled): `buildTerrainField` 393 ms, `captureDemRegion` 2048² 54 ms (64 ms
+  through `elevation`). Main-thread total 447 ms — inside the 1 s budget, so
+  no worker scaffolding was built.
 
 File: `web/src/lib/demSources/qldLidar.ts`.
 

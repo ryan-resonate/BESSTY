@@ -1019,13 +1019,17 @@ export function ProjectScreen() {
     calcAreaCorners(ca).forEach(see);
     for (const s of project?.sources ?? []) see(s.latLng);
     for (const r of project?.receivers ?? []) see(r.latLng);
+    // A wall's feet stand on the DEM too (`sceneBuilder.groundAt` per vertex),
+    // so a barrier drawn outside the box would have been founded at sea level
+    // and screened nothing — or everything.
+    for (const b of project?.barriers ?? []) (b.polylineLatLng ?? []).forEach(see);
     if (!Number.isFinite(minLat)) return null;
     const q = 0.001;
     return [
       Math.floor(minLat / q) * q, Math.floor(minLng / q) * q,
       Math.ceil(maxLat / q) * q, Math.ceil(maxLng / q) * q,
     ].map((v) => v.toFixed(3)).join(',');
-  }, [project?.calculationArea, project?.sources, project?.receivers]);
+  }, [project?.calculationArea, project?.sources, project?.receivers, project?.barriers]);
 
   const demNeedBounds = useMemo((): DemBounds | null => {
     if (!demNeedKey) return null;

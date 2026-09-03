@@ -53,7 +53,9 @@ import {
   type SceneHeightfield,
   type SceneResults,
 } from './sceneBuilder';
-import { buildTerrainField, correctedDemRaster, lastTerrainBuild } from './terrainField';
+import {
+  buildTerrainField, correctedDemRaster, lastTerrainBuild, TERRAIN_MAX_CELLS_PER_AXIS,
+} from './terrainField';
 import { Diagnostics } from './diagnostics';
 import { approxDistanceM } from './geo';
 import {
@@ -986,7 +988,11 @@ export async function evaluateGridViaWorker(
     // re-sampling ~10⁶ DEM points on the main thread each time.
     const ground = groundDemFor(dem, job.terrain, job.origin);
     const cached = ground
-      ? captureDemRegionCached(ground, sourcePaddedBounds(job), ground === dem ? 'raw' : 'qa')
+      ? captureDemRegionCached(
+        ground,
+        sourcePaddedBounds(job, ground.resolutionM ?? 30),
+        ground === dem ? 'raw' : 'qa',
+      )
       : null;
     return await runGridJobOnPool(job, cached, onProgress, diagnostics);
   }
@@ -1022,9 +1028,19 @@ function captureDemRegionCached(
   return demRegionCache;
 }
 
-/// SW/NE/nx/ny for a DEM region covering the grid bounds + all sources, sized
-/// to ~30 m/sample and capped so the snapshot stays small.
-function sourcePaddedBounds(job: GridJob): [[number, number], [number, number], number, number] {
+/// SW/NE/nx/ny for a DEM region covering the grid bounds + all sources, sampled
+/// at the DEM's own pitch and capped so the snapshot stays transferable.
+///
+/// `pitchM` is the raster's native resolution. This used to be pinned at ~30 m
+/// whatever the DEM was, which was harmless while every automatic source WAS
+/// ~30 m and throws away most of a 1 m LiDAR DEM now that one exists: the grid
+/// worker only ever sees this snapshot, so a ridge finer than the snapshot
+/// pitch stops screening grid cells even though the point receivers, which read
+/// the raster directly, still see it.
+export function sourcePaddedBounds(
+  job: GridJob,
+  pitchM: number,
+): [[number, number], [number, number], number, number] {
   let minLat = Math.min(job.bounds.sw[0], job.bounds.ne[0]);
   let maxLat = Math.max(job.bounds.sw[0], job.bounds.ne[0]);
   let minLng = Math.min(job.bounds.sw[1], job.bounds.ne[1]);
@@ -1042,12 +1058,16 @@ function sourcePaddedBounds(job: GridJob): [[number, number], [number, number], 
   const mLng = (maxLng - minLng) * 0.05 + 0.002;
   const sw: [number, number] = [minLat - mLat, minLng - mLng];
   const ne: [number, number] = [maxLat + mLat, maxLng + mLng];
-  // ~111 km per degree latitude; target ≈ 30 m/sample, clamp to [128, 1024].
+  // ~111 km per degree latitude. Sample at the DEM's pitch, never denser than
+  // the engine's own heightfield cap (a denser snapshot is bytes cloned to
+  // every worker for detail the solve then discards) and never below the 128
+  // floor, which keeps a small calc area from snapshotting a 4×4 grid.
   const spanLatM = (ne[0] - sw[0]) * 111_000;
   const spanLngM = (ne[1] - sw[1]) * 111_000 * Math.cos((minLat * Math.PI) / 180);
-  const ny = Math.max(128, Math.min(1024, Math.round(spanLatM / 30)));
-  const nx = Math.max(128, Math.min(1024, Math.round(spanLngM / 30)));
-  return [sw, ne, nx, ny];
+  const target = Number.isFinite(pitchM) && pitchM > 0 ? pitchM : 30;
+  const samples = (spanM: number) =>
+    Math.max(128, Math.min(TERRAIN_MAX_CELLS_PER_AXIS, Math.round(spanM / target)));
+  return [sw, ne, samples(spanLngM), samples(spanLatM)];
 }
 
 // ============== P2: grid worker pool ==============

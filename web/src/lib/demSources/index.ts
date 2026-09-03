@@ -11,6 +11,7 @@
 
 import { loadDemForBounds, type DemRaster } from '../dem';
 import { GA_DEM_S } from './gaDemS';
+import { QLD_LIDAR } from './qldLidar';
 
 export interface DemBounds {
   sw: [number, number];
@@ -35,9 +36,9 @@ const TERRARIUM: DemSource = {
   load: ({ sw, ne }) => loadDemForBounds(sw, ne),
 };
 
-/// Best first. Phase 3 inserts `qldLidar` ahead of `GA_DEM_S`; nothing else
-/// about the cascade changes when it does.
-export const AUTO_DEM_SOURCES: DemSource[] = [GA_DEM_S, TERRARIUM];
+/// Best first: metre-scale LiDAR where the Queensland service has it, the
+/// national 30 m bare-earth DEM everywhere else in Australia, tiles elsewhere.
+export const AUTO_DEM_SOURCES: DemSource[] = [QLD_LIDAR, GA_DEM_S, TERRARIUM];
 
 /// First source that covers `bounds` and loads. A source that reports no
 /// coverage, or throws, is skipped with a warning — a dataset being down must

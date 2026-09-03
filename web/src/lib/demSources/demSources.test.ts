@@ -61,9 +61,9 @@ test('cascade: every source failing is an error, not a flat plane', async () => 
 
 test('cascade order is best-first and holds no upload source', () => {
   // Uploads bypass the cascade entirely (ProjectScreen never calls it while one
-  // is loaded), so an `upload` entry here would be a bug. Phase 3 inserts
-  // `qld-lidar` at the front.
-  assert.deepEqual(AUTO_DEM_SOURCES.map((s) => s.id), ['ga-dem-s', 'terrarium']);
+  // is loaded), so an `upload` entry here would be a bug. Order is finest data
+  // first: QLD LiDAR (metres), DEM-S (30 m bare earth), tiles (30 m raw SRTM).
+  assert.deepEqual(AUTO_DEM_SOURCES.map((s) => s.id), ['qld-lidar', 'ga-dem-s', 'terrarium']);
 });
 
 // ------------------------------------------------------------------ reporting

@@ -9,9 +9,13 @@
 // We pick a zoom level that gives roughly 30 m ground resolution at the
 // project latitude (z=12 ≈ 38 m at the equator, finer toward the poles).
 
+import { TERRAIN_MARGIN_M } from './terrainField';
+
 const TILE_BASE = 'https://elevation-tiles-prod.s3.amazonaws.com/terrarium';
 const TILE_SIZE = 256;
 const DEFAULT_ZOOM = 13;
+
+const M_PER_DEG = (Math.PI / 180) * 6371008.8;
 
 interface Tile {
   z: number;
@@ -125,6 +129,15 @@ export interface DemRaster {
   /// Where the data came from. Absent only on the synthetic rasters tests and
   /// the grid worker build from a transferred snapshot.
   source?: DemSourceInfo;
+  /// The raster's OWN regular lat/lng grid, when it has one: `sw`/`ne` are the
+  /// extreme sample points (not outer pixel corners) and `data` is row-major
+  /// north-to-south, exactly the frame [`captureDemRegion`] resamples into.
+  ///
+  /// Present it and a snapshot copies from the typed array instead of calling
+  /// `elevation` a million times through a closure. Rasters whose grid is not
+  /// regular in lat/lng — the terrarium tile mosaic, an upload in a projected
+  /// CRS — omit it and are sampled the slow way, which is still correct.
+  grid?(): DemRegion;
 }
 
 /// Credit for the AWS Terrain Tiles cascade fallback. The pitch varies with
@@ -226,6 +239,15 @@ export function captureDemRegion(
   ny = 256,
 ): DemRegion {
   const data = new Float32Array(nx * ny);
+  // Fast path: both grids are regular in lat/lng, so the whole snapshot is one
+  // typed-array resample. The generic path below is a `dem.elevation` closure
+  // call per sample — at the 2048² a LiDAR DEM now asks for, four million of
+  // them on the main thread before the grid workers can even start.
+  const src = dem.grid?.();
+  if (src) {
+    resampleLatLngGrid(src, sw, ne, nx, ny, data);
+    return { data, sw, ne, nx, ny };
+  }
   for (let j = 0; j < ny; j++) {
     const lat = ne[0] + (sw[0] - ne[0]) * (j / (ny - 1)); // north → south
     for (let i = 0; i < nx; i++) {
@@ -234,6 +256,46 @@ export function captureDemRegion(
     }
   }
   return { data, sw, ne, nx, ny };
+}
+
+/// Bilinear resample of one regular lat/lng grid onto another, into `out`.
+///
+/// Same stencil, same edge clamp and the same "0 outside coverage" contract as
+/// every `DemRaster.elevation`, so this and the generic sampling loop agree to
+/// floating-point noise — only the source cell is indexed straight out of the
+/// typed array. Cells outside the source are left at the Float32Array's zero.
+function resampleLatLngGrid(
+  src: DemRegion,
+  sw: [number, number],
+  ne: [number, number],
+  nx: number,
+  ny: number,
+  out: Float32Array,
+): void {
+  const { data, nx: sx, ny: sy } = src;
+  const lngScale = (sx - 1) / (src.ne[1] - src.sw[1]);
+  const latScale = (sy - 1) / (src.ne[0] - src.sw[0]);
+  for (let j = 0; j < ny; j++) {
+    const lat = ne[0] + (sw[0] - ne[0]) * (j / (ny - 1)); // north → south
+    const fj = (src.ne[0] - lat) * latScale;
+    if (!(fj >= 0 && fj <= sy - 1)) continue;
+    const j0 = Math.floor(fj);
+    const j1 = Math.min(j0 + 1, sy - 1);
+    const fy = fj - j0;
+    for (let i = 0; i < nx; i++) {
+      const lng = sw[1] + (ne[1] - sw[1]) * (i / (nx - 1)); // west → east
+      const fi = (lng - src.sw[1]) * lngScale;
+      if (!(fi >= 0 && fi <= sx - 1)) continue;
+      const i0 = Math.floor(fi);
+      const i1 = Math.min(i0 + 1, sx - 1);
+      const fx = fi - i0;
+      out[j * nx + i] =
+        data[j0 * sx + i0] * (1 - fx) * (1 - fy) +
+        data[j0 * sx + i1] * fx * (1 - fy) +
+        data[j1 * sx + i0] * (1 - fx) * fy +
+        data[j1 * sx + i1] * fx * fy;
+    }
+  }
 }
 
 /// Rebuild a `DemRaster` (bilinear lookup) from a transferred `DemRegion`.
@@ -283,10 +345,23 @@ export async function loadDemForBounds(
   ne: [number, number],
   zoom: number = DEFAULT_ZOOM,
 ): Promise<DemRaster> {
-  const xMin = Math.floor(lng2tileX(sw[1], zoom));
-  const xMax = Math.floor(lng2tileX(ne[1], zoom));
-  const yMin = Math.floor(lat2tileY(ne[0], zoom));
-  const yMax = Math.floor(lat2tileY(sw[0], zoom));
+  // Fetch a ring of tiles beyond the requested box. `buildTerrainField` pads
+  // its heightfield by TERRAIN_MARGIN_M, and outside the fetched tiles this
+  // raster returns 0 m — sea level — so a window sized to the box alone rings
+  // the site with an invented 500 m-wide cliff. The windowed sources pad their
+  // own reads; this one used to rely on whole-tile slack, which is nothing at
+  // all when the box happens to end on a tile boundary.
+  const midLat = (sw[0] + ne[0]) / 2;
+  const dLat = TERRAIN_MARGIN_M / M_PER_DEG;
+  const dLng = TERRAIN_MARGIN_M
+    / (M_PER_DEG * Math.max(0.05, Math.cos((midLat * Math.PI) / 180)));
+  const psw: [number, number] = [sw[0] - dLat, sw[1] - dLng];
+  const pne: [number, number] = [ne[0] + dLat, ne[1] + dLng];
+
+  const xMin = Math.floor(lng2tileX(psw[1], zoom));
+  const xMax = Math.floor(lng2tileX(pne[1], zoom));
+  const yMin = Math.floor(lat2tileY(pne[0], zoom));
+  const yMax = Math.floor(lat2tileY(psw[0], zoom));
 
   const tilesToFetch: Tile[] = [];
   for (let y = yMin; y <= yMax; y++) {
@@ -308,6 +383,9 @@ export async function loadDemForBounds(
   return {
     resolutionM,
     source: terrariumSourceInfo(resolutionM),
+    // Report what was actually fetched, margin included — `bounds` is this
+    // raster's statement of its own coverage.
+    bounds: { sw: psw, ne: pne },
     elevation(lat: number, lng: number): number {
       const tx = lng2tileX(lng, zoom);
       const ty = lat2tileY(lat, zoom);
@@ -335,7 +413,6 @@ export async function loadDemForBounds(
         e11 * fx * fy
       );
     },
-    bounds: { sw, ne },
     tilesLoaded: tiles.length,
   };
 }
