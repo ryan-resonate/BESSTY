@@ -9,13 +9,17 @@
 // buffer with only its own cells written; the main thread copies each shard's
 // tile rectangles into the final grid.
 //
-// The DEM region is the big part of a message, so it is sent once per worker
-// and cached here under its key — a re-run over the same area (a settings
-// change, a source nudge) ships only the job.
+// The DEM region and the terrain heightfield are the big parts of a message, so
+// each is sent once per worker and cached here under its key — a re-run over the
+// same area (a settings change, a source nudge) ships only the job.
 
 import init from '../wasm/iso9613_wasm.js';
-import { runBatchedGrid, type GridJob, type GridResult } from './gridCore';
+import {
+  runBatchedGrid, unpackHeightfield,
+  type GridJob, type GridResult, type PackedHeightfield,
+} from './gridCore';
 import { regionRaster, type DemRegion, type DemRaster } from './dem';
+import type { SceneHeightfield } from './sceneBuilder';
 
 let ready: Promise<void> | null = null;
 function ensureReady(): Promise<void> {
@@ -28,6 +32,13 @@ function ensureReady(): Promise<void> {
 let cachedDem: DemRaster | null = null;
 let cachedRegionKey: string | null = null;
 
+/// Last heightfield this worker was given, unboxed once on receipt. Up to 2048²
+/// cells: identical for every shard of a job and unchanged by a re-run over the
+/// same extent, so the job posted here never carries it and the main thread
+/// sends it separately, keyed, exactly as it does the DEM region.
+let cachedTerrain: SceneHeightfield | null = null;
+let cachedTerrainKey: string | null = null;
+
 interface GridRequest {
   id: number;
   job: GridJob;
@@ -35,10 +46,14 @@ interface GridRequest {
   region: DemRegion | null;
   /// Identity of the region this job expects. Null means "no DEM".
   regionKey: string | null;
+  /// The heightfield itself, or null to reuse whatever `terrainKey` names.
+  terrain: PackedHeightfield | null;
+  /// Identity of the heightfield this job expects. Null means "flat ground".
+  terrainKey: string | null;
 }
 
 self.onmessage = async (ev: MessageEvent<GridRequest>) => {
-  const { id, job, region, regionKey } = ev.data;
+  const { id, job, region, regionKey, terrain, terrainKey } = ev.data;
   try {
     await ensureReady();
     if (region) {
@@ -52,6 +67,15 @@ self.onmessage = async (ev: MessageEvent<GridRequest>) => {
       // rather than silently solving against the wrong (or no) terrain.
       throw new Error('grid worker: DEM region cache miss');
     }
+    if (terrain) {
+      cachedTerrain = unpackHeightfield(terrain);
+      cachedTerrainKey = terrainKey;
+    } else if (terrainKey === null) {
+      cachedTerrain = null;
+      cachedTerrainKey = null;
+    } else if (terrainKey !== cachedTerrainKey) {
+      throw new Error('grid worker: terrain cache miss');
+    }
     const dem = cachedDem;
     // I12: report per-tile progress so the UI can show something moving. Posted
     // at most every PROGRESS_MS — a 512×512 grid is ~1000 tiles, and a
@@ -59,7 +83,8 @@ self.onmessage = async (ev: MessageEvent<GridRequest>) => {
     // free.
     let lastPost = 0;
     const PROGRESS_MS = 100;
-    const result: GridResult = runBatchedGrid(job, dem, (tilesDone, tilesTotal) => {
+    const withTerrain: GridJob = { ...job, terrain: cachedTerrain };
+    const result: GridResult = runBatchedGrid(withTerrain, dem, (tilesDone, tilesTotal) => {
       const now = performance.now();
       if (tilesDone < tilesTotal && now - lastPost < PROGRESS_MS) return;
       lastPost = now;

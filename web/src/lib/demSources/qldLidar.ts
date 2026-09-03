@@ -29,7 +29,7 @@ const EXTENT_3857 = { xmin: 15352710, ymin: -3449670, xmax: 17810238, ymax: -102
 
 // Web Mercator → WGS84, done here rather than pasting a degree box, so the
 // numbers in this file are the ones the service publishes and a future extent
-// change is a two-line edit. Gives ≈ 137.92…159.99 °E, −29.54…−9.14 °S.
+// change is a two-line edit. Gives ≈ 137.92…159.99 °E, −29.58…−9.14 °S.
 const WEBMERC_R = 6378137;
 const merc2lng = (x: number) => (x / (Math.PI * WEBMERC_R)) * 180;
 const merc2lat = (y: number) => (Math.atan(Math.sinh(y / WEBMERC_R)) * 180) / Math.PI;
@@ -106,6 +106,35 @@ const inExtent = (b: DemBounds) =>
 const boundsKey = (b: DemBounds) =>
   [b.sw[0], b.sw[1], b.ne[0], b.ne[1]].map((v) => v.toFixed(4)).join(',');
 
+/// Grow a box by `marginM` on all four sides.
+///
+/// The export is padded so `buildTerrainField` has real ground under its own
+/// margin, and coverage is therefore decided over the PADDED box too: a probe of
+/// the bare site says nothing about the 500 m ring the export also contains, and
+/// a capture that stops at the fence line would be padded with SRTM.
+function padBounds(b: DemBounds, marginM: number): DemBounds {
+  const midLat = (b.sw[0] + b.ne[0]) / 2;
+  const cosLat = Math.max(0.05, Math.cos((midLat * Math.PI) / 180));
+  const dLat = marginM / M_PER_DEG;
+  const dLng = marginM / (M_PER_DEG * cosLat);
+  return {
+    sw: [b.sw[0] - dLat, b.sw[1] - dLng],
+    ne: [b.ne[0] + dLat, b.ne[1] + dLng],
+  };
+}
+
+/// Read one `identify` attribute without depending on the service's spelling of
+/// it. ArcGIS reports catalog fields in whatever case the mosaic defines them
+/// (`lowps` / `LowPS`, `name` / `Name`), and a case change on their side would
+/// read back as `undefined` here — which looks exactly like "no LiDAR" and
+/// would silently drop every Queensland project to 30 m DEM-S.
+function attr(attrs: Record<string, unknown>, key: string): unknown {
+  if (key in attrs) return attrs[key];
+  const lower = key.toLowerCase();
+  for (const k of Object.keys(attrs)) if (k.toLowerCase() === lower) return attrs[k];
+  return undefined;
+}
+
 async function identify(lat: number, lng: number): Promise<CatalogItem | null> {
   const geometry = JSON.stringify({ x: lng, y: lat, spatialReference: { wkid: 4326 } });
   const url = `${BASE}/identify?geometry=${encodeURIComponent(geometry)}`
@@ -124,36 +153,36 @@ async function identify(lat: number, lng: number): Promise<CatalogItem | null> {
   // (SRTM is under all of them).
   const attrs = body.catalogItems?.features?.[0]?.attributes;
   if (!attrs) return null;
-  return { name: String(attrs.name ?? ''), lowps: Number(attrs.lowps) };
+  return { name: String(attr(attrs, 'name') ?? ''), lowps: Number(attr(attrs, 'lowps')) };
 }
 
-/// Probe the centre and the four corners. One point is not enough: a site can
-/// sit half on a LiDAR capture and half off it, and the export would then be
-/// half 1 m ground and half 30 m SRTM with a step between them.
+/// Probe a 3 × 3 lattice over the PADDED box: four corners, four mid-edges and
+/// the centre. One point is not enough — a site can sit half on a LiDAR capture
+/// and half off it, and the export would then be half 1 m ground and half 30 m
+/// SRTM with a step between them. Corners alone are not enough either: the
+/// capture boundaries are survey-block edges, so a strip down the middle of a
+/// site, or a hole between the corners, passes a four-corner test untouched.
+///
+/// Throws on a service failure — "the service did not answer" is not the same
+/// answer as "there is no LiDAR here", and caching it as one demoted the site
+/// for the life of the tab. The caller decides what a failure costs.
 async function probeCoverage(bounds: DemBounds): Promise<Coverage> {
-  const { sw, ne } = bounds;
-  const points: Array<[number, number]> = [
-    [(sw[0] + ne[0]) / 2, (sw[1] + ne[1]) / 2],
-    [sw[0], sw[1]], [sw[0], ne[1]], [ne[0], sw[1]], [ne[0], ne[1]],
-  ];
-  try {
-    const items = await Promise.all(points.map(([la, ln]) => identify(la, ln)));
-    let pitch = 0;
-    for (const item of items) {
-      if (!item || !Number.isFinite(item.lowps) || item.lowps <= 0) return NO_COVERAGE;
-      if (item.lowps > MAX_LIDAR_PITCH_M || /SRTM/i.test(item.name)) return NO_COVERAGE;
-      pitch = Math.max(pitch, item.lowps);
-    }
-    return { covered: true, nativePitchM: pitch };
-  } catch (err) {
-    // A state service being down must cost the user DEM-S, not the solve.
-    // eslint-disable-next-line no-console
-    console.warn('[BESSTY] QLD elevation coverage probe failed, falling through:', err);
-    return NO_COVERAGE;
+  const { sw, ne } = padBounds(bounds, TERRAIN_MARGIN_M);
+  const lats = [sw[0], (sw[0] + ne[0]) / 2, ne[0]];
+  const lngs = [sw[1], (sw[1] + ne[1]) / 2, ne[1]];
+  const points: Array<[number, number]> = [];
+  for (const la of lats) for (const ln of lngs) points.push([la, ln]);
+  const items = await Promise.all(points.map(([la, ln]) => identify(la, ln)));
+  let pitch = 0;
+  for (const item of items) {
+    if (!item || !Number.isFinite(item.lowps) || item.lowps <= 0) return NO_COVERAGE;
+    if (item.lowps > MAX_LIDAR_PITCH_M || /SRTM/i.test(item.name)) return NO_COVERAGE;
+    pitch = Math.max(pitch, item.lowps);
   }
+  return { covered: true, nativePitchM: pitch };
 }
 
-/// Coverage answers for the session, keyed by bounds rounded to ~10 m. Five
+/// Coverage answers for the session, keyed by bounds rounded to ~10 m. Nine
 /// `identify` round trips is not a per-keystroke cost, and the answer only
 /// changes when the state flies new LiDAR.
 const coverage = new Map<string, Promise<Coverage>>();
@@ -164,6 +193,10 @@ function coverageFor(bounds: DemBounds): Promise<Coverage> {
   if (hit) return hit;
   const promise = probeCoverage(bounds);
   coverage.set(key, promise);
+  // A failed probe must not stay cached, exactly as a failed export does not:
+  // one dropped `identify` would otherwise pin the site to DEM-S until the tab
+  // is reloaded, with nothing on screen to say why.
+  promise.catch(() => { if (coverage.get(key) === promise) coverage.delete(key); });
   return promise;
 }
 
@@ -188,12 +221,9 @@ export function qldExportRequest(
 ): QldExportRequest {
   const midLat = (bounds.sw[0] + bounds.ne[0]) / 2;
   const cosLat = Math.max(0.05, Math.cos((midLat * Math.PI) / 180));
-  const dLat = marginM / M_PER_DEG;
-  const dLng = marginM / (M_PER_DEG * cosLat);
-  const south = bounds.sw[0] - dLat;
-  const north = bounds.ne[0] + dLat;
-  const west = bounds.sw[1] - dLng;
-  const east = bounds.ne[1] + dLng;
+  const padded = padBounds(bounds, marginM);
+  const [south, west] = padded.sw;
+  const [north, east] = padded.ne;
 
   const spanLatM = (north - south) * M_PER_DEG;
   const spanLngM = (east - west) * M_PER_DEG * cosLat;
@@ -275,7 +305,16 @@ export const QLD_LIDAR: DemSource = {
   /// nothing at all, because it runs for every project in the country.
   async covers(bounds: DemBounds): Promise<boolean> {
     if (!inExtent(bounds)) return false;
-    return (await coverageFor(bounds)).covered;
+    try {
+      return (await coverageFor(bounds)).covered;
+    } catch (err) {
+      // A state service being down must cost the user DEM-S, not the solve —
+      // but only for THIS load: the answer is not cached, so the next attempt
+      // asks again.
+      // eslint-disable-next-line no-console
+      console.warn('[BESSTY] QLD elevation coverage probe failed, falling through:', err);
+      return false;
+    }
   },
 
   load(bounds: DemBounds): Promise<DemRaster> {

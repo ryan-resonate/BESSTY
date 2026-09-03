@@ -209,6 +209,36 @@ export function mergeShard(
   }
 }
 
+// ============== P2: the heightfield on the wire ==============
+
+/// A [`SceneHeightfield`] as it crosses to a grid worker.
+///
+/// `heights` is a plain `number[]` in the scene itself because the engine is fed
+/// JSON, where a typed array serialises as an object rather than an array.
+/// Structured-cloning 2048² boxed numbers costs over a second of MAIN-THREAD
+/// time, though, and it was paid once per shard on every solve; the same values
+/// as one `Float64Array` buffer clone in ~15 ms, unboxed once in the worker.
+export interface PackedHeightfield {
+  origin: [number, number];
+  spacing: number;
+  nx: number;
+  ny: number;
+  heights: Float64Array;
+}
+
+export function packHeightfield(field: SceneHeightfield): PackedHeightfield {
+  const { origin, spacing, nx, ny } = field;
+  return { origin, spacing, nx, ny, heights: Float64Array.from(field.heights) };
+}
+
+/// Inverse of [`packHeightfield`]. The result must be the field the main thread
+/// built, value for value — the engine's input is the JSON of this object, so a
+/// round trip that changed a height or a shape would change the answer.
+export function unpackHeightfield(packed: PackedHeightfield): SceneHeightfield {
+  const { origin, spacing, nx, ny } = packed;
+  return { type: 'heightfield', origin, spacing, nx, ny, heights: Array.from(packed.heights) };
+}
+
 export function runBatchedGrid(
   job: GridJob,
   dem: DemRaster | null,

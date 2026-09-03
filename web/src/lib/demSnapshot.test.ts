@@ -13,8 +13,9 @@ import assert from 'node:assert/strict';
 import { captureDemRegion, regionRaster, type DemRaster, type DemRegion } from './dem';
 import { parseDemGeoTiffBuffer } from './demUpload';
 import { RAMP_H, RAMP_NORTH, RAMP_PIXEL_DEG, RAMP_W, RAMP_WEST, rampTiff } from './__fixtures__/geotiff';
-import type { GridJob } from './gridCore';
-import { sourcePaddedBounds } from './solver';
+import { packHeightfield, type GridJob } from './gridCore';
+import type { SceneHeightfield } from './sceneBuilder';
+import { gridShardMessage, sourcePaddedBounds } from './solver';
 import { TERRAIN_MAX_CELLS_PER_AXIS } from './terrainField';
 
 // ------------------------------------------------------- snapshot fast path
@@ -152,6 +153,60 @@ test('the snapshot is capped at the engine’s own cell limit', () => {
   const [, , nx, ny] = sourcePaddedBounds(JOB, 1);
   assert.equal(nx, TERRAIN_MAX_CELLS_PER_AXIS);
   assert.ok(ny <= TERRAIN_MAX_CELLS_PER_AXIS);
+});
+
+// ------------------------------------------ what one shard is actually sent
+
+const FIELD: SceneHeightfield = {
+  type: 'heightfield', origin: [-250, -250], spacing: 10, nx: 3, ny: 2,
+  heights: [10, 11, 12, 13, 14, 15],
+};
+const SHARD_JOB = { cols: 8, rows: 8, terrain: FIELD, tiles: [] } as unknown as GridJob;
+const REGION: DemRegion = { data: new Float32Array(4), sw: SRC_SW, ne: SRC_NE, nx: 2, ny: 2 };
+const HELD_NOTHING = { regionKey: null, terrainKey: null };
+const REGION_ARG = { key: 'region-1', region: REGION };
+const TERRAIN_ARG = { key: 'terrain-1', packed: packHeightfield(FIELD) };
+
+test('the heightfield does not ride inside a shard’s job', () => {
+  // It used to: up to 2048² boxed doubles, structure-cloned to EVERY shard on
+  // EVERY solve, which is over a second of main-thread time each — and every
+  // shard was getting the same one.
+  const { message } = gridShardMessage(1, SHARD_JOB, [], REGION_ARG, TERRAIN_ARG, HELD_NOTHING);
+  assert.equal(message.job.terrain, null, 'the job carries only the key');
+  assert.equal(message.terrainKey, 'terrain-1');
+  assert.ok(message.terrain?.heights instanceof Float64Array, 'and it crosses as one buffer');
+  assert.deepEqual(Array.from(message.terrain!.heights), FIELD.heights);
+});
+
+test('the region and the heightfield are sent once per worker, then only named', () => {
+  const first = gridShardMessage(1, SHARD_JOB, [], REGION_ARG, TERRAIN_ARG, HELD_NOTHING);
+  assert.ok(first.message.region && first.message.terrain, 'a fresh worker is given both');
+  assert.deepEqual(first.held, { regionKey: 'region-1', terrainKey: 'terrain-1' });
+
+  const again = gridShardMessage(2, SHARD_JOB, [], REGION_ARG, TERRAIN_ARG, first.held);
+  assert.equal(again.message.region, null, 'a re-solve over the same area names the region');
+  assert.equal(again.message.terrain, null, '…and names the heightfield');
+  assert.equal(again.message.regionKey, 'region-1');
+  assert.equal(again.message.terrainKey, 'terrain-1');
+
+  // A different terrain — the calc area moved, or the DEM changed — is shipped
+  // again. The worker refuses a key it does not hold rather than solving flat.
+  const moved = gridShardMessage(
+    3, SHARD_JOB, [], REGION_ARG, { key: 'terrain-2', packed: TERRAIN_ARG.packed }, again.held,
+  );
+  assert.ok(moved.message.terrain, 'a new heightfield is shipped');
+  assert.equal(moved.message.terrainKey, 'terrain-2');
+});
+
+test('a project with no terrain clears whatever the worker was holding', () => {
+  const { message, held } = gridShardMessage(
+    4, SHARD_JOB, [], null, null, { regionKey: 'region-1', terrainKey: 'terrain-1' },
+  );
+  assert.equal(message.terrainKey, null, 'null is "flat ground", not a cache hit');
+  assert.equal(message.regionKey, null);
+  assert.equal(message.terrain, null);
+  assert.equal(message.region, null);
+  assert.deepEqual(held, { regionKey: null, terrainKey: null });
 });
 
 test('a coarse DEM still gets a usable snapshot, and a broken pitch a sane one', () => {

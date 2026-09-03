@@ -6,13 +6,13 @@ import { readFileSync } from 'node:fs';
 
 import init, { solve_scene } from '../wasm/iso9613_wasm.js';
 import {
-  barriersForRegion, gridTileFingerprint, mergeShard, planIncrementalGrid, runBatchedGrid,
-  segmentHitsBox, shardTiles,
+  barriersForRegion, gridTileFingerprint, mergeShard, packHeightfield, planIncrementalGrid,
+  runBatchedGrid, segmentHitsBox, shardTiles, unpackHeightfield,
   type GridJob, type GridTile,
 } from './gridCore';
 import { buildScene } from './sceneBuilder';
 import { buildTerrainField } from './terrainField';
-import type { ResolvedSource, SceneSettings } from './sceneBuilder';
+import type { ResolvedSource, SceneHeightfield, SceneSettings } from './sceneBuilder';
 import type { DemRaster } from './dem';
 import { latLngToLocalMetres } from './geo';
 import { weightsFor } from './weighting';
@@ -314,6 +314,26 @@ test('rotating a grid changes the answer at a fixed cell index', () => {
 });
 
 // ============== P2: sharding a grid across a worker pool ==============
+
+test('a heightfield survives the trip to a grid worker unchanged', () => {
+  // The heightfield crosses to the workers as a Float64Array — 2048² boxed
+  // numbers is a structured clone of over a second, and it was paid once per
+  // SHARD — but the engine's input is the JSON of the scene, where a typed
+  // array serialises as an object rather than an array. So the worker unboxes
+  // it on receipt, and the round trip has to be exact.
+  const field: SceneHeightfield = {
+    type: 'heightfield',
+    origin: [-30.5, 12.25],
+    spacing: 7.5,
+    nx: 5,
+    ny: 3,
+    heights: Array.from({ length: 15 }, (_, i) => 100 + i / 3),
+  };
+  // Through a real structured clone, which is what the postMessage does to it.
+  const round = unpackHeightfield(structuredClone(packHeightfield(field)));
+  assert.deepEqual(round, field);
+  assert.equal(JSON.stringify(round), JSON.stringify(field), 'the engine sees the same JSON');
+});
 
 test('round-robin sharding covers every tile exactly once', () => {
   const job = makeJob(64, 48, 2000, [

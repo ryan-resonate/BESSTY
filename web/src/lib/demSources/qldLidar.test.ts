@@ -72,13 +72,50 @@ test('QLD: coverage means every probe landed on LiDAR', async () => {
   const bounds = box(-27.47, 153.02);
   const covered = await withFetch(() => identifyBody(LIDAR), async (log) => {
     const answer = await QLD_LIDAR.covers(bounds);
-    // Centre plus four corners: a site half on a capture would otherwise be
-    // exported half at 1 m and half at 30 m, with a step between them.
-    assert.equal(log.urls.length, 5, 'centre + four corners');
+    // A 3 × 3 lattice: a site half on a capture would otherwise be exported
+    // half at 1 m and half at 30 m, with a step between them.
+    assert.equal(log.urls.length, 9, 'corners, mid-edges and centre');
     assert.ok(log.urls.every((u) => u.includes('returnCatalogItems=true')));
     return answer;
   });
   assert.equal(covered, true);
+});
+
+test('QLD: the probes cover the export margin, and the gaps between corners', async () => {
+  const bounds = box(-26.10, 152.55, 2);   // its own box: coverage is cached per bounds
+  const padded = qldExportRequest(bounds, 1).bounds;
+  await withFetch(() => identifyBody(LIDAR), async (log) => {
+    await QLD_LIDAR.covers(bounds);
+    const points = log.urls.map(probePoint);
+    // The export is padded by 500 m and a probe of the bare site says nothing
+    // about that ring — a capture that stops at the fence line would be padded
+    // with SRTM and pass a site-only test.
+    const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+    for (const corner of [padded.sw, padded.ne]) {
+      assert.ok(points.some(([la, ln]) => near(la, corner[0]) && near(ln, corner[1])),
+        `padded corner ${corner} probed`);
+    }
+    // …and the mid-edges, because capture boundaries are survey-block edges: a
+    // strip down the middle of a site passes a four-corner test untouched.
+    const midLat = (padded.sw[0] + padded.ne[0]) / 2;
+    const midLng = (padded.sw[1] + padded.ne[1]) / 2;
+    for (const p of [[midLat, padded.sw[1]], [midLat, padded.ne[1]],
+      [padded.sw[0], midLng], [padded.ne[0], midLng], [midLat, midLng]]) {
+      assert.ok(points.some(([la, ln]) => near(la, p[0]) && near(ln, p[1])), `mid point ${p} probed`);
+    }
+  });
+});
+
+test('QLD: a gap between the corners is not coverage', async () => {
+  // LiDAR on every corner, SRTM through the middle — the four-corner test said
+  // yes and the export came back with a 30 m band across the site.
+  const bounds = box(-24.87, 152.35, 6);
+  const midLat = (bounds.sw[0] + bounds.ne[0]) / 2;
+  const covered = await withFetch((url) => {
+    const [lat] = probePoint(url);
+    return identifyBody(Math.abs(lat - midLat) < 1e-6 ? SRTM : LIDAR);
+  }, () => QLD_LIDAR.covers(bounds));
+  assert.equal(covered, false);
 });
 
 test('QLD: one SRTM corner sends the whole site down the cascade', async () => {
@@ -124,6 +161,28 @@ test('QLD: a service failure falls through, it does not sink the solve', async (
   );
 });
 
+test('QLD: catalog attributes are read whatever case the service spells them', async () => {
+  // ArcGIS reports mosaic fields in the case the mosaic defines them. Read
+  // case-sensitively, a `LowPS` parses as NaN and a `Name` reads as '' — the
+  // first is indistinguishable from "no LiDAR here" and would drop every
+  // Queensland project to DEM-S, the second lets an SRTM tile through as LiDAR.
+  const raw = (attributes: Record<string, unknown>) => () => ({
+    ok: true,
+    headers: { get: () => 'text/plain' },
+    json: async () => ({ catalogItems: { features: [{ attributes }] } }),
+  });
+  assert.equal(
+    await withFetch(raw({ Name: 'Mackay_2021_LGA_DTM_1m', LowPS: 1 }),
+      () => QLD_LIDAR.covers(box(-21.14, 149.19))),
+    true,
+  );
+  assert.equal(
+    await withFetch(raw({ NAME: 'QLD_SRTM_1SEC_DEM_H_V2', LOWPS: 30.92 }),
+      () => QLD_LIDAR.covers(box(-21.15, 149.20))),
+    false,
+  );
+});
+
 test('QLD: outside the service extent costs no network at all', async () => {
   // `covers` runs for every project in the country, so a Victorian or a New
   // Zealand site must not pay five round trips to be told no.
@@ -145,7 +204,23 @@ test('QLD: the coverage answer is cached for the session', async () => {
   await withFetch(() => identifyBody(LIDAR), async (log) => {
     assert.equal(await QLD_LIDAR.covers(bounds), true);
     assert.equal(await QLD_LIDAR.covers(bounds), true);
-    assert.equal(log.urls.length, 5, 'the second ask reuses the first answer');
+    assert.equal(log.urls.length, 9, 'the second ask reuses the first answer');
+  });
+});
+
+test('QLD: a failed probe is not cached as "no coverage"', async () => {
+  // "The service did not answer" is not the same answer as "there is no LiDAR
+  // here". Cached as one, a single dropped `identify` pinned the project to
+  // 30 m DEM-S for the life of the tab, with nothing on screen to say why.
+  const bounds = box(-25.54, 152.70);
+  assert.equal(
+    await withFetch(() => { throw new Error('ECONNRESET'); }, () => QLD_LIDAR.covers(bounds)),
+    false,
+    'the load that hit the outage still falls through to DEM-S',
+  );
+  await withFetch(() => identifyBody(LIDAR), async (log) => {
+    assert.equal(await QLD_LIDAR.covers(bounds), true, 'the next load probes again');
+    assert.equal(log.urls.length, 9);
   });
 });
 

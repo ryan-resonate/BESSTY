@@ -63,6 +63,7 @@ import {
   barriersForRegion,
   concaveCorrectionMet,
   mergeShard,
+  packHeightfield,
   planIncrementalGrid,
   runBatchedGrid,
   shardTiles,
@@ -70,6 +71,7 @@ import {
   type GridJob,
   type GridTile,
   type GridResult,
+  type PackedHeightfield,
 
 } from './gridCore';
 
@@ -1131,6 +1133,8 @@ interface PoolWorker {
   /// Region this worker already holds, so a re-run over the same extent ships
   /// only the job. Cleared whenever the worker is terminated.
   regionKey: string | null;
+  /// Heightfield this worker already holds, on the same terms.
+  terrainKey: string | null;
 }
 
 let gridPool: PoolWorker[] = [];
@@ -1152,6 +1156,7 @@ function getPoolWorker(i: number): PoolWorker {
     pw = {
       worker: new Worker(new URL('./grid.worker.ts', import.meta.url), { type: 'module' }),
       regionKey: null,
+      terrainKey: null,
     };
     gridPool[i] = pw;
   }
@@ -1184,6 +1189,81 @@ export function cancelGridRun(): void {
   }
 }
 
+/// One-entry cache of the job's heightfield, packed for the wire and keyed so
+/// it ships once per worker rather than once per SHARD per solve.
+///
+/// `buildTerrainField` memoises its result, so "the same terrain" is object
+/// identity — no digest over up to 4.2 M heights to decide it. The packed copy
+/// is kept because it is structure-cloned (not transferred) to each worker.
+let terrainPackCache: { field: SceneHeightfield; key: string; packed: PackedHeightfield } | null
+  = null;
+let terrainPackSeq = 0;
+
+function packTerrainCached(
+  field: SceneHeightfield | null,
+): { key: string; packed: PackedHeightfield } | null {
+  if (!field) return null;
+  if (!terrainPackCache || terrainPackCache.field !== field) {
+    terrainPackCache = { field, key: `terrain-${++terrainPackSeq}`, packed: packHeightfield(field) };
+  }
+  return terrainPackCache;
+}
+
+/// Keys a worker already holds, and the two big payloads keyed by them.
+interface HeldKeys { regionKey: string | null; terrainKey: string | null }
+
+/// What one shard's message carries for a payload the worker caches by key —
+/// the value only when that worker does not already hold `want` — and the key
+/// the worker holds afterwards.
+function shipOnce<T>(
+  held: string | null, want: string | null, value: T,
+): { send: T | null; held: string | null } {
+  return { send: want !== null && held !== want ? value : null, held: want };
+}
+
+/// The message one shard's worker is sent, and the keys it holds afterwards.
+///
+/// The DEM region and the terrain heightfield are the two big things a grid job
+/// needs, both are identical for every shard, and neither changes when the same
+/// area is re-solved — so each travels ONCE per worker, keyed by identity, and
+/// the job itself carries neither. The heightfield used to ride inside the job:
+/// up to 2048² doubles, structure-cloned to every shard on every solve, which is
+/// over a second of MAIN-THREAD time each.
+///
+/// Pure, so that bookkeeping is testable without spinning up a Worker.
+export function gridShardMessage(
+  runId: number,
+  job: GridJob,
+  tiles: GridTile[],
+  region: { key: string; region: DemRegion } | null,
+  terrain: { key: string; packed: PackedHeightfield } | null,
+  held: HeldKeys,
+): {
+  message: {
+    id: number;
+    job: GridJob;
+    region: DemRegion | null;
+    regionKey: string | null;
+    terrain: PackedHeightfield | null;
+    terrainKey: string | null;
+  };
+  held: HeldKeys;
+} {
+  const r = shipOnce(held.regionKey, region?.key ?? null, region?.region ?? null);
+  const t = shipOnce(held.terrainKey, terrain?.key ?? null, terrain?.packed ?? null);
+  return {
+    message: {
+      id: runId,
+      job: { ...job, tiles, terrain: null },
+      region: r.send,
+      regionKey: r.held,
+      terrain: t.send,
+      terrainKey: t.held,
+    },
+    held: { regionKey: r.held, terrainKey: t.held },
+  };
+}
+
 function runGridJobOnPool(
   job: GridJob,
   cachedRegion: { key: string; region: DemRegion } | null,
@@ -1214,6 +1294,13 @@ function runGridJobOnPool(
   const shards = shardTiles(plan.dirty, GRID_POOL_SIZE);
   const runId = ++gridWorkerSeq;
   const t0 = performance.now();
+
+  // The heightfield is by far the biggest thing in a job — up to 2048² doubles,
+  // over a second of main-thread time to structure-clone — and it is the same
+  // for every shard and for every re-solve over the same extent. So it leaves
+  // the job entirely and travels keyed, like the DEM region, packed as one
+  // Float64Array buffer rather than four million boxed numbers.
+  const terrain = packTerrainCached(job.terrain);
 
   return new Promise<GridResult>((resolve, reject) => {
     const dbA = new Float32Array(job.cols * job.rows).fill(-120);
@@ -1309,17 +1396,12 @@ function runGridJobOnPool(
         worker.removeEventListener('error', onError);
       });
 
-      // Ship the DEM region only to workers that don't already hold it.
-      const wantKey = cachedRegion?.key ?? null;
-      const sendRegion = cachedRegion != null && pw.regionKey !== cachedRegion.key;
-      if (sendRegion) pw.regionKey = cachedRegion.key;
-      else if (cachedRegion == null) pw.regionKey = null;
-      worker.postMessage({
-        id: runId,
-        job: { ...job, tiles: shardTilesList },
-        region: sendRegion ? cachedRegion.region : null,
-        regionKey: wantKey,
-      });
+      // Ship the region and the heightfield only to workers that don't already
+      // hold them.
+      const shard = gridShardMessage(runId, job, shardTilesList, cachedRegion, terrain, pw);
+      pw.regionKey = shard.held.regionKey;
+      pw.terrainKey = shard.held.terrainKey;
+      worker.postMessage(shard.message);
     });
 
     activeGridRun = handle;
