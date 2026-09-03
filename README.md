@@ -47,7 +47,7 @@ Interactive web tool for predicting outdoor sound pressure levels from wind turb
 - `web/` — React + Vite app:
   - Header with Resonate logo
   - Project list with localStorage persistence (create, delete)
-  - Workspace with **satellite imagery** base, **auto-loaded DEM** (AWS Terrain Tiles), **draggable** sources / receivers (drag-end → solve + persist), **contour grid rendering** (Run grid → coloured raster overlay; Viridis default + 5 alternative palettes), **glass-chrome** layer panel + legend + status bar + results dock, and a **settings modal** for ground / Annex D / grid params.
+  - Workspace with **satellite imagery** base, **auto-loaded DEM** (see Elevation data and attribution), **draggable** sources / receivers (drag-end → solve + persist), **contour grid rendering** (Run grid → coloured raster overlay; Viridis default + 5 alternative palettes), **glass-chrome** layer panel + legend + status bar + results dock, and a **settings modal** for ground / Annex D / grid params.
   - Visual system: Inter UI font, JetBrains Mono with tabular numerals on measurements, slate neutrals + yellow accent.
 
 To try it:
@@ -84,6 +84,20 @@ Next deliverables: lateral diffraction (Eq 25); reflections (engine-only); Web W
 **Out of scope (v1):** Annex A (foliage, industrial, housing), Annex B (chimney directivity), Annex C (advanced C0), Cmet / long-term LAT(LT), simplified ground method 7.3.2, building geometry as discrete objects (reflectors come from barrier vertical faces only), multi-user editing/auth.
 
 **Bands:** Solver runs natively in either octave (8 bands, 63 Hz–8 kHz) or one-third octave (typ. 24 bands, 50 Hz–10 kHz). Default ingestion is octave; users importing third-octave data run the solver in third-octave mode end-to-end. No down-folding before the solve.
+
+## Elevation data and attribution
+
+Terrain loads automatically from a cascade of free sources — the first that covers the site and loads, wins — unless the user has uploaded a GeoTIFF, which always overrides it. The credit string for whichever source was used is carried on the `DemRaster`, joined to the Leaflet attribution control and printed in the PDF title block; it is not optional decoration, so keep it attached to any figure taken out of the app.
+
+| Order | Source | Licence | Attribution required |
+|---|---|---|---|
+| 1 | Queensland Government `Elevation/QldDem` ImageServer — mosaic of the state's public 0.5–1 m LiDAR DTMs | **Unconfirmed** (see below) | `Elevation: © State of Queensland (Department of Natural Resources and Mines, Manufacturing, and Regional and Rural Development); © Commonwealth of Australia (Geoscience Australia)` |
+| 2 | Geoscience Australia SRTM-derived 1 Second DEM-S v1.0 (national ~30 m bare earth), read as a COG from the DEA public bucket | CC BY 4.0 | `Elevation: Geoscience Australia, SRTM-derived 1 Second DEM-S v1.0 (CC BY 4.0)` |
+| 3 | AWS Terrain Tiles (Mapzen terrarium), the fallback outside DEM-S coverage | Public-domain and openly licensed sources | `Elevation: AWS Terrain Tiles (Mapzen terrarium)` |
+
+The Queensland licence is unconfirmed: no QSpatial or data.qld.gov.au record names this endpoint, and the two records for the sibling public elevation service disagree — the portal says CC BY 3.0, the ISO metadata says CC BY-SA. Both permit use with attribution, so the service's own `copyrightText` travels with the raster verbatim while `licence` reads "see service metadata" rather than claiming a licence nobody has confirmed.
+
+**FABDEM and Copernicus GLO-30 are deliberately not used.** FABDEM is CC BY-NC-SA, and a non-commercial clause rules it out of consulting work whatever its quality. Copernicus GLO-30 is licensed acceptably, but its S3 bucket sends no CORS headers, so a browser cannot read it without a proxy — and standing up a Cloud Function to serve elevation was judged not worth it when DEM-S covers Australia and the terrarium tiles cover the rest. Both were investigated in `docs/beesty-dem-source-plan.md`; the rows are kept there so nobody re-investigates them.
 
 ## Tech stack
 

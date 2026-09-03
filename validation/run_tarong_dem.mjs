@@ -54,7 +54,7 @@ await build({
       export { calcAreaCorners } from './geo';
       export { loadDemForBounds } from './dem';
       export { GA_DEM_S } from './demSources/gaDemS';
-      export { clearTerrainFieldCache, lastTerrainPitchM } from './terrainField';
+      export { clearTerrainFieldCache } from './terrainField';
       export { default as initWasm } from '../wasm/iso9613_wasm.js';
     `,
     resolveDir: join(webRoot, 'src', 'lib'),
@@ -116,15 +116,20 @@ for (const leg of LEGS) {
   app.clearTerrainFieldCache();
   const diag = new app.Diagnostics();
   const t1 = performance.now();
-  const results = await app.evaluateProject(project, dem, diag);
+  // `evaluateProject` returns the terrain record ITS OWN build produced, rather
+  // than leaving the caller to read `lastTerrainBuild` back: the contour grid
+  // builds last, over a different extent, and would otherwise be what we quote.
+  const solve = await app.evaluateProject(project, dem, diag);
   const tSolve = performance.now() - t1;
   runs.push({
     ...leg,
     tLoadMs: tLoad,
     tSolveMs: tSolve,
-    pitchM: app.lastTerrainPitchM(),
+    pitchM: solve.terrain?.pitchM ?? null,
+    suspectCount: solve.terrain?.count ?? 0,
+    suspectMaxDevM: solve.terrain?.maxDevM ?? 0,
     nativePitchM: dem.source?.nativePitchM ?? null,
-    levels: new Map(results.map((r) => [r.receiverId, r.totalDbA])),
+    levels: new Map(solve.results.map((r) => [r.receiverId, r.totalDbA])),
     notes: diag.list(),
   });
 }
@@ -154,7 +159,8 @@ console.log(`\nmean |Δ| ${mean.toFixed(2)} dB · mean Δ ${bias >= 0 ? '+' : ''
 for (const r of runs) {
   console.log(`  ${r.label.padEnd(20)} raster ${r.pitchM?.toFixed(1)} m `
     + `(native ${r.nativePitchM?.toFixed(1)} m) · DEM ${r.tLoadMs.toFixed(0)} ms, `
-    + `solve ${r.tSolveMs.toFixed(0)} ms`);
+    + `solve ${r.tSolveMs.toFixed(0)} ms · QA flagged ${r.suspectCount} cell(s)`
+    + (r.suspectCount ? `, worst ${r.suspectMaxDevM.toFixed(1)} m` : ''));
   for (const n of r.notes) console.log(`      [${n.severity}] ${n.code}: ${n.message}`);
 }
 

@@ -33,7 +33,7 @@ Settings open in a floating window from the **gear button in the top-right of th
 
 - **Ground** — default G factor (0 hard, 1 porous). Annex D caps at 0.5 for WTGs regardless.
 - **Atmosphere** — temperature and relative humidity drive ISO 9613-1 absorption.
-- **Topography** — DEM despiking strength. Terrain screening is evaluated by the solver from a sampled height raster.
+- **Topography** — terrain screening is evaluated by the solver from a height raster sampled at the DEM's own pitch; there is nothing to tune. The one switch is **Correct suspect terrain cells**, off by default: DEM blunders are always flagged and reported, and this decides whether they are also replaced by the median of their neighbours. See Terrain data.
 
 ## Sources
 

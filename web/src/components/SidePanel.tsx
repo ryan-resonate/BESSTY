@@ -3095,9 +3095,10 @@ export function SettingsTab(props: SettingsTabProps) {
           ridge, bund or cliff line is not flagged, however narrow — but a crest
           whose own cells step by more than a cell width at a time can be, so
           check the flags before correcting. They are always listed in the solve
-          diagnostics and drawn on the map (Layers → Suspect terrain cells); tick
-          this to replace them with the median of their neighbours. Nothing else
-          is ever altered.
+          diagnostics and drawn on the map (Layers → Terrain → Suspect terrain
+          cells); tick this to replace them with the median of their neighbours,
+          iterated until nothing is left to flag. Nothing else is ever altered —
+          see Help → Terrain data.
         </div>
       </section>
       )}
