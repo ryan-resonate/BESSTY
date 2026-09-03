@@ -1,7 +1,7 @@
 // The QLD source decides, on its own and with no UI, whether a Queensland
 // project stands on metre-scale LiDAR or falls through to the 30 m national
 // DEM. Both failure modes are silent: claiming coverage it does not have would
-// serve SRTM under a LiDAR label, and probing too eagerly would put five
+// serve SRTM under a LiDAR label, and probing too eagerly would put nine
 // network round trips in front of every project in the country.
 //
 // Nothing here touches the network — `fetch` is replaced for the duration of
@@ -407,4 +407,36 @@ test('QLD: a transient export failure is retried, not dropped to DEM-S', async (
   });
   assert.equal(exports, 3, 'a dropped connection and a busy answer both retried');
   assert.equal(dem.source?.id, 'qld-lidar', 'the third attempt is the raster the project uses');
+});
+
+test('QLD: a deterministic 4xx is not retried', async () => {
+  // The request is the same URL every time, so a verdict on it is final —
+  // repeating it only makes the fall through to DEM-S two seconds slower.
+  const bounds = box(-27.46, 153.09);
+  let exports = 0;
+  await withFetch((url) => {
+    if (url.includes('/identify')) return identifyBody(LIDAR);
+    exports++;
+    return { ok: false, status: 400, headers: { get: () => 'text/plain' } };
+  }, async () => {
+    assert.equal(await QLD_LIDAR.covers(bounds), true);
+    await assert.rejects(() => QLD_LIDAR.load(bounds), /HTTP 400/);
+  });
+  assert.equal(exports, 1, 'one attempt, not three');
+});
+
+test('QLD: a 429 is the service asking us to wait, so it IS retried', async () => {
+  const bounds = box(-27.43, 153.11);
+  let exports = 0;
+  const dem = await withFetch((url) => {
+    if (url.includes('/identify')) return identifyBody(LIDAR);
+    exports++;
+    if (exports === 1) return { ok: false, status: 429, headers: { get: () => 'text/plain' } };
+    return { ok: true, headers: { get: () => 'image/tiff' }, arrayBuffer: async () => rampTiff() };
+  }, async () => {
+    assert.equal(await QLD_LIDAR.covers(bounds), true);
+    return QLD_LIDAR.load(bounds);
+  });
+  assert.equal(exports, 2, 'the second attempt is the one that lands');
+  assert.equal(dem.source?.id, 'qld-lidar');
 });

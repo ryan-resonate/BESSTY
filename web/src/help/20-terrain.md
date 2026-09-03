@@ -23,7 +23,7 @@ The DEM is sampled bilinearly onto a regular grid at the **DEM's own pitch**, ne
 
 The only coarsening is the cell cap: a raster is capped at 2048 cells per axis, so a site larger than about 2048 pitches across is sampled coarser than its DEM. That is reported — the diagnostics say `Terrain resampled to X m (DEM provides Y m)`, and the PDF terrain line states both the native pitch and the pitch actually screened. When you see it, ridges narrower than a cell have stopped screening.
 
-The raster covers every source, receiver, wall vertex and the calculation area, plus a 500 m margin, so nothing is founded at sea level just outside the box.
+Each pass builds the raster it needs, plus a 500 m margin, so a ridge just off the edge still screens: the receiver solve covers the sources and the receivers, and the contour grid covers the calculation area and the sources feeding it. (The DEM *window* downloaded for the project is the larger one — it also takes in the walls and the calculation area, so an edit inside it costs no new fetch.)
 
 ## Terrain QA
 

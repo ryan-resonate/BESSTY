@@ -255,7 +255,18 @@ function looksLikeTiff(buf: ArrayBuffer): boolean {
 /// Backoff before the 2nd and 3rd export attempt (ms). Three attempts in all.
 const EXPORT_RETRY_DELAYS_MS = [500, 1500];
 
-/// Fetch one `exportImage`, retrying a body that is not a TIFF.
+/// A status worth trying again. 5xx is the service having a moment; 429 is it
+/// asking us to wait. Every other 4xx is a deterministic verdict on the request
+/// we sent — a bad bbox, an unknown parameter, a refusal — and repeating the
+/// identical URL can only produce the identical answer, three times as slowly.
+const isRetryableStatus = (status: number) => status >= 500 || status === 429;
+
+/// A rejection this function must not retry, carried out through the retry loop
+/// as thrown rather than as `lastReason`.
+class PermanentExportError extends Error {}
+
+/// Fetch one `exportImage`, retrying a body that is not a TIFF, a network
+/// failure, or a retryable status — but never a deterministic 4xx.
 ///
 /// The service answers a third to a half of requests with HTTP 200,
 /// `content-type: image/tiff` and a "General function failure" message in the
@@ -268,7 +279,11 @@ async function fetchExport(url: string): Promise<ArrayBuffer> {
   for (let attempt = 0; ; attempt++) {
     try {
       const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      if (!resp.ok) {
+        const reason = `HTTP ${resp.status}`;
+        if (!isRetryableStatus(resp.status)) throw new PermanentExportError(reason);
+        throw new Error(reason);
+      }
       const buf = await resp.arrayBuffer();
       // A rejected export comes back as HTTP 200 with `content-type: image/tiff`
       // and a JSON error body, so neither the status nor the content type says
@@ -278,6 +293,9 @@ async function fetchExport(url: string): Promise<ArrayBuffer> {
       if (looksLikeTiff(buf)) return buf;
       lastReason = new TextDecoder().decode(buf.slice(0, 300));
     } catch (err) {
+      if (err instanceof PermanentExportError) {
+        throw new Error(`QLD elevation export returned an error: ${err.message}`);
+      }
       lastReason = String((err as Error)?.message ?? err);
     }
     if (attempt >= EXPORT_RETRY_DELAYS_MS.length) {

@@ -186,7 +186,7 @@ export function terrainSuspectNote(dem: DemRaster, qa: TerrainQaSummary): string
     : 'not corrected — they are still in the terrain these levels stand on';
   return `${qa.count} suspect terrain cell${qa.count === 1 ? '' : 's'} in ${label}, up to `
     + `${qa.maxDevM.toFixed(1)} m off the surrounding ground; ${outcome}. `
-    + 'They are marked on the map (Layers → Suspect terrain cells).';
+    + 'They are marked on the map (Layers → Terrain → Suspect terrain cells).';
 }
 
 /// Report line for the PDF title block. Carries the credit, so the figure

@@ -51,11 +51,15 @@ second number.
 
 | | |
 |---|---|
-| Tarong, five `identify` probes | `covers = false` in 1979 ms — correctly refuses, cascade falls to DEM-S |
-| Brisbane CBD 10 km box, five probes | `covers = true` in 3905 ms |
+| Tarong, `identify` probe lattice | `covers = false` in 1979 ms — correctly refuses, cascade falls to DEM-S |
+| Brisbane CBD 10 km box, same lattice | `covers = true` in 3905 ms |
 | Export, 2048 × 2048 at 5.37 m | 16.0 MB float32, **51 631 ms across three attempts** |
 | Pitch | 1.00 m native, 5.37 m sampled |
 | Elevations | −17.3 … 224.1 m, mean 23.6, 0 NaN of 65 536 samples |
+
+Both timings were measured with the five-point probe (centre + corners); the
+lattice is now 3 × 3 — nine `identify` calls, issued in parallel exactly as the
+five were — so expect the same order, not the same number.
 
 The export figure is the honest one, not the good one: on this run the service
 answered attempt 1 with HTTP 200, `content-type: image/tiff` and a JSON

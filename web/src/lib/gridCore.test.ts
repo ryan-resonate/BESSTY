@@ -6,8 +6,8 @@ import { readFileSync } from 'node:fs';
 
 import init, { solve_scene } from '../wasm/iso9613_wasm.js';
 import {
-  barriersForRegion, gridTileFingerprint, mergeShard, packHeightfield, planIncrementalGrid,
-  runBatchedGrid, segmentHitsBox, shardTiles, unpackHeightfield,
+  barriersForRegion, gridJobFingerprint, gridTileFingerprint, mergeShard, packHeightfield,
+  planIncrementalGrid, runBatchedGrid, segmentHitsBox, shardTiles, unpackHeightfield,
   type GridJob, type GridTile,
 } from './gridCore';
 import { buildScene } from './sceneBuilder';
@@ -473,11 +473,37 @@ test('a job-level change invalidates everything, even with identical tiles', () 
       topHeightsM: [5, 5], baseFromGroundM: 0, surfaceDensityKgM2: 20, absorptionCoeff: 0.1,
     }] },
     { ...job, includeReflections: true },
+    { ...job, terrain: {
+      type: 'heightfield' as const, origin: [0, 0] as [number, number],
+      spacing: 10, nx: 2, ny: 2, heights: [0, 0, 0, 0],
+    } },
   ]) {
     const plan = planIncrementalGrid(changed, cache);
     assert.equal(plan.dirty.length, job.tiles.length, 'a job-level change must force a full solve');
     assert.equal(plan.reuse, null);
   }
+});
+
+test('the job fingerprint takes terrain by identity, without walking its heights', () => {
+  // Hashing the heights was 135 ms of main-thread work per solve at 2048².
+  // Identity answers the same question: a rebuilt field is a new object.
+  const job = makeJob(48, 32, 1600, [srcAt('s1', 0, 0)]);
+  let reads = 0;
+  const counted = (h: number[]) => new Proxy(h, {
+    get(target, key) { if (key !== 'length') reads++; return Reflect.get(target, key); },
+  });
+  const field = (heights: number[]): SceneHeightfield => ({
+    type: 'heightfield', origin: [0, 0], spacing: 10, nx: 2, ny: 2, heights: counted(heights),
+  });
+  const a = field([1, 2, 3, 4]);
+  const rebuilt = field([1, 2, 3, 4]);
+
+  const withA = gridJobFingerprint({ ...job, terrain: a });
+  assert.equal(gridJobFingerprint({ ...job, terrain: a }), withA, 'the same field ⇒ the same key');
+  assert.notEqual(gridJobFingerprint({ ...job, terrain: rebuilt }), withA,
+    'a rebuilt field ⇒ a new key, even with identical heights');
+  assert.notEqual(gridJobFingerprint({ ...job, terrain: null }), withA, 'flat ground is not terrain');
+  assert.equal(reads, 0, 'the digest never touched a single height');
 });
 
 test('the fingerprint notices a source moved by a millimetre', () => {

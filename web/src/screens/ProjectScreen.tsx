@@ -1107,6 +1107,10 @@ export function ProjectScreen() {
         setDemAndSource(parsed, 'upload');
         setDemStatus('ready');
       } catch (err) {
+        // The failure of a SUPERSEDED download says nothing about the DEM now
+        // loaded — without the guard a slow 404 would put the card into error
+        // over the upload the user made while it was in flight.
+        if (gen !== demLoadGenRef.current) return;
         // eslint-disable-next-line no-console
         console.warn('[BESSTY] saved DEM download failed:', err);
         setDemStatus('error');

@@ -460,12 +460,28 @@ function digest(v: unknown): string {
   return `${a.toString(36)}.${b.toString(36)}`;
 }
 
+/// A stable identity for a heightfield, so the job digest never walks its
+/// heights. Hashing them was up to 2048² = 4.2 M doubles of MAIN-THREAD work
+/// (135 ms measured) on every grid solve, to decide something object identity
+/// already answers: `buildTerrainField` memoises, so the same terrain comes
+/// back as the same object and a genuinely different one is a new object,
+/// which takes a new tag. The tag is attached lazily rather than relying on
+/// reference equality alone, exactly as `demIdentity` does for a DemRaster.
+const terrainTags = new WeakMap<SceneHeightfield, string>();
+let terrainSeq = 0;
+function terrainIdentity(field: SceneHeightfield | null): string {
+  if (!field) return 'flat';
+  let t = terrainTags.get(field);
+  if (!t) { t = `hf${++terrainSeq}`; terrainTags.set(field, t); }
+  return t;
+}
+
 /// Digest of everything in a job EXCEPT its tiles. Any change here invalidates
 /// the whole cached grid — geometry, obstacles, terrain, settings and the
 /// output raster's own dimensions all move every cell.
 export function gridJobFingerprint(job: GridJob): string {
-  const { tiles: _tiles, ...rest } = job;
-  return digest(rest);
+  const { tiles: _tiles, terrain, ...rest } = job;
+  return digest({ ...rest, terrain: terrainIdentity(terrain) });
 }
 
 /// Digest of one tile: its cell block and its fully-resolved source list.

@@ -119,7 +119,26 @@ export function fillHoles(heights: number[], nx: number, ny: number): boolean {
 /// factorial study of N combinations paid it N times and locked the UI for
 /// seconds on a 2x2 case. The raster depends only on the DEM and the covered
 /// extent, neither of which a model swap changes.
-let memo: { key: string; value: SceneHeightfield | null; info: TerrainBuildInfo | null } | null = null;
+///
+/// TWO entries, most recent first. A solve builds two different fields — the
+/// receiver pass covers sources + receivers, the grid job covers the calc-area
+/// corners + sources — so a one-entry memo was evicted by each in turn and the
+/// ordinary edit → solve → regrid loop re-sampled both every time. Worse, a
+/// rebuilt field is a NEW object, and the grid's pack cache keys on identity,
+/// so the whole heightfield was re-packed and re-shipped to every worker.
+type MemoEntry = { key: string; value: SceneHeightfield | null; info: TerrainBuildInfo | null };
+const MEMO_SIZE = 2;
+let memo: MemoEntry[] = [];
+
+/// Put `entry` at the front, evicting the oldest past [`MEMO_SIZE`]. Used for a
+/// hit as well as a new build, so `lastTerrainBuild` speaks for the most recent
+/// CALL — from the caller's point of view a hit is as much a build as a miss.
+function remember(entry: MemoEntry): void {
+  const at = memo.indexOf(entry);
+  if (at >= 0) memo.splice(at, 1);
+  memo.unshift(entry);
+  if (memo.length > MEMO_SIZE) memo.length = MEMO_SIZE;
+}
 
 function memoKey(
   dem: DemRaster,
@@ -156,20 +175,21 @@ function demIdentity(dem: DemRaster): string {
   return t;
 }
 
-/// Drop the cached raster. Call when the DEM itself is replaced.
+/// Drop the cached rasters. Call when the DEM itself is replaced.
 export function clearTerrainFieldCache(): void {
-  memo = null;
+  memo = [];
 }
 
 /// What the most recent build produced, or `null` if none has been (or it
 /// produced no terrain).
 ///
 /// Only ever safe to read STRAIGHT AFTER a `buildTerrainField` call, with no
-/// await in between: the memo holds one entry, so the next build — typically
-/// the contour grid's, over a different extent — replaces it. Anything that
-/// needs the record later is handed it (`evaluateProject` returns it).
+/// await in between: it describes whichever field that call returned, and the
+/// next build — typically the contour grid's, over a different extent —
+/// describes that one instead. Anything that needs the record later is handed
+/// it (`evaluateProject` returns it).
 export function lastTerrainBuild(): TerrainBuildInfo | null {
-  return memo?.info ?? null;
+  return memo[0]?.info ?? null;
 }
 
 /// The DEM plus whatever the QA correction moved — the raw raster everywhere
@@ -233,7 +253,8 @@ export function buildTerrainField(
   if (!dem || points.length === 0) return null;
 
   const key = memoKey(dem, origin, points, opts);
-  if (memo && memo.key === key) return memo.value;
+  const hit = memo.find((e) => e.key === key);
+  if (hit) { remember(hit); return hit.value; }
 
   let minE = Infinity; let minN = Infinity; let maxE = -Infinity; let maxN = -Infinity;
   for (const p of points) {
@@ -245,7 +266,7 @@ export function buildTerrainField(
     if (n > maxN) maxN = n;
   }
   if (!Number.isFinite(minE) || !Number.isFinite(minN)) {
-    memo = { key, value: null, info: null };
+    remember({ key, value: null, info: null });
     return null;
   }
 
@@ -285,7 +306,7 @@ export function buildTerrainField(
     }
   }
 
-  if (!fillHoles(heights, nx, ny)) { memo = { key, value: null, info: null }; return null; }
+  if (!fillHoles(heights, nx, ny)) { remember({ key, value: null, info: null }); return null; }
 
   // Terrain QA. Blunders are FLAGGED always and corrected only on request: the
   // Hampel despike this replaced silently erased every one-cell bund and
@@ -346,6 +367,6 @@ export function buildTerrainField(
   const field: SceneHeightfield = {
     type: 'heightfield', origin: [minE, minN], spacing, nx, ny, heights: final,
   };
-  memo = { key, value: field, info };
+  remember({ key, value: field, info });
   return field;
 }

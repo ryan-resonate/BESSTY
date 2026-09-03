@@ -353,9 +353,39 @@ test('a heightfield the engine accepts is emitted for a real-shaped project', ()
   assert.doesNotThrow(() => solve_scene(JSON.stringify(scene)));
 });
 
+test('the receiver field and the grid field stay warm at the same time', () => {
+  // One solve builds two: sources + receivers for the named receivers, then
+  // calc-area corners + sources for the contour grid. A one-entry memo had each
+  // evict the other, so the ordinary edit → solve → regrid loop re-sampled up
+  // to 2048² every time — and handed the grid a NEW object, which the worker
+  // pack cache keys on, re-shipping the whole heightfield to every worker.
+  let samples = 0;
+  const counting = demFromLocal(() => { samples++; return 0; });
+  const receiverPts = pts;
+  const gridPts: Array<[number, number]> = [
+    [ORIGIN[0] - 0.004, ORIGIN[1] - 0.004], [ORIGIN[0] + 0.004, ORIGIN[1] + 0.02],
+  ];
+
+  clearTerrainFieldCache();
+  const a = buildTerrainField(counting, ORIGIN, receiverPts, {})!;
+  const b = buildTerrainField(counting, ORIGIN, gridPts, {})!;
+  assert.notEqual(a, b, 'different extents give different fields');
+  const sampled = samples;
+  assert.equal(buildTerrainField(counting, ORIGIN, receiverPts, {}), a,
+    'the receiver field survived the grid build — the SAME object, so the pack cache still holds');
+  assert.equal(samples, sampled, 'and nothing was re-sampled');
+
+  // Two entries, not more: a third extent still evicts the oldest.
+  const thirdPts: Array<[number, number]> = [ORIGIN, [ORIGIN[0] + 0.03, ORIGIN[1]]];
+  buildTerrainField(counting, ORIGIN, thirdPts, {});
+  const afterThird = samples;
+  assert.notEqual(buildTerrainField(counting, ORIGIN, gridPts, {}), b, 'the oldest was evicted');
+  assert.ok(samples > afterThird, 'so it had to be sampled again');
+});
+
 test('the last build record is the LAST build, whichever raster made it', () => {
-  // The memo holds ONE entry, so the record is only meaningful read straight
-  // after a build. The UI no longer reads it at all — `evaluateProject` hands
+  // The record is only meaningful read straight after a build — the memo tracks
+  // the most recent CALL, hit or miss. The UI no longer reads it at all — `evaluateProject` hands
   // its own build's record back with the results — and the DEM-keyed guard that
   // papered over the late read is gone with it.
   clearTerrainFieldCache();

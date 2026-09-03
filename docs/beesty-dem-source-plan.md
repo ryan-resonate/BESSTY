@@ -212,10 +212,14 @@ memo (expected: single digits).
 
 Deviations and findings, all recorded rather than re-litigated:
 
-- **Coverage probes five points, not one.** A site can sit half on a capture,
-  and a one-point `identify` would then export half 1 m LiDAR and half 30 m
-  SRTM with a step between them. Centre + four corners, all must be non-SRTM
-  with `lowps ≤ 5`; any error → no coverage, and the cascade moves on.
+- **Coverage probes a 3 × 3 lattice, not one point.** A site can sit half on a
+  capture, and a one-point `identify` would then export half 1 m LiDAR and half
+  30 m SRTM with a step between them. Corners alone leave a strip or a hole down
+  the middle untested, so it is nine points — four corners, four mid-edges and
+  the centre, over the PADDED box the export actually covers. All must be
+  non-SRTM with `lowps ≤ 5`; any error → no coverage, and the cascade moves on.
+  (It was five points, centre + corners, when the timings in the memo were
+  taken.)
 - **The licence is still unconfirmed.** No QSpatial or data.qld.gov.au record
   names the `Elevation/QldDem` endpoint. The two records for the sibling
   `DEM_TimeSeries_AllUsers` service disagree — the portal says CC BY 3.0, the
