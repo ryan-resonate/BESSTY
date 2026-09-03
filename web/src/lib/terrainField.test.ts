@@ -229,3 +229,16 @@ test('a heightfield the engine accepts is emitted for a real-shaped project', ()
   });
   assert.doesNotThrow(() => solve_scene(JSON.stringify(scene)));
 });
+
+test('the last build belongs to one DEM, and is not reported for another', () => {
+  // The memo holds ONE entry, and the UI reads it long after the solve: without
+  // the DEM argument, swapping the raster leaves the previous surface's pitch
+  // and flagged cells on screen, attributed to the new one.
+  clearTerrainFieldCache();
+  const dem = spikeDem();
+  buildTerrainField(dem, ORIGIN, pts, {});
+  assert.equal(lastTerrainBuild(dem)?.count, 1, 'the DEM it was built from');
+  assert.equal(lastTerrainBuild()?.count, 1, 'no argument still means "whatever was last"');
+  assert.equal(lastTerrainBuild(spikeDem()), null, 'a different raster gets nothing');
+  assert.equal(lastTerrainBuild(null), null);
+});

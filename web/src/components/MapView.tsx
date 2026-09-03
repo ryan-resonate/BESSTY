@@ -1123,11 +1123,17 @@ export function MapView({
 
   // Credit the elevation source alongside the basemap's. Leaflet de-duplicates
   // by string, so swapping DEM source swaps the credit.
+  //
+  // `addAttribution` writes its argument as HTML. The built-in sources' strings
+  // are ours (and contain deliberate links), but an uploaded DEM's credit is
+  // derived from a filename a collaborator chose, so escape it: the basemap
+  // links live in `TILE_URLS`, not here.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !demAttribution) return;
-    map.attributionControl.addAttribution(demAttribution);
-    return () => { map.attributionControl.removeAttribution(demAttribution); };
+    const credit = escapeHtml(demAttribution);
+    map.attributionControl.addAttribution(credit);
+    return () => { map.attributionControl.removeAttribution(credit); };
   }, [demAttribution]);
 
   // Render reference / annotation layers (non-solver geometry). Non-interactive

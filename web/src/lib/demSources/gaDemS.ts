@@ -137,6 +137,12 @@ function cog(): Promise<GeoTIFF> {
 
 /// Window cache, keyed by the requested bounds to ~10 m. A project re-reads the
 /// same extent every time the calc area is nudged below that.
+///
+/// Bounded LRU: each entry holds nx·ny float32 heights (a 6 km site ≈ 190 kB, a
+/// 50 km one ≈ 13 MB), and dragging the calc area across a region would
+/// otherwise keep every window it ever passed through for the life of the tab.
+/// Insertion order is LRU order — a hit is re-inserted.
+const WINDOW_CACHE_MAX = 4;
 const windows = new Map<string, Promise<DemRaster>>();
 
 const boundsKey = (b: DemBounds) =>
@@ -154,7 +160,7 @@ export const GA_DEM_S: DemSource = {
   load(bounds: DemBounds): Promise<DemRaster> {
     const key = boundsKey(bounds);
     const hit = windows.get(key);
-    if (hit) return hit;
+    if (hit) { windows.delete(key); windows.set(key, hit); return hit; }
     const promise = (async () => {
       const win = demSPixelWindow(bounds);
       if (win.nx > MAX_WINDOW_PX || win.ny > MAX_WINDOW_PX) {
@@ -173,6 +179,10 @@ export const GA_DEM_S: DemSource = {
       return demSWindowRaster(win, band0);
     })();
     windows.set(key, promise);
+    for (const stale of windows.keys()) {
+      if (windows.size <= WINDOW_CACHE_MAX) break;
+      windows.delete(stale);
+    }
     promise.catch(() => { if (windows.get(key) === promise) windows.delete(key); });
     return promise;
   },

@@ -153,8 +153,15 @@ export function clearTerrainFieldCache(): void {
 /// What the most recent build produced, or `null` if none has been (or it
 /// produced no terrain). Read straight after `buildTerrainField` — the memo
 /// holds one entry, so a later build for a different extent replaces it.
-export function lastTerrainBuild(): TerrainBuildInfo | null {
-  return memo?.info ?? null;
+///
+/// Pass `dem` when reading it later (the UI does, a frame or several after the
+/// solve): the record then comes back only if it was built from THAT raster.
+/// Without it, a DEM swap leaves the previous surface's pitch and suspect cells
+/// on screen, described as the current DEM's.
+export function lastTerrainBuild(dem?: DemRaster | null): TerrainBuildInfo | null {
+  if (!memo) return null;
+  if (dem !== undefined && (!dem || !memo.key.startsWith(`${demIdentity(dem)}|`))) return null;
+  return memo.info ?? null;
 }
 
 /// A `DemRaster` that reads the QA-CORRECTED surface inside the built field and

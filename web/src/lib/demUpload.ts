@@ -143,8 +143,13 @@ export async function parseDemGeoTiff(file: File, opts: DemUploadOptions = {}): 
 function uploadSourceInfo(filename: string, nativePitchM: number): DemSourceInfo {
   return {
     id: 'upload',
+    // The filename stays out of `attribution`: that string is handed to
+    // Leaflet's attribution control, which renders HTML, and it round-trips
+    // through Firestore, so a collaborator's file called `<img onerror=…>`
+    // would be stored XSS. `label` carries the name, and every place that
+    // shows a label renders it as React text.
     label: `Uploaded DEM · ${filename}`,
-    attribution: `Elevation: user-supplied DEM (${filename})`,
+    attribution: 'Elevation: user-supplied DEM',
     licence: 'Supplied by the user',
     nativePitchM,
   };

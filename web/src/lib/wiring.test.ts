@@ -555,3 +555,27 @@ test('no worker is constructed outside the modules that own one', () => {
     `unexpected Worker construction outside ${owners.join(' / ')}:\n  ` + offenders.join('\n  '),
   );
 });
+
+test('every attribution handed to Leaflet is escaped', () => {
+  // `attributionControl.addAttribution` writes its argument as HTML. The DEM
+  // credit is derived from an uploaded file's NAME, which a collaborator
+  // chooses and which round-trips through Firestore, so passing it raw is
+  // stored XSS on every viewer of the project.
+  const offenders: string[] = [];
+  let calls = 0;
+  for (const { path, text } of FILES) {
+    for (const m of text.matchAll(/(?:add|remove)Attribution\(([^)]*)\)/g)) {
+      calls++;
+      const arg = m[1].trim();
+      // A literal is ours (the basemap credits carry deliberate links);
+      // anything else must be a name the same file bound to `escapeHtml(…)`.
+      const literal = /^['"`]/.test(arg);
+      const escaped = /^[A-Za-z_$][\w$]*$/.test(arg)
+        && new RegExp(`\\b${arg}\\s*=\\s*escapeHtml\\(`).test(text);
+      if (literal || escaped) continue;
+      offenders.push(`${path.replace(SRC, 'src')}: addAttribution(${arg})`);
+    }
+  }
+  assert.ok(calls > 0, 'no attribution call found — the check would pass vacuously');
+  assert.deepEqual(offenders, [], `unescaped attribution:\n  ${offenders.join('\n  ')}`);
+});

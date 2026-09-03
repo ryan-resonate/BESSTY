@@ -20,7 +20,7 @@ import type { SweepResult } from '../lib/windSweep';
 import { listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { gridDomain, makeBandsForRange, type Palette } from '../lib/colormap';
 import { terrainReportLine, type DemRaster } from '../lib/dem';
-import { loadAutoDem } from '../lib/demSources';
+import { loadAutoDem, type DemBounds } from '../lib/demSources';
 import { lastTerrainBuild, type SuspectCell } from '../lib/terrainField';
 import {
   evaluateGridViaWorker,
@@ -554,10 +554,20 @@ export function ProjectScreen() {
 
   const [dem, setDem] = useState<DemRaster | null>(null);
   const [demStatus, setDemStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-  /// 'auto' = AWS Terrain Tiles fetched on load; 'upload' = user GeoTIFF.
+  /// 'auto' = the automatic source cascade; 'upload' = user GeoTIFF.
   const [demSource, setDemSource] = useState<'auto' | 'upload'>('auto');
+  /// One generation counter for EVERY DEM load — the automatic cascade, the
+  /// persisted-DEM download and any direct swap. A load only commits if it is
+  /// still the newest one, so an upload landing mid-fetch is not overwritten by
+  /// the automatic raster it interrupted, and dragging the calc area away and
+  /// back cannot finish with the stale window last.
+  const demLoadGenRef = useRef(0);
+  /// Bounds the loaded automatic DEM was fetched for, so a later edit that
+  /// leaves them can re-fetch. Null while none is loaded.
+  const demLoadedBoundsRef = useRef<DemBounds | null>(null);
 
   function setDemAndSource(d: DemRaster | null, source: 'auto' | 'upload') {
+    demLoadGenRef.current++;
     setDem(d);
     setDemSource(source);
     if (source === 'auto' && d == null) {
@@ -980,39 +990,97 @@ export function ProjectScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.calculationArea?.widthM, project?.calculationArea?.heightM]);
 
-  // Auto-load DEM for the project area on first load. Re-load when the calc
-  // area changes significantly (handled via demStatus reset on area edit).
+  // Everything the automatic DEM has to cover, quantised outward to 0.001°
+  // (~110 m) so a nudge is not an excuse to re-fetch.
+  //
+  // The calculation area is NOT the modelled extent. Sources and receivers sit
+  // outside it routinely — a substation up the hill, a dwelling a kilometre
+  // past the array — and a DEM miss returns 0 m rather than erroring, so a
+  // window sized to the rectangle alone puts those points at sea level while
+  // the status chip says the terrain loaded. The tiled source hid this behind
+  // whole-tile slack; a windowed source (DEM-S) does not. `sourcePaddedBounds`
+  // in solver.ts unions the same points for the grid snapshot.
+  //
+  // The corners come from `calcAreaCorners`: the fetch box is the AXIS-ALIGNED
+  // bounds of a possibly ROTATED rectangle, and deriving it from width/height
+  // alone described the unrotated box.
+  const demNeedKey = useMemo(() => {
+    const ca = project?.calculationArea;
+    if (!ca) return null;
+    let minLat = Infinity; let minLng = Infinity;
+    let maxLat = -Infinity; let maxLng = -Infinity;
+    const see = ([lat, lng]: [number, number]) => {
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+      if (lng < minLng) minLng = lng;
+      if (lng > maxLng) maxLng = lng;
+    };
+    calcAreaCorners(ca).forEach(see);
+    for (const s of project?.sources ?? []) see(s.latLng);
+    for (const r of project?.receivers ?? []) see(r.latLng);
+    if (!Number.isFinite(minLat)) return null;
+    const q = 0.001;
+    return [
+      Math.floor(minLat / q) * q, Math.floor(minLng / q) * q,
+      Math.ceil(maxLat / q) * q, Math.ceil(maxLng / q) * q,
+    ].map((v) => v.toFixed(3)).join(',');
+  }, [project?.calculationArea, project?.sources, project?.receivers]);
+
+  const demNeedBounds = useMemo((): DemBounds | null => {
+    if (!demNeedKey) return null;
+    const [s, w, n, e] = demNeedKey.split(',').map(Number);
+    return { sw: [s, w], ne: [n, e] };
+  }, [demNeedKey]);
+
+  // Auto-load DEM for the project area on first load. Re-load when the modelled
+  // extent changes significantly (handled via demStatus reset on area edit and
+  // by the coverage check below).
   // Skipped when the user has supplied their own GeoTIFF in this session OR
   // when the project has a Firebase-Storage-persisted DEM that the effect
   // below is responsible for downloading.
   useEffect(() => {
     if (!project || demStatus !== 'idle' || demSource === 'upload') return;
     if (persistedProject?.dem) return;   // saved DEM takes over via the next effect
-    const ca = project.calculationArea;
-    if (!ca) return;
+    if (!demNeedBounds) return;
     setDemStatus('loading');
-    // The fetch box has to be the AXIS-ALIGNED bounds of the (possibly rotated)
-    // rectangle. Deriving it from width/height alone described the unrotated
-    // box, so a rotated calculation area had corners outside the downloaded
-    // tiles — and a DEM miss returns 0 m rather than erroring, so those corners
-    // silently solved against sea level. `calcAreaCorners` already computes the
-    // rotated corners for the PDF; reuse it rather than repeat the maths.
-    const corners = calcAreaCorners(ca);
-    const lats = corners.map((c) => c[0]);
-    const lngs = corners.map((c) => c[1]);
-    const sw: [number, number] = [Math.min(...lats), Math.min(...lngs)];
-    const ne: [number, number] = [Math.max(...lats), Math.max(...lngs)];
-    loadAutoDem({ sw, ne })
-      .then((r) => { setDem(r); setDemStatus('ready'); })
-      .catch((e) => { console.warn('DEM load failed (continuing flat-ground):', e); setDemStatus('error'); });
-  }, [project, demStatus, demSource, persistedProject?.dem]);
+    const gen = ++demLoadGenRef.current;
+    const wanted = demNeedBounds;
+    loadAutoDem(wanted)
+      .then((r) => {
+        if (gen !== demLoadGenRef.current) return;   // superseded (upload, or a newer extent)
+        demLoadedBoundsRef.current = wanted;
+        setDem(r);
+        setDemStatus('ready');
+      })
+      .catch((e) => {
+        if (gen !== demLoadGenRef.current) return;
+        console.warn('DEM load failed (continuing flat-ground):', e);
+        setDemStatus('error');
+      });
+  }, [project, demStatus, demSource, persistedProject?.dem, demNeedBounds]);
+
+  // Re-fetch when the modelled extent grows past the window we fetched — a
+  // source dragged out of it, a receiver added beyond it, the area resized.
+  // Compared against the bounds we ASKED for, not the raster's: each source
+  // pads its own window generously, and a source that returns less than it was
+  // asked for (DEM-S clamped at the edge of its coverage) would otherwise fail
+  // this check on every render and re-fetch forever. Quantised bounds mean a
+  // drag inside the window costs nothing.
+  useEffect(() => {
+    if (demSource === 'upload' || demStatus !== 'ready') return;
+    const have = demLoadedBoundsRef.current;
+    if (!have || !demNeedBounds) return;
+    const covered = demNeedBounds.sw[0] >= have.sw[0] && demNeedBounds.sw[1] >= have.sw[1]
+      && demNeedBounds.ne[0] <= have.ne[0] && demNeedBounds.ne[1] <= have.ne[1];
+    if (!covered) setDemStatus('idle');
+  }, [demNeedBounds, demStatus, demSource]);
 
   // Auto-download a previously persisted DEM from Firebase Storage on
   // project open (or when the persisted DEM reference changes -- e.g. a
-  // collaborator uploaded a different one). Uses a generation counter
+  // collaborator uploaded a different one). Uses the shared generation counter
   // to discard stale responses if the user uploads a new DEM mid-
   // download or navigates away.
-  const demLoadGenRef = useRef(0);
   useEffect(() => {
     const persistedDem = persistedProject?.dem;
     if (!persistedDem) return;
@@ -1156,7 +1224,7 @@ export function ProjectScreen() {
           if (gen !== pointGenRef.current) return;       // superseded
           setResults(results);
           setDiagnostics(diag.list());                   // I20
-          setSuspectCells(dem ? lastTerrainBuild()?.cells ?? [] : []);
+          setSuspectCells(lastTerrainBuild(dem)?.cells ?? []);
           setLastSolveMs(performance.now() - start);
         })
         .catch((e) => {
@@ -1662,8 +1730,9 @@ export function ProjectScreen() {
 
   const receiverDbList = (results ?? []).map((r) => r.totalDbA);
   /// The pitch terrain was actually screened at, plus what the QA pass found —
-  /// both belong in the report's provenance line.
-  const terrainBuild = lastTerrainBuild();
+  /// both belong in the report's provenance line. Keyed by `dem`, so a build
+  /// made from the DEM we have just replaced is not reported as this one's.
+  const terrainBuild = lastTerrainBuild(dem);
 
   return (
     <div className="workspace">

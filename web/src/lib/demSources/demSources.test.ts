@@ -137,3 +137,43 @@ test('DEM-S maps the float32 nodata sentinel to NaN and keeps ocean at 0', () =>
   assert.ok(Number.isNaN(r.elevation(r.bounds.ne[0], r.bounds.sw[1])));
   assert.equal(r.elevation(r.bounds.sw[0], r.bounds.ne[1]), 0);
 });
+
+test('DEM-S window indices are pinned to the published COG origin', () => {
+  // Everything below rests on three published numbers — origin lon
+  // 112.99986111, lat −10.00013889, pixel 0.000277777778° — and the tests above
+  // ask the raster where it thinks it is, so they would pass just as happily
+  // with a wrong origin or a window index off by one. Both mistakes shift every
+  // elevation by a pixel, ~28 m, silently.
+  //
+  // The origin is a HALF pixel outside the first cell, so 113 °E + k/3600 is
+  // the centre of column k and 10 °S + k/3600 the centre of row k−1:
+  //   153.0 °E → column (153 − 113) · 3600         = 144000
+  //   27.5 °S  → row    (27.5 − 10) · 3600 − 0.5   = 62999
+  const pt: [number, number] = [-27.5, 153.0];
+  const win = demSPixelWindow({ sw: pt, ne: pt }, 0);
+  assert.equal(win.x0, 143999);   // the containing column, less a pixel of stencil
+  assert.equal(win.y0, 62998);
+  // …and the window really is indexed from there: plant a marker in the pixel
+  // that contains the point and read it back AT the point.
+  const values = new Float32Array(win.nx * win.ny);
+  values[(62999 - win.y0) * win.nx + (144000 - win.x0)] = 42;
+  const h = demSWindowRaster(win, values).elevation(pt[0], pt[1]);
+  assert.ok(h > 41.9, `expected ~42 m at the pinned pixel, got ${h}`);
+});
+
+test('DEM-S rows run north to south, row 0 at the top', () => {
+  // geotiff.js hands back the window row-major from its NORTH-WEST corner. Read
+  // the other way up the terrain is mirrored about the site's centre latitude —
+  // hills where the valleys are, and no test that only checks interpolation
+  // would notice.
+  const win = demSPixelWindow(BOUNDS);
+  const values = new Float32Array(win.nx * win.ny);
+  for (let j = 0; j < win.ny; j++) for (let i = 0; i < win.nx; i++) values[j * win.nx + i] = j;
+  const r = demSWindowRaster(win, values);
+  const pixelDeg = 0.000277777778;
+  const lng = r.bounds.sw[1];
+  assert.ok(r.bounds.ne[0] > r.bounds.sw[0], 'ne is the northern corner');
+  assert.ok(Math.abs(r.elevation(r.bounds.ne[0], lng) - 0) < 1e-6, 'row 0 is the north edge');
+  assert.ok(Math.abs(r.elevation(r.bounds.ne[0] - 3 * pixelDeg, lng) - 3) < 1e-6);
+  assert.ok(Math.abs(r.elevation(r.bounds.sw[0], lng) - (win.ny - 1)) < 1e-6, 'last row is the south edge');
+});

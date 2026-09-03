@@ -1840,7 +1840,13 @@ function LayersTab(props: Props) {
           DEM:{' '}
           {demStatus === 'idle' && <span className="muted">idle</span>}
           {demStatus === 'loading' && <span className="muted">loading…</span>}
-          {demStatus === 'ready' && <span style={{ color: 'var(--green)' }}>{demTilesLoaded} tiles loaded</span>}
+          {/* A single-window source (DEM-S, an upload) loads one "tile", so
+              pluralise rather than announce "1 tiles loaded". */}
+          {demStatus === 'ready' && (
+            <span style={{ color: 'var(--green)' }}>
+              {demTilesLoaded} tile{demTilesLoaded === 1 ? '' : 's'} loaded
+            </span>
+          )}
           {demStatus === 'error' && <span style={{ color: 'var(--red)' }}>fetch failed</span>}
         </div>
         <div className="hint">Source: {demSourceLabel ?? 'not loaded yet'}</div>
