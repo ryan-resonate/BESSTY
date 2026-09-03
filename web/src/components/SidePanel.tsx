@@ -26,6 +26,7 @@ import { ProjectMetaPanel } from './ProjectMetaPanel';
 import { EpsgPicker } from './EpsgPicker';
 import { NumericInput } from './NumericInput';
 import { inferGeoTiffCrs, parseDemGeoTiff } from '../lib/demUpload';
+import { suspectSlopeDeg } from '../lib/terrainQa';
 import {
   DEM_MAX_BYTES,
   deleteProjectDem,
@@ -177,6 +178,12 @@ interface Props {
   /// effective source count the solver actually used for each.
   showBhDebug?: boolean;
   setShowBhDebug?(v: boolean): void;
+  /// Terrain QA overlay — the DEM cells the last solve flagged as blunders.
+  showSuspectCells?: boolean;
+  setShowSuspectCells?(v: boolean): void;
+  /// How many the last solve flagged, so the toggle can say whether there is
+  /// anything to see.
+  suspectCellCount?: number;
   contourMode: ContourMode;
   setContourMode(m: ContourMode): void;
   contourOpacity: number;
@@ -1837,6 +1844,27 @@ function LayersTab(props: Props) {
           {demStatus === 'error' && <span style={{ color: 'var(--red)' }}>fetch failed</span>}
         </div>
         <div className="hint">Source: {demSourceLabel ?? 'not loaded yet'}</div>
+        {props.setShowSuspectCells && (
+          <>
+            <Field label="">
+              <label className="row-checkbox">
+                <input
+                  type="checkbox"
+                  checked={!!props.showSuspectCells}
+                  onChange={(e) => props.setShowSuspectCells?.(e.target.checked)}
+                />
+                <span>Suspect terrain cells{props.suspectCellCount ? ` (${props.suspectCellCount})` : ''}</span>
+              </label>
+            </Field>
+            <div className="hint">
+              {props.suspectCellCount
+                ? 'Cells the last solve read as DEM blunders — a spike or pit standing '
+                  + 'clear of everything around it. Click one for its height and what '
+                  + 'correcting it would put there.'
+                : 'The last solve found none. When it does, they appear here and on the map.'}
+            </div>
+          </>
+        )}
       </Card>
 
       <ReferenceLayersCard
@@ -2426,7 +2454,7 @@ export function SettingsTab(props: SettingsTabProps) {
   }
 
   const propagation = settings.propagation ?? { maxContributionDistanceM: 20000, treeAcceptanceTheta: 0.25 };
-  const topography = settings.topography ?? { despikeStrength: 'low' as const };
+  const topography = settings.topography ?? {};
   const tonality = tonalitySettingsFor(project);
 
   return (
@@ -3027,20 +3055,17 @@ export function SettingsTab(props: SettingsTabProps) {
         {/* The old "min ridge prominence" knob is gone: ridge selection is now
             the engine's own hull over the elevation raster, not a web-side
             pre-filter. Stored values are tolerated and ignored. */}
-        <Field label="DEM despike">
-          <select
-            value={topography.despikeStrength ?? 'low'}
-            onChange={(e) => update({
-              topography: {
-                ...topography,
-                despikeStrength: e.target.value as 'off' | 'low' | 'medium',
-              },
-            })}
-          >
-            <option value="off">Off</option>
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-          </select>
+        <Field label="">
+          <label className="row-checkbox">
+            <input
+              type="checkbox"
+              checked={!!topography.qaCorrect}
+              onChange={(e) => update({
+                topography: { ...topography, qaCorrect: e.target.checked },
+              })}
+            />
+            <span>Correct suspect terrain cells</span>
+          </label>
         </Field>
         <div className="hint">
           With a DEM loaded, the elevation raster is handed to the solver, which
@@ -3049,10 +3074,12 @@ export function SettingsTab(props: SettingsTabProps) {
           like a wall. Sampling follows the DEM's own resolution; there is nothing
           to tune.
           <br />
-          <b>DEM despike:</b> a peak-preserving (Hampel) filter applied when the
-          raster is built, removing isolated DEM blunders without lowering genuine
-          crests. <b>Low</b> suits most public DEMs; <b>Medium</b> for noisy data;
-          <b>Off</b> for clean LiDAR.
+          <b>Correct suspect terrain cells:</b> a cell (or 2×2 patch) that stands
+          above or below everything around it by more than {suspectSlopeDeg()}°
+          and belongs to nothing longer is a DEM blunder, not a bund or a cliff.
+          Flagged cells are always listed in the solve diagnostics and drawn on
+          the map (Layers → Suspect terrain cells); tick this to replace them
+          with the median of their neighbours. Nothing else is ever altered.
         </div>
       </section>
       )}

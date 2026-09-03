@@ -44,7 +44,6 @@ function commonSettings(): ProjectSettings {
     },
     topography: {
       virtualBarrierMinHeightM: 2,
-      despikeStrength: 'low',
     },
   };
 }

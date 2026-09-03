@@ -124,9 +124,18 @@ export async function parseDemGeoTiff(file: File, opts: DemUploadOptions = {}): 
         return sampleNative(x, y);
       };
 
+  // The pitch the raster genuinely resolves. `resolutionM` is what
+  // `terrainField` samples at, so leaving it unset (as this did until the DEM
+  // source work) threw away most of an uploaded LiDAR DEM: every upload was
+  // screened at the 20 m fallback regardless of its real cell size.
+  const resolutionM = demPixelPitchM(
+    epsg, xRange, yRange, width, height, bounds, linearUnitM(image),
+  );
+
   return {
     width, height, filename: file.name, epsg, bounds, tilesLoaded: 1,
-    source: uploadSourceInfo(file.name, nativePitchM(epsg, xRange, yRange, width, height, bounds)),
+    resolutionM,
+    source: uploadSourceInfo(file.name, resolutionM),
     elevation,
   };
 }
@@ -141,25 +150,43 @@ function uploadSourceInfo(filename: string, nativePitchM: number): DemSourceInfo
   };
 }
 
-/// Cell pitch of an uploaded raster, finer axis, in metres. Projected CRSs are
-/// already metric; geographic ones are converted at the raster's own latitude.
+/// Cell pitch of an uploaded raster, finer axis, in metres — both the reported
+/// native pitch and the pitch `terrainField` samples the raster at.
 ///
-/// Reported only — `resolutionM` is deliberately left unset, as it always has
-/// been, so this does not silently change the pitch existing projects sample at.
-function nativePitchM(
+/// Finer, not coarser, and a single number for both axes: a lat/lng grid's E-W
+/// cells are shorter than its N-S ones, and sampling at the coarser axis would
+/// throw away detail the file actually holds (`dem.ts` makes the same choice).
+/// `linearUnitM` scales a projected CRS's own units to metres — feet exist in
+/// the wild and would otherwise overstate the resolution by 3.3×.
+export function demPixelPitchM(
   epsg: number,
   xRange: number,
   yRange: number,
   width: number,
   height: number,
   bounds: { sw: [number, number]; ne: [number, number] },
+  linearUnitM = 1,
 ): number {
-  const dx = xRange / Math.max(1, width - 1);
-  const dy = yRange / Math.max(1, height - 1);
-  if (epsg !== 4326 && epsg !== 4269) return Math.min(dx, dy);
+  // Sampling maps the bbox onto (width − 1) intervals, so that — not `width` —
+  // is the step the bilinear lookup actually resolves.
+  const dx = Math.abs(xRange) / Math.max(1, width - 1);
+  const dy = Math.abs(yRange) / Math.max(1, height - 1);
+  if (epsg !== 4326 && epsg !== 4269) return Math.min(dx, dy) * linearUnitM;
   const mPerDeg = (Math.PI / 180) * 6371008.8;
   const midLat = ((bounds.sw[0] + bounds.ne[0]) / 2) * (Math.PI / 180);
   return Math.min(dx * mPerDeg * Math.cos(midLat), dy * mPerDeg);
+}
+
+/// Metres per linear unit of a projected GeoTIFF, from `ProjLinearUnitsGeoKey`
+/// (EPSG unit codes). Metres unless the file says otherwise; an unrecognised
+/// code is treated as metres rather than refusing the file.
+function linearUnitM(image: GeoTIFFImage): number {
+  const keys = image.getGeoKeys?.() as Record<string, number | undefined> | undefined;
+  switch (keys?.ProjLinearUnitsGeoKey) {
+    case 9002: return 0.3048;              // international foot
+    case 9003: return 1200 / 3937;         // US survey foot
+    default: return 1;
+  }
 }
 
 function inferEpsg(image: GeoTIFFImage): number | null {

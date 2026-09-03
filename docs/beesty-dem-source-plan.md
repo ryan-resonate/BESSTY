@@ -139,7 +139,28 @@ Gate:
 3. Tarong example project: receiver table Terrarium vs DEM-S, saved as
    `validation/dem-source-memo.md` (documentation, not pass/fail).
 
-## Phase 2 — Remove the despike, add terrain QA
+## Phase 2 — Remove the despike, add terrain QA — **BUILT**
+
+Deviations from the plan as written, all minor:
+
+- `correctedDemRaster(dem, field, origin)` takes the scene's geodetic origin as
+  a third argument: a `SceneHeightfield` carries its origin in local metres
+  only, so the wrapper cannot convert lat/lng without it.
+- `lastTerrainPitchM()` became `lastTerrainBuild()`, returning
+  `{ pitchM, count, maxDevM, correction, cells }` — the same "last build"
+  record, extended, rather than a second accessor beside it.
+- The QA overlay lives in the Layers tab's existing **Terrain** card (with the
+  DEM status), not with the debug overlays under Contours, and defaults ON: a
+  flagged blunder should be seen, not looked for.
+- Phase 4's job, done early because the bug was in reach: `demUpload` now sets
+  `resolutionM` from the GeoTIFF pixel size (projected CRS in its own linear
+  units, geographic converted at the raster's latitude). Uploaded DEMs were
+  being sampled at `terrainField`'s 20 m fallback whatever their real pitch, so
+  upload projects change — accepted under decision 6.
+- An old project's `topography.despikeStrength` is ignored on load but is not
+  actively stripped on save: nothing writes the field, and deleting it would be
+  the compatibility shim decision 9 rules out.
+
 
 Files: `web/src/lib/terrainField.ts`, `terrainField.test.ts`,
 `web/src/lib/types.ts` (~640), `web/src/components/SidePanel.tsx` (~3025 select
@@ -154,13 +175,15 @@ and hint), `web/src/lib/demoProject.ts`, `web/src/lib/gridCore.ts` (~35),
   project default. Update the `buildTerrainField` memo key.
 - `terrainQa.flagSuspectCells(heights, nx, ny, pitchM)` returns
   `{ indices, maxDevM, count }`. A cell is suspect only if **all** hold:
-  1. slope from the cell to at least one 4-neighbour exceeds `maxSlope`
-     (Hirt 2018 maximum-slope idea; default 60° at pitch ≥ 20 m, 75° at finer
-     pitch, i.e. a rise > 1.7 × pitch in one cell — real cliffs at 30 m pitch
-     are rare and are reported, not corrected);
-  2. the cell is a strict local maximum or minimum against all 8 neighbours;
+  1. slope from the cell to at least one 4-neighbour exceeds 45°, i.e. the
+     rise in one step is more than one cell width (Hirt 2018 maximum-slope
+     idea; a single threshold for every pitch — the extremum and component
+     rules below, not the angle, are what protect real terrain);
+  2. the cell (or the ≤ 2×2 cluster it belongs to) is a strict local maximum
+     or minimum against the ring of cells around it;
   3. the connected component of cells meeting 1–2 is at most 2×2 cells
-     (a one-cell-wide bund forms a long component and is never flagged).
+     (a one-cell-wide bund or a cliff line forms a long component and is
+     never flagged).
   Interior windows only; border cells are never flagged (the 500 m margin
   makes them irrelevant and avoids the truncated-window artefact the Hampel
   had).

@@ -181,9 +181,7 @@ test('the -120 dB floor is applied before DΩ, as the previous engine did', () =
 test('terrain screening reaches the grid', () => {
   // Ridge between the source and the east half of the grid.
   const ridgeDem = demFromLocal((e) => (Math.abs(e - 200) < 40 ? 50 : 0));
-  const terrain = buildTerrainField(ridgeDem, ORIGIN, [ORIGIN, [ORIGIN[0], ORIGIN[1] + 0.008]], {
-    despikeStrength: 'off',
-  });
+  const terrain = buildTerrainField(ridgeDem, ORIGIN, [ORIGIN, [ORIGIN[0], ORIGIN[1] + 0.008]]);
   const flat = runBatchedGrid(makeJob(32, 32, 1200, centreSource), flatDem);
   const ridged = runBatchedGrid(makeJob(32, 32, 1200, centreSource, { terrain }), ridgeDem);
   // A cell well east of the ridge must be quieter than on flat ground.

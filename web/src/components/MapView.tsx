@@ -106,6 +106,11 @@ interface Props {
   /// adaptive clustering) with the effective source count the solver used for
   /// each, so over-clustering is visible rather than inferred.
   showBhDebug?: boolean;
+  /// Terrain QA overlay — the DEM cells the last solve flagged as blunders
+  /// (`terrainField.lastTerrainBuild`). A flagged cell is a claim about the
+  /// user's data, so it is shown where the data is, not only in a note.
+  suspectCells?: Array<{ latLng: [number, number]; z: number; median: number }>;
+  showSuspectCells?: boolean;
   /// Grid spacing the tiles are derived from — the clustering partition
   /// depends on it, so the overlay must use the same value the solve will.
   gridSpacingM?: number;
@@ -567,7 +572,7 @@ export function MapView({
   onEditCalcArea,
   onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
   selectedGroupId, onTranslateGroup, onRotateGroup,
-  addMode, baseMap, demAttribution, showContours, showGridDebug, showBhDebug, gridSpacingM, showReceiverLimits, contourMode, contourOpacity, contourStepDb,
+  addMode, baseMap, demAttribution, showContours, showGridDebug, showBhDebug, suspectCells, showSuspectCells, gridSpacingM, showReceiverLimits, contourMode, contourOpacity, contourStepDb,
   customContours, palette, dbDomain, onCursorMove, onReady,
   onAddAnnotation, onUpdateAnnotation, selectedAnnotationId, onSelectAnnotation,
 }: Props) {
@@ -603,6 +608,8 @@ export function MapView({
   /// Barnes-Hut clustering overlay (item I) — its own group so toggling it
   /// never disturbs the contour or grid-debug layers.
   const bhDebugGroupRef = useRef<L.LayerGroup | null>(null);
+  /// Terrain QA overlay — flagged DEM cells from the last solve.
+  const suspectGroupRef = useRef<L.LayerGroup | null>(null);
   /// Reference / annotation geometry (property boundaries etc.) — purely
   /// visual, drawn at the bottom z-order (just above the base tiles), never
   /// interactive so it can't intercept selection / drawing.
@@ -715,6 +722,7 @@ export function MapView({
     overlayGroupRef.current = L.layerGroup().addTo(map);
     gridDebugGroupRef.current = L.layerGroup().addTo(map);
     bhDebugGroupRef.current = L.layerGroup().addTo(map);
+    suspectGroupRef.current = L.layerGroup().addTo(map);
     barriersGroupRef.current = L.layerGroup().addTo(map);
     measureGroupRef.current = L.layerGroup().addTo(map);
     annotationGroupRef.current = L.layerGroup().addTo(map);
@@ -1087,6 +1095,7 @@ export function MapView({
       overlayGroupRef.current = null;
       gridDebugGroupRef.current = null;
       bhDebugGroupRef.current = null;
+      suspectGroupRef.current = null;
       referenceGroupRef.current = null;
       measureGroupRef.current = null;
       barriersGroupRef.current = null;
@@ -2941,6 +2950,37 @@ export function MapView({
       }
     });
   }, [project, showBhDebug, gridSpacingM, bhSelectedTile]);
+
+  // Terrain QA overlay — the DEM cells the last solve flagged as blunders.
+  //
+  // A flag is an accusation against the user's elevation data, and the only
+  // honest place to make it is on the map: the note says "3 suspect cells", the
+  // overlay says WHERE, and the popup says by how much, so the user can decide
+  // whether it is a genuine spike or a real feature the rule caught. Kept in its
+  // own layer group and capped by `terrainField` at 500 cells.
+  useEffect(() => {
+    const group = suspectGroupRef.current;
+    if (!group) return;
+    group.clearLayers();
+    if (!showSuspectCells || !suspectCells?.length) return;
+    for (const cell of suspectCells) {
+      const dev = cell.z - cell.median;
+      L.circleMarker(cell.latLng, {
+        radius: 5,
+        color: '#b91c1c',
+        weight: 2,
+        fill: true,
+        fillColor: '#fca5a5',
+        fillOpacity: 0.75,
+      })
+        .bindPopup(
+          `<b>Suspect terrain cell</b><br>DEM ${cell.z.toFixed(1)} m — `
+          + `${Math.abs(dev).toFixed(1)} m ${dev > 0 ? 'above' : 'below'} its neighbours`
+          + `<br>Correction would use ${cell.median.toFixed(1)} m`,
+        )
+        .addTo(group);
+    }
+  }, [suspectCells, showSuspectCells]);
 
   useEffect(() => {
     if (!containerRef.current) return;

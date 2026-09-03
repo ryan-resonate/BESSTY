@@ -174,7 +174,7 @@ const LEGS = [
 ];
 
 function solveWith(dem) {
-  const terrain = buildTerrainField(dem, origin, allLatLng, { despikeStrength: 'off' });
+  const terrain = buildTerrainField(dem, origin, allLatLng);
   const scene = buildScene({
     origin,
     sources: srcPts.map((s) => ({ id: s.id, latLng: s.latLng, heightAglM: SRC_HAGL, lw: LW })),

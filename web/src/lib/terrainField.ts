@@ -13,10 +13,11 @@
 //
 // Worker-safe and pure: geo helpers and a DemRaster only, no wasm, no firebase.
 
-import type { DemRaster } from './dem';
+import type { DemRaster, TerrainQaSummary } from './dem';
 import type { Diagnostics } from './diagnostics';
 import { latLngToLocalMetres, localMetresToLatLng } from './geo';
 import type { SceneHeightfield } from './sceneBuilder';
+import { correctSuspectCells, flagSuspectCells } from './terrainQa';
 
 /** Padding around the modelled extent (m) — a ridge just outside the source /
  *  receiver hull still screens paths near the edge. */
@@ -29,62 +30,39 @@ export const TERRAIN_MAX_CELLS_PER_AXIS = 2048;
 /** Fallback cell size when the DEM doesn't report its own resolution. */
 const DEFAULT_DEM_RESOLUTION_M = 20;
 
-export type DespikeStrength = 'off' | 'low' | 'medium';
+/** Most flagged cells the build record keeps for the map overlay. A DEM that
+ *  produced more than this is broken in a way no overlay would clarify. */
+const MAX_REPORTED_SUSPECT_CELLS = 500;
 
 export interface TerrainFieldOptions {
-  /** Peak-preserving Hampel despike of the sampled grid. Default `'low'`. */
-  despikeStrength?: DespikeStrength;
   /** Override the sampling pitch (m). Defaults to the DEM's native resolution. */
   spacingM?: number;
+  /** Replace cells the QA pass flags with their ring median
+   *  (`settings.topography.qaCorrect`). Off by default: flagging is reporting,
+   *  correcting is a modelling decision. */
+  qaCorrect?: boolean;
   /** I20: where to report that the cell cap forced a coarser pitch. */
   diagnostics?: Diagnostics;
 }
 
-/** Median (lower-middle for even length). */
-function medianOf(vals: number[]): number {
-  if (vals.length === 0) return 0;
-  const s = vals.slice().sort((a, b) => a - b);
-  return s[(s.length - 1) >> 1];
+/** One flagged cell, in the frame the map and the report speak. */
+export interface SuspectCell {
+  latLng: [number, number];
+  /** Sampled elevation (m) — the value that looks wrong. */
+  z: number;
+  /** Median of its 8-neighbour ring (m) — what correction would put there. */
+  median: number;
 }
 
-/**
- * Hampel despike over a 2-D grid: replace a cell with its neighbourhood median
- * ONLY when it is a statistical outlier (> t·MAD) AND off by a real margin
- * (≥ 1 m). Peak-preserving — a genuine crest sits on its own slope so it is not
- * an outlier, whereas an isolated DEM blunder (common in global tilesets) is.
- *
- * The former per-path 1-D despike moved here so the correction is applied once
- * to the raster instead of repeatedly along every profile.
- */
-export function despikeGrid(
-  heights: number[],
-  nx: number,
-  ny: number,
-  strength: DespikeStrength,
-): number[] {
-  if (strength === 'off' || nx < 3 || ny < 3) return heights;
-  const k = strength === 'medium' ? 2 : 1;      // half-window (cells)
-  const t = strength === 'medium' ? 2.5 : 3.5;  // MAD multiples
-  const MIN_ABS_M = 1.0;                        // ignore sub-metre wobble
-  const out = heights.slice();
-  const win: number[] = [];
-  for (let iy = 0; iy < ny; iy++) {
-    for (let ix = 0; ix < nx; ix++) {
-      win.length = 0;
-      for (let jy = Math.max(0, iy - k); jy <= Math.min(ny - 1, iy + k); jy++) {
-        for (let jx = Math.max(0, ix - k); jx <= Math.min(nx - 1, ix + k); jx++) {
-          win.push(heights[jy * nx + jx]);
-        }
-      }
-      const med = medianOf(win);
-      const mad = medianOf(win.map((v) => Math.abs(v - med)));
-      const sigma = Math.max(1.4826 * mad, 0.3); // floor so flat ground isn't all outliers
-      const v = heights[iy * nx + ix];
-      const dev = Math.abs(v - med);
-      if (dev > MIN_ABS_M && dev > t * sigma) out[iy * nx + ix] = med;
-    }
-  }
-  return out;
+/** What the most recent `buildTerrainField` produced, for callers that need to
+ *  report on it (diagnostics, the PDF line, the map overlay) without having the
+ *  raster plumbed through to them. */
+export interface TerrainBuildInfo extends TerrainQaSummary {
+  /** Pitch (m) terrain was ACTUALLY screened at — the cell cap can make this
+   *  coarser than the DEM's own resolution, and only the built field knows. */
+  pitchM: number;
+  /** Flagged cells, capped at [`MAX_REPORTED_SUSPECT_CELLS`]. */
+  cells: SuspectCell[];
 }
 
 /**
@@ -130,7 +108,7 @@ export function fillHoles(heights: number[], nx: number, ny: number): boolean {
 /// factorial study of N combinations paid it N times and locked the UI for
 /// seconds on a 2x2 case. The raster depends only on the DEM and the covered
 /// extent, neither of which a model swap changes.
-let memo: { key: string; value: SceneHeightfield | null } | null = null;
+let memo: { key: string; value: SceneHeightfield | null; info: TerrainBuildInfo | null } | null = null;
 
 function memoKey(
   dem: DemRaster,
@@ -151,7 +129,7 @@ function memoKey(
   return [
     demIdentity(dem), origin[0].toFixed(5), origin[1].toFixed(5),
     r(minLat), r(minLng), r(maxLat), r(maxLng),
-    opts.despikeStrength ?? 'low', opts.spacingM ?? 'auto',
+    opts.qaCorrect ? 'qa' : 'raw', opts.spacingM ?? 'auto',
   ].join('|');
 }
 
@@ -172,11 +150,49 @@ export function clearTerrainFieldCache(): void {
   memo = null;
 }
 
-/// Pitch (m) of the most recently built heightfield, or `null` if none has been.
-/// The report states the pitch terrain was ACTUALLY screened at, which the cell
-/// cap can make coarser than the DEM's own — and only the built field knows it.
-export function lastTerrainPitchM(): number | null {
-  return memo?.value?.spacing ?? null;
+/// What the most recent build produced, or `null` if none has been (or it
+/// produced no terrain). Read straight after `buildTerrainField` — the memo
+/// holds one entry, so a later build for a different extent replaces it.
+export function lastTerrainBuild(): TerrainBuildInfo | null {
+  return memo?.info ?? null;
+}
+
+/// A `DemRaster` that reads the QA-CORRECTED surface inside the built field and
+/// the raw DEM outside it.
+///
+/// Endpoint ground (sources, receivers, grid cells, wall feet) is looked up
+/// from the DemRaster, while the engine screens paths against the heightfield.
+/// With correction on those two disagree exactly where it matters — a receiver
+/// standing on a corrected cell would otherwise float 60 m over the terrain the
+/// engine sees. `origin` is the scene's geodetic origin, the same one the field
+/// was built in.
+export function correctedDemRaster(
+  dem: DemRaster,
+  field: SceneHeightfield,
+  origin: [number, number],
+): DemRaster {
+  const { spacing, nx, ny, heights } = field;
+  const [e0, n0] = field.origin;
+  return {
+    ...dem,
+    elevation(lat: number, lng: number): number {
+      const [e, n] = latLngToLocalMetres([lat, lng], origin);
+      const fx = (e - e0) / spacing;
+      const fy = (n - n0) / spacing;
+      if (!(fx >= 0 && fx <= nx - 1 && fy >= 0 && fy <= ny - 1)) return dem.elevation(lat, lng);
+      // The field is at least 2×2, so clamping the cell corner to the last full
+      // cell keeps the far edge interpolating (t = 1) rather than indexing off.
+      const ix = Math.min(Math.floor(fx), nx - 2);
+      const iy = Math.min(Math.floor(fy), ny - 2);
+      const tx = fx - ix;
+      const ty = fy - iy;
+      const h00 = heights[iy * nx + ix];
+      const h10 = heights[iy * nx + ix + 1];
+      const h01 = heights[(iy + 1) * nx + ix];
+      const h11 = heights[(iy + 1) * nx + ix + 1];
+      return h00 * (1 - tx) * (1 - ty) + h10 * tx * (1 - ty) + h01 * (1 - tx) * ty + h11 * tx * ty;
+    },
+  };
 }
 
 export function buildTerrainField(
@@ -199,7 +215,10 @@ export function buildTerrainField(
     if (e > maxE) maxE = e;
     if (n > maxN) maxN = n;
   }
-  if (!Number.isFinite(minE) || !Number.isFinite(minN)) { memo = { key, value: null }; return null; }
+  if (!Number.isFinite(minE) || !Number.isFinite(minN)) {
+    memo = { key, value: null, info: null };
+    return null;
+  }
 
   minE -= TERRAIN_MARGIN_M; minN -= TERRAIN_MARGIN_M;
   maxE += TERRAIN_MARGIN_M; maxN += TERRAIN_MARGIN_M;
@@ -237,12 +256,39 @@ export function buildTerrainField(
     }
   }
 
-  if (!fillHoles(heights, nx, ny)) { memo = { key, value: null }; return null; }
-  const cleaned = despikeGrid(heights, nx, ny, opts.despikeStrength ?? 'low');
+  if (!fillHoles(heights, nx, ny)) { memo = { key, value: null, info: null }; return null; }
+
+  // Terrain QA. Blunders are FLAGGED always and corrected only on request: the
+  // Hampel despike this replaced silently erased every one-cell bund and
+  // cutting it met, so nothing here touches the raster unless asked, and what
+  // it would touch is reported either way. `correctSuspectCells` runs
+  // regardless because it is what knows each flagged cell's ring median — the
+  // value the report quotes — and it only visits the (few) flagged cells.
+  const qa = flagSuspectCells(heights, nx, ny, spacing);
+  let final = heights;
+  const info: TerrainBuildInfo = {
+    pitchM: spacing, count: qa.count, maxDevM: qa.maxDevM, correction: null, cells: [],
+  };
+  if (qa.count > 0) {
+    const fixed = correctSuspectCells(heights, nx, ny, qa.indices);
+    for (const i of qa.indices.slice(0, MAX_REPORTED_SUSPECT_CELLS)) {
+      const ix = i % nx;
+      const iy = (i - ix) / nx;
+      info.cells.push({
+        latLng: localMetresToLatLng([minE + ix * spacing, minN + iy * spacing], origin),
+        z: heights[i],
+        median: fixed.heights[i],
+      });
+    }
+    if (opts.qaCorrect) {
+      final = fixed.heights;
+      info.correction = { changed: fixed.changed, maxChangeM: fixed.maxChangeM };
+    }
+  }
 
   const field: SceneHeightfield = {
-    type: 'heightfield', origin: [minE, minN], spacing, nx, ny, heights: cleaned,
+    type: 'heightfield', origin: [minE, minN], spacing, nx, ny, heights: final,
   };
-  memo = { key, value: field };
+  memo = { key, value: field, info };
   return field;
 }

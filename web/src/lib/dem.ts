@@ -150,15 +150,50 @@ export function terrainSourceNote(
   return `Terrain: ${label}, ${field.spacing.toFixed(1)} m cells, ${field.nx}×${field.ny} raster`;
 }
 
+/// Outcome of the terrain QA pass over the sampled raster (`terrainField.ts`).
+/// Declared here so the reporting helpers below can be written against it
+/// without `dem.ts` depending on the sampler that produces it.
+export interface TerrainQaSummary {
+  /// Cells flagged as DEM blunders rather than terrain.
+  count: number;
+  /// Largest |cell − ring median| over those cells (m).
+  maxDevM: number;
+  /// Non-null only when `qaCorrect` was on and something was flagged.
+  correction: { changed: number; maxChangeM: number } | null;
+}
+
+/// Diagnostics line for flagged terrain (I20). Suspect cells are `material`:
+/// a 60 m blunder under a path screens it like a hill that isn't there, whether
+/// or not the user asked for it to be corrected.
+export function terrainSuspectNote(dem: DemRaster, qa: TerrainQaSummary): string {
+  const label = dem.source?.label ?? 'the DEM';
+  const outcome = qa.correction
+    ? `corrected: ${qa.correction.changed} cell${qa.correction.changed === 1 ? '' : 's'} replaced by `
+      + `their neighbourhood median, largest change ${qa.correction.maxChangeM.toFixed(1)} m`
+    : 'not corrected — they are still in the terrain these levels stand on';
+  return `${qa.count} suspect terrain cell${qa.count === 1 ? '' : 's'} in ${label}, up to `
+    + `${qa.maxDevM.toFixed(1)} m off the surrounding ground; ${outcome}. `
+    + 'They are marked on the map (Layers → Suspect terrain cells).';
+}
+
 /// Report line for the PDF title block. Carries the credit, so the figure
-/// satisfies the licence on its own.
-export function terrainReportLine(dem: DemRaster | null, rasterPitchM: number | null): string | null {
+/// satisfies the licence on its own. The QA tail appears only when something
+/// was flagged — an unqualified figure is the normal case.
+export function terrainReportLine(
+  dem: DemRaster | null,
+  rasterPitchM: number | null,
+  qa?: TerrainQaSummary | null,
+): string | null {
   const src = dem?.source;
   if (!src) return null;
   const pitches = rasterPitchM != null && Math.abs(rasterPitchM - src.nativePitchM) > 0.05
     ? `${src.nativePitchM.toFixed(1)} m native, ${rasterPitchM.toFixed(1)} m sampled`
     : `${src.nativePitchM.toFixed(1)} m cells`;
-  return `Terrain: ${src.label} · ${pitches} · ${src.attribution}`;
+  const suspect = qa && qa.count > 0
+    ? ` · ${qa.count} suspect cell${qa.count === 1 ? '' : 's'} `
+      + `(max ${qa.maxDevM.toFixed(1)} m, ${qa.correction ? 'corrected' : 'not corrected'})`
+    : '';
+  return `Terrain: ${src.label} · ${pitches}${suspect} · ${src.attribution}`;
 }
 
 /// Metres-per-pixel of a web-mercator tile raster at the given zoom + latitude.

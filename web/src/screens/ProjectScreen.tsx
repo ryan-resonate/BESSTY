@@ -21,7 +21,7 @@ import { listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { gridDomain, makeBandsForRange, type Palette } from '../lib/colormap';
 import { terrainReportLine, type DemRaster } from '../lib/dem';
 import { loadAutoDem } from '../lib/demSources';
-import { lastTerrainPitchM } from '../lib/terrainField';
+import { lastTerrainBuild, type SuspectCell } from '../lib/terrainField';
 import {
   evaluateGridViaWorker,
   cancelGridRun,
@@ -528,6 +528,11 @@ export function ProjectScreen() {
   /// Item I — Barnes-Hut clustering overlay. Session-only, like the grid-cell
   /// debug layer: a diagnostic, not a view preference worth persisting.
   const [showBhDebug, setShowBhDebug] = useState(false);
+  /// Terrain QA. `suspectCells` is refreshed from the receiver solve's terrain
+  /// build (the one that runs on this thread), and the overlay defaults ON so a
+  /// flagged blunder is seen rather than waiting to be looked for.
+  const [suspectCells, setSuspectCells] = useState<SuspectCell[]>([]);
+  const [showSuspectCells, setShowSuspectCells] = useState(true);
 
   // Grid spacing — auto-picked from the calc area on first appearance,
   // then frozen against the user's choice once they touch the picker.
@@ -1109,8 +1114,8 @@ export function ProjectScreen() {
       barriers: project.barriers,
       ground: project.settings?.ground,
       annexD: project.settings?.annexD,
-      // Topography (ridge sampling / prominence / despike) feeds the grid via
-      // cellTopoPack, so a change to these controls must re-run the contour
+      // Topography feeds the terrain raster the grid screens against, so a
+      // change to it (today: the QA correction toggle) must re-run the contour
       // grid — without this the grid silently keeps the old terrain screening.
       topography: project.settings?.topography,
       meteorology: project.settings?.meteorology,
@@ -1151,6 +1156,7 @@ export function ProjectScreen() {
           if (gen !== pointGenRef.current) return;       // superseded
           setResults(results);
           setDiagnostics(diag.list());                   // I20
+          setSuspectCells(dem ? lastTerrainBuild()?.cells ?? [] : []);
           setLastSolveMs(performance.now() - start);
         })
         .catch((e) => {
@@ -1655,6 +1661,9 @@ export function ProjectScreen() {
   }
 
   const receiverDbList = (results ?? []).map((r) => r.totalDbA);
+  /// The pitch terrain was actually screened at, plus what the QA pass found —
+  /// both belong in the report's provenance line.
+  const terrainBuild = lastTerrainBuild();
 
   return (
     <div className="workspace">
@@ -1725,6 +1734,8 @@ export function ProjectScreen() {
         showContours={showContours} setShowContours={setShowContours}
         showGridDebug={showGridDebug} setShowGridDebug={setShowGridDebug}
         showBhDebug={showBhDebug} setShowBhDebug={setShowBhDebug}
+        showSuspectCells={showSuspectCells} setShowSuspectCells={setShowSuspectCells}
+        suspectCellCount={suspectCells.length}
         onOpenSettings={() => setShowSettings(true)}
         onOpenPdfExport={openPdfExport}
         onOpenStudy={() => setShowStudy(true)}
@@ -1799,6 +1810,8 @@ export function ProjectScreen() {
           showContours={showContours}
           showGridDebug={showGridDebug}
           showBhDebug={showBhDebug}
+          suspectCells={suspectCells}
+          showSuspectCells={showSuspectCells}
           gridSpacingM={gridSpacingM}
           showReceiverLimits={showReceiverLimits}
           contourMode={contourMode}
@@ -1932,7 +1945,7 @@ export function ProjectScreen() {
           showContours={showContours}
           tileUrl={(z, x, y) => tileUrlFor(baseMap, z, x, y)}
           attribution={attributionFor(baseMap)}
-          terrainLine={terrainReportLine(dem, lastTerrainPitchM())}
+          terrainLine={terrainReportLine(dem, terrainBuild?.pitchM ?? null, terrainBuild)}
           onClose={() => setPdfExtent(null)}
         />
       )}

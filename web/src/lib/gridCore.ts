@@ -26,15 +26,15 @@ import { latLngToLocalMetres } from './geo';
 import { weightsFor } from './weighting';
 
 /// Topography settings. Sampling resolution and ridge selection are the
-/// engine's job now — all that survives is the DEM cleanup knob.
+/// engine's job now — all that survives is the terrain QA opt-in.
 export interface TopoSettings {
   /// @deprecated The engine samples the terrain raster itself; ignored.
   pathSamples?: number;
   /// @deprecated Ridge selection is the engine's hull, not a web-side filter.
   virtualBarrierMinHeightM?: number;
-  /// Peak-preserving DEM despike (Hampel) strength, applied when the elevation
-  /// raster is built. Default 'low'.
-  despikeStrength?: 'off' | 'low' | 'medium';
+  /// Replace QA-flagged DEM blunders with their neighbourhood median when the
+  /// elevation raster is built. Default false — see `terrainQa.ts`.
+  qaCorrect?: boolean;
 }
 
 /// Annex D.5 concave-ground criterion (A3): apply the −3 dB ground-reflection

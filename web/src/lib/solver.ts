@@ -35,7 +35,9 @@ import {
 } from './tonality';
 import { lookupEntry, resolveContainer, sourceHeightFor, spectrumFor } from './catalog';
 import { groupPeriodsBySolve, sourceIsOff, sourceModeName } from './modes';
-import { type DemRaster, type DemRegion, captureDemRegion, terrainSourceNote } from './dem';
+import {
+  type DemRaster, type DemRegion, captureDemRegion, terrainSourceNote, terrainSuspectNote,
+} from './dem';
 import {
   propagationSettings,
   type EffectiveSource,
@@ -48,9 +50,10 @@ import {
   sceneSettingsFor,
   withConcave,
   type ResolvedSource,
+  type SceneHeightfield,
   type SceneResults,
 } from './sceneBuilder';
-import { buildTerrainField } from './terrainField';
+import { buildTerrainField, correctedDemRaster, lastTerrainBuild } from './terrainField';
 import { Diagnostics } from './diagnostics';
 import { approxDistanceM } from './geo';
 import {
@@ -364,6 +367,20 @@ export function resolveSources(project: Project): ResolvedSource[] {
   return out;
 }
 
+/// The raster endpoint ground must be read from, given the terrain the engine
+/// will screen against. Normally the DEM itself; with `topography.qaCorrect` on
+/// it is the corrected surface, so a receiver over a corrected cell stands on
+/// the terrain the engine sees instead of floating above it. Reads the record
+/// of the build that just happened, so call it straight after one.
+function groundDemFor(
+  dem: DemRaster | null,
+  terrain: SceneHeightfield | null,
+  origin: [number, number],
+): DemRaster | null {
+  if (!dem || !terrain || !lastTerrainBuild()?.correction) return dem;
+  return correctedDemRaster(dem, terrain, origin);
+}
+
 /// Ground elevation under a point, with the app's long-standing non-finite → 0
 /// guard (a DEM hole must not poison the geometry).
 function groundElevation(dem: DemRaster | null, latLng: [number, number]): number {
@@ -427,9 +444,17 @@ export async function evaluateProject(
     dem,
     origin,
     [...sources.map((s) => s.latLng), ...valid.map((r) => r.latLng)],
-    { despikeStrength: project.settings?.topography?.despikeStrength, diagnostics },
+    { qaCorrect: project.settings?.topography?.qaCorrect, diagnostics },
   );
-  if (terrain && dem) diagnostics.note('terrain.source', 'info', terrainSourceNote(dem, terrain));
+  const terrainQa = lastTerrainBuild();
+  if (terrain && dem) {
+    diagnostics.note('terrain.source', 'info', terrainSourceNote(dem, terrain));
+    if (terrainQa && terrainQa.count > 0) {
+      diagnostics.note('terrain.suspect', 'material', terrainSuspectNote(dem, terrainQa), terrainQa.count);
+    }
+  }
+  // Endpoint ground has to come off the same surface the engine screens against.
+  const groundDem = groundDemFor(dem, terrain, origin);
   if (!terrain && dem) {
     diagnostics.note(
       'terrain.absent', 'material',
@@ -447,12 +472,12 @@ export async function evaluateProject(
   // `apply_concave` per source — so receivers that disagree can't share a scene.
   // With no turbines this is a single group and costs nothing.
   const groups = groupReceiversByConcave(sources, valid, (s, rx) => {
-    const ground = groundElevation(dem, s.latLng);
-    const rxGround = groundElevation(dem, rx.latLng);
+    const ground = groundElevation(groundDem, s.latLng);
+    const rxGround = groundElevation(groundDem, rx.latLng);
     return concaveCorrectionMet(
       s.latLng, ground + s.heightAglM,
       rx.latLng, rxGround + rx.heightAboveGroundM,
-      s.heightAglM, rx.heightAboveGroundM, dem,
+      s.heightAglM, rx.heightAboveGroundM, groundDem,
     );
   });
 
@@ -465,7 +490,7 @@ export async function evaluateProject(
       id: rx.id, latLng: rx.latLng, heightAboveGroundM: rx.heightAboveGroundM,
     })),
     barriers: project.barriers ?? [],
-    dem,
+    dem: groundDem,
     terrain,
     settings,
     includeContainers: containers?.receiverCalc ?? false,
@@ -868,11 +893,15 @@ function buildGridJob(
   const sourceLatLngs = tiles.flatMap((t) => t.sources.map((s) => s.latLng));
   const containers = project.settings?.containers;
   const terrain = buildTerrainField(dem, origin, [...corners, ...sourceLatLngs], {
-    despikeStrength: project.settings?.topography?.despikeStrength,
+    qaCorrect: project.settings?.topography?.qaCorrect,
     diagnostics,
   });
   if (terrain && dem && diagnostics) {
     diagnostics.note('terrain.source', 'info', terrainSourceNote(dem, terrain));
+    const qa = lastTerrainBuild();
+    if (qa && qa.count > 0) {
+      diagnostics.note('terrain.suspect', 'material', terrainSuspectNote(dem, qa), qa.count);
+    }
   }
 
   return {
@@ -907,7 +936,8 @@ export async function evaluateGrid(
   rxHeightAboveGround: number,
 ): Promise<GridResult> {
   await ensureSolverReady();
-  return runBatchedGrid(buildGridJob(project, dem, spacingM, rxHeightAboveGround), dem);
+  const job = buildGridJob(project, dem, spacingM, rxHeightAboveGround);
+  return runBatchedGrid(job, groundDemFor(dem, job.terrain, job.origin));
 }
 
 // ============== Worker offload (S1) ==============
@@ -954,7 +984,10 @@ export async function evaluateGridViaWorker(
     // doesn't move geometry (e.g. wind speed / G / atmosphere change, or a
     // re-run of the same area) reuses the sampled terrain instead of
     // re-sampling ~10⁶ DEM points on the main thread each time.
-    const cached = dem ? captureDemRegionCached(dem, sourcePaddedBounds(job)) : null;
+    const ground = groundDemFor(dem, job.terrain, job.origin);
+    const cached = ground
+      ? captureDemRegionCached(ground, sourcePaddedBounds(job), ground === dem ? 'raw' : 'qa')
+      : null;
     return await runGridJobOnPool(job, cached, onProgress, diagnostics);
   }
 }
@@ -976,9 +1009,13 @@ let demRegionCache: { key: string; region: DemRegion } | null = null;
 function captureDemRegionCached(
   dem: DemRaster,
   bounds: [[number, number], [number, number], number, number],
+  /// Raw DEM vs QA-corrected surface. The corrected wrapper reports the same
+  /// bounds and tile count as the raster it wraps, so without this the cache
+  /// would hand back the raw snapshot when correction is switched on.
+  variant: string,
 ): { key: string; region: DemRegion } {
   const [sw, ne, nx, ny] = bounds;
-  const key = `${dem.bounds.sw}|${dem.bounds.ne}|${dem.tilesLoaded}|${sw}|${ne}|${nx}|${ny}`;
+  const key = `${dem.bounds.sw}|${dem.bounds.ne}|${dem.tilesLoaded}|${variant}|${sw}|${ne}|${nx}|${ny}`;
   if (demRegionCache && demRegionCache.key === key) return demRegionCache;
   const region = captureDemRegion(dem, sw, ne, nx, ny);
   demRegionCache = { key, region };

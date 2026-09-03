@@ -641,13 +641,11 @@ export interface ProjectSettings {
     /// prominence threshold to tune. Retained optional so old saved projects
     /// round-trip; ignored by the solver.
     virtualBarrierMinHeightM?: number;
-    /// Peak-preserving DEM despike (Hampel filter) applied when the elevation
-    /// raster is sampled. Removes isolated DEM blunders (single-cell spikes)
-    /// without lowering genuine crests, since a rank filter only touches
-    /// statistical outliers. 'off' disables it; 'low' clears egregious spikes
-    /// only; 'medium' is more aggressive (use on noisy DEMs, not clean LiDAR).
-    /// Default 'low'.
-    despikeStrength?: 'off' | 'low' | 'medium';
+    /// Replace cells the terrain QA pass flags as DEM blunders with their
+    /// neighbourhood median. Default false: the flagged cells are always
+    /// reported (diagnostics, report line, map overlay), but changing the
+    /// ground a result stands on is the user's call. Nothing else is altered.
+    qaCorrect?: boolean;
   };
 }
 
