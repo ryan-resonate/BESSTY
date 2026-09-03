@@ -93,6 +93,10 @@ interface Props {
   selectedAnnotationId?: string | null;
   onSelectAnnotation?(id: string | null): void;
   baseMap: BaseMap;
+  /// Elevation credit for the active DEM. The licences behind the terrain data
+  /// require the credit wherever the data is shown, so it joins the basemap's
+  /// in Leaflet's attribution control rather than hiding in a settings page.
+  demAttribution?: string | null;
   showContours: boolean;
   /// Debug overlay — paints a small dot at every grid cell centre so the
   /// user can eyeball alignment between the raster, contour lines, and
@@ -563,7 +567,7 @@ export function MapView({
   onEditCalcArea,
   onOpenBessGroupWizard, onMoveBessGroup, onRotateBessGroup,
   selectedGroupId, onTranslateGroup, onRotateGroup,
-  addMode, baseMap, showContours, showGridDebug, showBhDebug, gridSpacingM, showReceiverLimits, contourMode, contourOpacity, contourStepDb,
+  addMode, baseMap, demAttribution, showContours, showGridDebug, showBhDebug, gridSpacingM, showReceiverLimits, contourMode, contourOpacity, contourStepDb,
   customContours, palette, dbDomain, onCursorMove, onReady,
   onAddAnnotation, onUpdateAnnotation, selectedAnnotationId, onSelectAnnotation,
 }: Props) {
@@ -1107,6 +1111,15 @@ export function MapView({
     if (markersGroupRef.current) { markersGroupRef.current.remove(); markersGroupRef.current.addTo(map); }
     if (groupHandlesLayerRef.current) { groupHandlesLayerRef.current.remove(); groupHandlesLayerRef.current.addTo(map); }
   }, [baseMap]);
+
+  // Credit the elevation source alongside the basemap's. Leaflet de-duplicates
+  // by string, so swapping DEM source swaps the credit.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !demAttribution) return;
+    map.attributionControl.addAttribution(demAttribution);
+    return () => { map.attributionControl.removeAttribution(demAttribution); };
+  }, [demAttribution]);
 
   // Render reference / annotation layers (non-solver geometry). Non-interactive
   // so they never intercept selection or drawing. Redraws whenever the layers,

@@ -35,7 +35,7 @@ import {
 } from './tonality';
 import { lookupEntry, resolveContainer, sourceHeightFor, spectrumFor } from './catalog';
 import { groupPeriodsBySolve, sourceIsOff, sourceModeName } from './modes';
-import { type DemRaster, type DemRegion, captureDemRegion } from './dem';
+import { type DemRaster, type DemRegion, captureDemRegion, terrainSourceNote } from './dem';
 import {
   propagationSettings,
   type EffectiveSource,
@@ -429,6 +429,7 @@ export async function evaluateProject(
     [...sources.map((s) => s.latLng), ...valid.map((r) => r.latLng)],
     { despikeStrength: project.settings?.topography?.despikeStrength, diagnostics },
   );
+  if (terrain && dem) diagnostics.note('terrain.source', 'info', terrainSourceNote(dem, terrain));
   if (!terrain && dem) {
     diagnostics.note(
       'terrain.absent', 'material',
@@ -866,6 +867,13 @@ function buildGridJob(
   ];
   const sourceLatLngs = tiles.flatMap((t) => t.sources.map((s) => s.latLng));
   const containers = project.settings?.containers;
+  const terrain = buildTerrainField(dem, origin, [...corners, ...sourceLatLngs], {
+    despikeStrength: project.settings?.topography?.despikeStrength,
+    diagnostics,
+  });
+  if (terrain && dem && diagnostics) {
+    diagnostics.note('terrain.source', 'info', terrainSourceNote(dem, terrain));
+  }
 
   return {
     cols, rows, dxM, dyM, origin, bounds,
@@ -877,10 +885,7 @@ function buildGridJob(
     barriers: project.barriers ?? [],
     settings: sceneSettingsFor(project),
     topo: project.settings?.topography,
-    terrain: buildTerrainField(dem, origin, [...corners, ...sourceLatLngs], {
-      despikeStrength: project.settings?.topography?.despikeStrength,
-      diagnostics,
-    }),
+    terrain,
     includeContainers: containers?.grid ?? false,
     roofOffsetM: containers?.roofOffsetM ?? 0.3,
     rotationDeg: ca.rotationDeg ?? 0,

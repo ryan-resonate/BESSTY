@@ -14,15 +14,16 @@
 //     when the file lacks a CRS tag entirely (some legacy LiDAR exports).
 
 import { fromArrayBuffer, type GeoTIFF, type GeoTIFFImage } from 'geotiff';
-import type { DemRaster } from './dem';
+import type { DemRaster, DemSourceInfo } from './dem';
 import { fromWgs84, isSupportedEpsg, presetForEpsg, toWgs84 } from './projections';
 
 export interface UploadedDem extends DemRaster {
   /// Underlying width/height in raster cells.
   width: number;
   height: number;
-  /// Source filename, for display.
-  source: string;
+  /// Uploaded filename, for display. (`source` is the typed provenance every
+  /// `DemRaster` carries; this is the file it came out of.)
+  filename: string;
   /// EPSG code we ended up using (after override / inference).
   epsg: number;
 }
@@ -124,9 +125,41 @@ export async function parseDemGeoTiff(file: File, opts: DemUploadOptions = {}): 
       };
 
   return {
-    width, height, source: file.name, epsg, bounds, tilesLoaded: 1,
+    width, height, filename: file.name, epsg, bounds, tilesLoaded: 1,
+    source: uploadSourceInfo(file.name, nativePitchM(epsg, xRange, yRange, width, height, bounds)),
     elevation,
   };
+}
+
+function uploadSourceInfo(filename: string, nativePitchM: number): DemSourceInfo {
+  return {
+    id: 'upload',
+    label: `Uploaded DEM · ${filename}`,
+    attribution: `Elevation: user-supplied DEM (${filename})`,
+    licence: 'Supplied by the user',
+    nativePitchM,
+  };
+}
+
+/// Cell pitch of an uploaded raster, finer axis, in metres. Projected CRSs are
+/// already metric; geographic ones are converted at the raster's own latitude.
+///
+/// Reported only — `resolutionM` is deliberately left unset, as it always has
+/// been, so this does not silently change the pitch existing projects sample at.
+function nativePitchM(
+  epsg: number,
+  xRange: number,
+  yRange: number,
+  width: number,
+  height: number,
+  bounds: { sw: [number, number]; ne: [number, number] },
+): number {
+  const dx = xRange / Math.max(1, width - 1);
+  const dy = yRange / Math.max(1, height - 1);
+  if (epsg !== 4326 && epsg !== 4269) return Math.min(dx, dy);
+  const mPerDeg = (Math.PI / 180) * 6371008.8;
+  const midLat = ((bounds.sw[0] + bounds.ne[0]) / 2) * (Math.PI / 180);
+  return Math.min(dx * mPerDeg * Math.cos(midLat), dy * mPerDeg);
 }
 
 function inferEpsg(image: GeoTIFFImage): number | null {

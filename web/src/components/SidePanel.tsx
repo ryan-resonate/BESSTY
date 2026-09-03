@@ -112,9 +112,13 @@ interface Props {
   lastSolveMs: number | null;
   /// Replace the project's DEM (used by the Import tab's DEM uploader).
   setDem(d: DemRaster | null, source: 'auto' | 'upload'): void;
-  /// Source of the currently-active DEM — "auto" means AWS Terrain Tiles,
+  /// Source of the currently-active DEM — "auto" means the automatic cascade,
   /// "upload" means a user-supplied GeoTIFF.
   demSource: 'auto' | 'upload';
+  /// Label of the dataset actually loaded, e.g. "GA SRTM 1s DEM-S v1.0". Null
+  /// until a DEM has loaded. The cascade picks the source, so this is the only
+  /// place the user can see which one won.
+  demSourceLabel?: string | null;
   /// The active elevation raster, for the DXF import's "Z is an absolute top
   /// level" option: a barrier stores height ABOVE ground, so the terrain under
   /// each vertex has to be subtracted from the drawing's level.
@@ -1150,7 +1154,7 @@ function ReceiversTab(props: Props) {
 // -------------------- Import --------------------
 
 function ImportTab(props: Props) {
-  const { project, setProject, setDem, demSource } = props;
+  const { project, setProject, setDem, demSource, demSourceLabel } = props;
   const [importOpen, setImportOpen] = useState(false);
   const [dxfOpen, setDxfOpen] = useState(false);
 
@@ -1293,12 +1297,13 @@ function ImportTab(props: Props) {
 
       <Card title="Digital elevation model">
         <div className="hint">
-          DEM is auto-loaded from <b>AWS Terrain Tiles</b> by default. Upload a custom
-          GeoTIFF to override it for this project — useful for site-specific LiDAR.
-          Both geographic (WGS84) and projected (UTM, MGA, NZTM, …) CRSs are supported.
+          A DEM is loaded automatically for every project — GA's 1-second DEM-S over
+          Australia, AWS Terrain Tiles elsewhere. Upload a custom GeoTIFF to override
+          it for this project — useful for site-specific LiDAR. Both geographic
+          (WGS84) and projected (UTM, MGA, NZTM, …) CRSs are supported.
         </div>
         <div className="meta-line">
-          Active source: <b>{demSource === 'upload' ? `upload · ${demName ?? 'GeoTIFF'}` : 'auto (AWS Terrain Tiles)'}</b>
+          Active source: <b>{demSourceLabel ?? (demSource === 'upload' ? `upload · ${demName ?? 'GeoTIFF'}` : 'auto')}</b>
         </div>
 
         {!demFile ? (
@@ -1665,7 +1670,7 @@ function LayersTab(props: Props) {
     contourStepDb, setContourStepDb,
     contourBounds, setContourBounds,
     onAutoFitContourBounds,
-    demStatus, demTilesLoaded,
+    demStatus, demTilesLoaded, demSourceLabel,
   } = props;
   return (
     <>
@@ -1831,7 +1836,7 @@ function LayersTab(props: Props) {
           {demStatus === 'ready' && <span style={{ color: 'var(--green)' }}>{demTilesLoaded} tiles loaded</span>}
           {demStatus === 'error' && <span style={{ color: 'var(--red)' }}>fetch failed</span>}
         </div>
-        <div className="hint">Source: AWS Terrain Tiles (NASADEM/SRTM blend, free).</div>
+        <div className="hint">Source: {demSourceLabel ?? 'not loaded yet'}</div>
       </Card>
 
       <ReferenceLayersCard

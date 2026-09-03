@@ -91,6 +91,26 @@ async function loadTile(t: Tile): Promise<DemTile> {
   return promise;
 }
 
+/// The elevation datasets BEESTY can stand on. `upload` is the user's own
+/// GeoTIFF and always wins; the rest are tried in cascade order (see
+/// `demSources/index.ts`).
+export type DemSourceId = 'qld-lidar' | 'ga-dem-s' | 'terrarium' | 'upload';
+
+/// Provenance of a `DemRaster`. Terrain screening moves levels by several dB,
+/// so the dataset behind it is never anonymous: it is named in the diagnostics,
+/// on the map credit and in the PDF.
+export interface DemSourceInfo {
+  id: DemSourceId;
+  /// Short human name, e.g. `GA SRTM 1s DEM-S v1.0`.
+  label: string;
+  /// Credit the licence requires, verbatim.
+  attribution: string;
+  licence: string;
+  /// Ground pitch of the underlying data (m). The pitch a solve actually
+  /// samples at can be coarser — `terrainField.ts` caps the grid.
+  nativePitchM: number;
+}
+
 export interface DemRaster {
   /// Return interpolated elevation (m above sea level) at a lat/lng point.
   /// Returns 0 if the point falls outside the loaded tile coverage.
@@ -102,6 +122,43 @@ export interface DemRaster {
   /// count. Approximate; computed from the tile zoom + latitude (tile raster)
   /// or the region span ÷ grid size (worker raster).
   resolutionM?: number;
+  /// Where the data came from. Absent only on the synthetic rasters tests and
+  /// the grid worker build from a transferred snapshot.
+  source?: DemSourceInfo;
+}
+
+/// Credit for the AWS Terrain Tiles cascade fallback. The pitch varies with
+/// latitude, hence a function rather than a constant.
+export function terrariumSourceInfo(nativePitchM: number): DemSourceInfo {
+  return {
+    id: 'terrarium',
+    label: 'AWS Terrain Tiles (SRTM/NASADEM blend)',
+    attribution: 'Elevation: AWS Terrain Tiles (Mapzen terrarium)',
+    licence: 'Public-domain and openly licensed sources; see the AWS Terrain Tiles attribution',
+    nativePitchM,
+  };
+}
+
+/// Diagnostics line naming the terrain a solve actually stood on (I20). The
+/// pitch reported is the one SAMPLED, which the cell cap can make coarser than
+/// the source's own — `terrain.resampled` says so separately.
+export function terrainSourceNote(
+  dem: DemRaster,
+  field: { spacing: number; nx: number; ny: number },
+): string {
+  const label = dem.source?.label ?? 'unknown source';
+  return `Terrain: ${label}, ${field.spacing.toFixed(1)} m cells, ${field.nx}×${field.ny} raster`;
+}
+
+/// Report line for the PDF title block. Carries the credit, so the figure
+/// satisfies the licence on its own.
+export function terrainReportLine(dem: DemRaster | null, rasterPitchM: number | null): string | null {
+  const src = dem?.source;
+  if (!src) return null;
+  const pitches = rasterPitchM != null && Math.abs(rasterPitchM - src.nativePitchM) > 0.05
+    ? `${src.nativePitchM.toFixed(1)} m native, ${rasterPitchM.toFixed(1)} m sampled`
+    : `${src.nativePitchM.toFixed(1)} m cells`;
+  return `Terrain: ${src.label} · ${pitches} · ${src.attribution}`;
 }
 
 /// Metres-per-pixel of a web-mercator tile raster at the given zoom + latitude.
@@ -212,8 +269,10 @@ export async function loadDemForBounds(
     grid.set(`${t.x},${t.y}`, tiles[i]);
   }
 
+  const resolutionM = tileResolutionM(zoom, (sw[0] + ne[0]) / 2);
   return {
-    resolutionM: tileResolutionM(zoom, (sw[0] + ne[0]) / 2),
+    resolutionM,
+    source: terrariumSourceInfo(resolutionM),
     elevation(lat: number, lng: number): number {
       const tx = lng2tileX(lng, zoom);
       const ty = lat2tileY(lat, zoom);

@@ -62,6 +62,9 @@ export interface PdfInput {
   tileUrl(z: number, x: number, y: number): string;
   /// Basemap credit — REQUIRED by both providers, so it is not optional.
   attribution: string;
+  /// Terrain provenance for the title block — source, pitch and elevation
+  /// credit (see `dem.terrainReportLine`). Null when the solve had no DEM.
+  terrainLine?: string | null;
   options: PdfOptions;
 }
 
@@ -77,7 +80,9 @@ function rgb(css: string): [number, number, number] {
 export async function buildPdf(input: PdfInput): Promise<jsPDF> {
   const { project, results, grid, extent, options: o } = input;
   const page = PAGES[o.pageId] ?? PAGES['a4-landscape'];
-  const topPad = o.titleBlock ? 16 : 0;
+  // The terrain credit needs its own line, so the block grows rather than
+  // letting the text run under the map frame.
+  const topPad = o.titleBlock ? (input.terrainLine ? 20 : 16) : 0;
   const { doc, frame } = startPdf(page, extent, topPad);
 
   // House typeface for EVERY string on the page, not just annotations — a
@@ -181,12 +186,18 @@ export async function buildPdf(input: PdfInput): Promise<jsPDF> {
   }
   if (o.scaleBar) drawScaleBar(doc, frame);
   if (o.northArrow) drawNorthArrow(doc, frame);
-  if (o.titleBlock) drawTitle(doc, project, page.marginMm, family);
+  if (o.titleBlock) drawTitle(doc, project, page.marginMm, family, input.terrainLine ?? null);
 
   return doc;
 }
 
-function drawTitle(doc: jsPDF, project: Project, margin: number, family: string) {
+function drawTitle(
+  doc: jsPDF,
+  project: Project,
+  margin: number,
+  family: string,
+  terrainLine: string | null,
+) {
   doc.setTextColor(20, 20, 20);
   doc.setFontSize(13);
   doc.setFont(family, 'bold');
@@ -201,6 +212,13 @@ function drawTitle(doc: jsPDF, project: Project, margin: number, family: string)
     + `  —  exported ${new Date().toLocaleDateString()}`,
     margin, margin + 10,
   );
+  // Terrain screening can move a level several dB, so the figure names the DEM
+  // it was computed over — and carries its licence credit while it is there.
+  if (terrainLine) {
+    doc.setFontSize(6.5);
+    doc.text(terrainLine, margin, margin + 14);
+    doc.setFontSize(8);
+  }
 }
 
 function drawCalcArea(doc: jsPDF, project: Project, frame: MapFrame) {

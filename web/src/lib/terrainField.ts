@@ -172,6 +172,13 @@ export function clearTerrainFieldCache(): void {
   memo = null;
 }
 
+/// Pitch (m) of the most recently built heightfield, or `null` if none has been.
+/// The report states the pitch terrain was ACTUALLY screened at, which the cell
+/// cap can make coarser than the DEM's own — and only the built field knows it.
+export function lastTerrainPitchM(): number | null {
+  return memo?.value?.spacing ?? null;
+}
+
 export function buildTerrainField(
   dem: DemRaster | null,
   origin: [number, number],

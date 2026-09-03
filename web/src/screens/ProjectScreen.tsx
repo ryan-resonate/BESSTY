@@ -19,7 +19,9 @@ import { SidePanel, type AddMode, type Tab } from '../components/SidePanel';
 import type { SweepResult } from '../lib/windSweep';
 import { listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { gridDomain, makeBandsForRange, type Palette } from '../lib/colormap';
-import { loadDemForBounds, type DemRaster } from '../lib/dem';
+import { terrainReportLine, type DemRaster } from '../lib/dem';
+import { loadAutoDem } from '../lib/demSources';
+import { lastTerrainPitchM } from '../lib/terrainField';
 import {
   evaluateGridViaWorker,
   cancelGridRun,
@@ -30,7 +32,7 @@ import {
 } from '../lib/solver';
 import { useAuthState } from '../lib/auth';
 import { useProjectDoc } from '../lib/useProjectDoc';
-import { parseDemGeoTiff } from '../lib/demUpload';
+import { parseDemGeoTiff, type UploadedDem } from '../lib/demUpload';
 import { downloadProjectDem } from '../lib/firestoreStorage';
 import { BessGroupWizard } from '../components/BessGroupWizard';
 import {
@@ -168,7 +170,8 @@ function defaultModelFor(
 
 /// Stable string fingerprint of a DemRaster, used in the structural keys
 /// that drive snapshot recomputation. Discriminates by:
-///   - `source` field (filename for uploads, "auto" for AWS tile-based).
+///   - the source label (which carries the filename for uploads, and the
+///     dataset name for every automatic source).
 ///   - bounds (rounded to 4 decimal places ≈ 11 m at the equator -- coarse
 ///     enough that progressive auto-tile additions don't churn the key,
 ///     fine enough that any meaningful DEM swap registers).
@@ -176,7 +179,7 @@ function defaultModelFor(
 /// trigger spurious re-snapshots.
 function demFingerprint(d: DemRaster | null): string {
   if (!d) return 'none';
-  const src = (d as DemRaster & { source?: string }).source ?? 'auto';
+  const src = d.source?.label ?? 'auto';
   const b = d.bounds;
   return `${src}:${b.sw[0].toFixed(4)},${b.sw[1].toFixed(4)},${b.ne[0].toFixed(4)},${b.ne[1].toFixed(4)}`;
 }
@@ -994,7 +997,7 @@ export function ProjectScreen() {
     const lngs = corners.map((c) => c[1]);
     const sw: [number, number] = [Math.min(...lats), Math.min(...lngs)];
     const ne: [number, number] = [Math.max(...lats), Math.max(...lngs)];
-    loadDemForBounds(sw, ne)
+    loadAutoDem({ sw, ne })
       .then((r) => { setDem(r); setDemStatus('ready'); })
       .catch((e) => { console.warn('DEM load failed (continuing flat-ground):', e); setDemStatus('error'); });
   }, [project, demStatus, demSource, persistedProject?.dem]);
@@ -1010,7 +1013,7 @@ export function ProjectScreen() {
     if (!persistedDem) return;
     // Already have this exact one loaded? Skip.
     if (demSource === 'upload' && dem != null) {
-      const cur = (dem as DemRaster & { source?: string }).source;
+      const cur = (dem as UploadedDem).filename;
       if (cur === persistedDem.filename) return;
     }
     const gen = ++demLoadGenRef.current;
@@ -1744,6 +1747,7 @@ export function ProjectScreen() {
         fixedDomain={fixedDomain} setFixedDomain={setFixedDomain}
         demStatus={demStatus}
         demTilesLoaded={dem?.tilesLoaded ?? null}
+        demSourceLabel={dem?.source?.label ?? null}
         gridSpacingM={gridSpacingM} setGridSpacingM={setGridSpacingM}
         onAfterImport={fitToBounds}
         onFitCalcAreaToObjects={fitCalcAreaToObjects}
@@ -1786,6 +1790,7 @@ export function ProjectScreen() {
           project={project}
           results={results}
           grid={grid}
+          demAttribution={dem?.source?.attribution ?? null}
           selectedIds={selectedIds}
           onSelect={selectFromMap}
           onBoxSelect={selectFromBox}
@@ -1927,6 +1932,7 @@ export function ProjectScreen() {
           showContours={showContours}
           tileUrl={(z, x, y) => tileUrlFor(baseMap, z, x, y)}
           attribution={attributionFor(baseMap)}
+          terrainLine={terrainReportLine(dem, lastTerrainPitchM())}
           onClose={() => setPdfExtent(null)}
         />
       )}
