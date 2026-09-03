@@ -276,6 +276,12 @@ bounds must use it; a solve against it completes; timing recorded.
 1. Existing projects switch to DEM-S automatically, with no notification.
 2. QLD LiDAR is included (Phase 3).
 3. No Copernicus proxy; Terrarium stays as the fallback outside DEM-S coverage.
+4. **Progressive load (2026-09-03).** After a Queensland load was measured at
+   52 s (`validation/dem-source-memo.md` §1) with nothing usable on screen
+   until it finished, QLD LiDAR became a *deferred* source: the project loads
+   on DEM-S (or Terrarium) immediately and swaps to the LiDAR in the background
+   when it arrives. No setting and no flag — the status chip says it is
+   checking, and stops when the answer is in.
 
 ## Execution notes
 

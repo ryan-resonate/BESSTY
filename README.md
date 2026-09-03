@@ -87,7 +87,7 @@ Next deliverables: lateral diffraction (Eq 25); reflections (engine-only); Web W
 
 ## Elevation data and attribution
 
-Terrain loads automatically from a cascade of free sources — the first that covers the site and loads, wins — unless the user has uploaded a GeoTIFF, which always overrides it. The credit string for whichever source was used is carried on the `DemRaster`, joined to the Leaflet attribution control and printed in the PDF title block; it is not optional decoration, so keep it attached to any figure taken out of the app.
+Terrain loads automatically from a cascade of free sources — the first that covers the site and loads, wins — unless the user has uploaded a GeoTIFF, which always overrides it. The order below is the quality order, not the timing: source 1 is slow enough (tens of seconds) that the project loads on source 2 or 3 first and swaps to the Queensland LiDAR in the background once it arrives. The credit string for whichever source was used is carried on the `DemRaster`, joined to the Leaflet attribution control and printed in the PDF title block; it is not optional decoration, so keep it attached to any figure taken out of the app.
 
 | Order | Source | Licence | Attribution required |
 |---|---|---|---|

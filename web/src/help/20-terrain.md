@@ -7,7 +7,7 @@ Terrain loads by itself. There is no source to pick and nothing to download per 
 
 ## Which dataset, in what order
 
-The first source that covers the site and loads, wins.
+The first source that covers the site and loads, wins — best data first (the Queensland one arrives second in time; see below).
 
 1. **QLD LiDAR DTM** — the Queensland Government `Elevation/QldDem` mosaic of the state's public 0.5–1 m LiDAR DTMs. The mosaic answers for the whole state, falling back to SRTM where the LiDAR does not reach, so coverage is not a bounding-box question: the site is probed at several points and the source is taken only when **every** probe reports LiDAR. A site half on a capture would otherwise be screened half at 1 m and half at 30 m, with an invented step between them.
 2. **GA SRTM-derived 1 Second DEM-S v1.0** — Geoscience Australia's national ~30 m bare-earth DEM: vegetation offsets removed, voids filled. The default everywhere in Australia.
@@ -16,6 +16,8 @@ The first source that covers the site and loads, wins.
 An **uploaded GeoTIFF always wins**, whatever the cascade would have chosen. Upload one on the DEM card when you have ELVIS or survey data for the site; it is sampled at its own pixel size, in the file's own coordinate reference system.
 
 A source that reports no coverage, or fails, is skipped and the next one is tried. The Queensland service rejects a share of its exports under load, so an export is attempted up to three times before the cascade moves on — otherwise the same project would stand on 1 m LiDAR one session and 30 m DEM-S the next. A large Queensland export can take tens of seconds when that happens.
+
+**Terrain loads in two steps.** Because that wait is long, the project opens on DEM-S (or the tiles) straight away and keeps working — solving, gridding, everything — while the Queensland LiDAR is fetched in the background. The status chip says `· checking QLD LiDAR…` while that is running; when the LiDAR lands it replaces the DEM and everything on screen re-solves against it, and if Queensland has nothing for the site, or fails, the suffix simply goes away.
 
 ## How terrain is sampled
 

@@ -70,6 +70,10 @@ first characterised (plan, Phase 3) and ~8.7 s at the Phase 3 measurement
 the same project standing on 1 m LiDAR one session and 30 m DEM-S the next; it
 buys that at the cost of a long worst case.
 
+That 52 s is why the QLD source is now loaded **after** the project already has
+a DEM: the cascade resolves on DEM-S in a second or two and the LiDAR raster,
+when it lands, replaces it and re-solves (plan, "Decisions resolved" 4).
+
 ## 2. V2 vs SoundPLAN, three DEMs (`validation/run_v2_dem.mjs`) — the gate
 
 V2 is three BESS units and 13 receivers in the Victorian Alps

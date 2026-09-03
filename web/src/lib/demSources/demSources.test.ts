@@ -7,7 +7,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { terrainReportLine, terrainSourceNote, type DemRaster } from '../dem';
-import { AUTO_DEM_SOURCES, loadAutoDem, type DemBounds, type DemSource } from './index';
+import {
+  AUTO_DEM_SOURCES, loadAutoDem, upgradeStillWanted,
+  type DemBounds, type DemSource,
+} from './index';
 import { demSPixelWindow, demSWindowRaster, GA_DEM_S } from './gaDemS';
 
 const BOUNDS: DemBounds = { sw: [-26.80, 151.88], ne: [-26.76, 151.92] };
@@ -21,23 +24,62 @@ const raster = (tag: string): DemRaster => ({
   },
 });
 
-function fake(id: string, opts: { covers?: boolean; throwOn?: 'covers' | 'load' } = {}): DemSource {
+interface FakeOpts {
+  covers?: boolean;
+  throwOn?: 'covers' | 'load';
+  deferred?: boolean;
+  /// Hold `load` open until the returned promise is resolved by the test.
+  gate?: Promise<void>;
+  /// Bumped on every `covers` / `load` call, so a test can prove a source was
+  /// never reached at all.
+  calls?: string[];
+}
+
+function fake(id: string, opts: FakeOpts = {}): DemSource {
   return {
     id,
     label: id,
+    deferred: opts.deferred,
     async covers() {
+      opts.calls?.push(`${id}.covers`);
       if (opts.throwOn === 'covers') throw new Error(`${id} covers exploded`);
       return opts.covers ?? true;
     },
     async load() {
+      opts.calls?.push(`${id}.load`);
       if (opts.throwOn === 'load') throw new Error(`${id} load exploded`);
+      if (opts.gate) await opts.gate;
       return raster(id);
     },
   };
 }
 
 const labelOf = async (sources: DemSource[]) =>
-  (await loadAutoDem(BOUNDS, sources)).source?.label;
+  (await loadAutoDem(BOUNDS, { sources })).source?.label;
+
+/// A promise plus its resolver, for holding a slow source open.
+function gate(): { promise: Promise<void>; open: () => void } {
+  let open = () => {};
+  const promise = new Promise<void>((resolve) => { open = () => resolve(); });
+  return { promise, open };
+}
+
+/// Resolves with the raster the deferred pass hands back, or `null` if that
+/// pass ends without one.
+function upgradeOutcome(sources: DemSource[]): {
+  fast: Promise<DemRaster>;
+  settled: Promise<DemRaster | null>;
+} {
+  let seen: DemRaster | null = null;
+  let done!: (r: DemRaster | null) => void;
+  const settled = new Promise<DemRaster | null>((resolve) => { done = resolve; });
+  const fast = loadAutoDem(BOUNDS, {
+    sources,
+    onUpgrade: (r) => { seen = r; },
+    onUpgradeSettled: () => done(seen),
+  });
+  return { fast, settled };
+}
 
 test('cascade: the first covering source wins', async () => {
   assert.equal(await labelOf([fake('a'), fake('b')]), 'a');
@@ -54,9 +96,55 @@ test('cascade: a source that throws falls through to the next', async () => {
 
 test('cascade: every source failing is an error, not a flat plane', async () => {
   await assert.rejects(
-    () => loadAutoDem(BOUNDS, [fake('a', { throwOn: 'load' }), fake('b', { covers: false })]),
+    () => loadAutoDem(BOUNDS, { sources: [fake('a', { throwOn: 'load' }), fake('b', { covers: false })] }),
     /No DEM source/,
   );
+});
+
+// ----------------------------------------------------------- deferred upgrade
+
+test('cascade does not wait for a deferred source, then upgrades to it', async () => {
+  // The whole point: a Queensland project must be standing on DEM-S while the
+  // LiDAR export is still in flight. The deferred source's `load` is held open,
+  // so if the returned promise waited for it this test would hang.
+  const slow = gate();
+  const deferred = fake('slow', { deferred: true, gate: slow.promise });
+  const { fast, settled } = upgradeOutcome([deferred, fake('fast')]);
+  assert.equal((await fast).source?.label, 'fast');
+  slow.open();
+  assert.equal((await settled)?.source?.label, 'slow');
+});
+
+test('a deferred source that does not cover, or throws, leaves the DEM alone', async () => {
+  for (const dud of [
+    fake('slow', { deferred: true, covers: false }),
+    fake('slow', { deferred: true, throwOn: 'covers' }),
+    fake('slow', { deferred: true, throwOn: 'load' }),
+  ]) {
+    const { fast, settled } = upgradeOutcome([dud, fake('fast')]);
+    assert.equal((await fast).source?.label, 'fast');
+    assert.equal(await settled, null, `${dud.id} must not upgrade`);
+  }
+});
+
+test('without onUpgrade a deferred source is never touched', async () => {
+  // Validation scripts and probe tools call the cascade with no callback: they
+  // cannot swap a raster mid-run, so they must not pay for nine probes and a
+  // 16 MB export either.
+  const calls: string[] = [];
+  const sources = [fake('slow', { deferred: true, calls }), fake('fast', { calls })];
+  assert.equal((await loadAutoDem(BOUNDS, { sources })).source?.label, 'fast');
+  // Long enough for the deferred pass's macrotask to have run, had there been one.
+  await new Promise((r) => { setTimeout(r, 5); });
+  assert.deepEqual(calls, ['fast.covers', 'fast.load']);
+});
+
+test('an upgrade is applied only while it is still the newest DEM load', () => {
+  // The counter is bumped by an upload, by a re-fetch for moved bounds and by a
+  // project switch, so a stale upgrade landing after any of those would put the
+  // project back on terrain the user has already moved off.
+  assert.equal(upgradeStillWanted(7, 7), true);
+  assert.equal(upgradeStillWanted(7, 8), false);
 });
 
 test('cascade order is best-first and holds no upload source', () => {
@@ -64,6 +152,9 @@ test('cascade order is best-first and holds no upload source', () => {
   // is loaded), so an `upload` entry here would be a bug. Order is finest data
   // first: QLD LiDAR (metres), DEM-S (30 m bare earth), tiles (30 m raw SRTM).
   assert.deepEqual(AUTO_DEM_SOURCES.map((s) => s.id), ['qld-lidar', 'ga-dem-s', 'terrarium']);
+  // QLD is the quality winner but costs tens of seconds, so it is the deferred
+  // one: nothing else may be, or a project would sit with no terrain at all.
+  assert.deepEqual(AUTO_DEM_SOURCES.filter((s) => s.deferred).map((s) => s.id), ['qld-lidar']);
 });
 
 // ------------------------------------------------------------------ reporting

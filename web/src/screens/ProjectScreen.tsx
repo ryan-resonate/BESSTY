@@ -20,7 +20,7 @@ import type { SweepResult } from '../lib/windSweep';
 import { listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { gridDomain, makeBandsForRange, type Palette } from '../lib/colormap';
 import { terrainReportLine, type DemRaster } from '../lib/dem';
-import { loadAutoDem, type DemBounds } from '../lib/demSources';
+import { loadAutoDem, upgradeStillWanted, type DemBounds } from '../lib/demSources';
 import type { SuspectCell, TerrainBuildInfo } from '../lib/terrainField';
 import {
   evaluateGridViaWorker,
@@ -557,6 +557,10 @@ export function ProjectScreen() {
 
   const [dem, setDem] = useState<DemRaster | null>(null);
   const [demStatus, setDemStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  /// True while the loaded DEM might still be replaced by a slower, better one
+  /// (today: QLD LiDAR, behind nine probes and a 16 MB export). The project is
+  /// fully usable throughout — this only decorates the status chip.
+  const [demUpgradePending, setDemUpgradePending] = useState(false);
   /// 'auto' = the automatic source cascade; 'upload' = user GeoTIFF.
   const [demSource, setDemSource] = useState<'auto' | 'upload'>('auto');
   /// One generation counter for EVERY DEM load — the automatic cascade, the
@@ -580,6 +584,14 @@ export function ProjectScreen() {
       setDemStatus('ready');
     }
   }
+
+  /// What the status chip says the project is standing on: the loaded DEM,
+  /// plus — while the background upgrade is still running — the better dataset
+  /// being looked for. The suffix goes when the LiDAR lands (the label is then
+  /// the LiDAR's own) and equally when Queensland is skipped or fails.
+  const demSourceLabel = dem?.source?.label
+    ? `${dem.source.label}${demUpgradePending ? ' · checking QLD LiDAR…' : ''}`
+    : null;
 
   // BESS-group wizard state. `null` = closed; otherwise editing or
   // creating. The wizard owns its own form state; we just hand it the
@@ -1046,6 +1058,12 @@ export function ProjectScreen() {
   // Skipped when the user has supplied their own GeoTIFF in this session OR
   // when the project has a Firebase-Storage-persisted DEM that the effect
   // below is responsible for downloading.
+  //
+  // Progressive: the cascade resolves on the fast source (DEM-S, or tiles
+  // outside it) and hands back the slow QLD LiDAR raster later through
+  // `onUpgrade`. Both land through `setDem`, so the terrain memo, the point
+  // solve and the contour regrid see an upgrade as exactly what it is — a DEM
+  // change — via `demFingerprint` in the structural keys.
   useEffect(() => {
     if (!project || demStatus !== 'idle' || demSource === 'upload') return;
     if (persistedProject?.dem) return;   // saved DEM takes over via the next effect
@@ -1053,12 +1071,29 @@ export function ProjectScreen() {
     setDemStatus('loading');
     const gen = ++demLoadGenRef.current;
     const wanted = demNeedBounds;
-    loadAutoDem(wanted)
+    loadAutoDem(wanted, {
+      onUpgrade: (r) => {
+        // Same guard as the fast path, for the same reason: an upload, a
+        // re-fetch for moved bounds or a project switch has already replaced
+        // the raster this was meant to improve.
+        if (!upgradeStillWanted(gen, demLoadGenRef.current)) return;
+        setDem(r);
+      },
+      // Cleared unguarded, unlike the raster itself: a settle from a superseded
+      // load can only stop the chip saying "checking" a little early, whereas
+      // guarding it would leave the suffix stuck on, say, an uploaded DEM
+      // whose upload cancelled the load that put it there.
+      onUpgradeSettled: () => setDemUpgradePending(false),
+    })
       .then((r) => {
         if (gen !== demLoadGenRef.current) return;   // superseded (upload, or a newer extent)
         demLoadedBoundsRef.current = wanted;
         setDem(r);
         setDemStatus('ready');
+        // The upgrade pass runs only once the fast raster is in hand, so this
+        // is where the "checking" state begins — never during the first load,
+        // where the chip already says `loading…`.
+        setDemUpgradePending(true);
       })
       .catch((e) => {
         if (gen !== demLoadGenRef.current) return;
@@ -1838,7 +1873,7 @@ export function ProjectScreen() {
         fixedDomain={fixedDomain} setFixedDomain={setFixedDomain}
         demStatus={demStatus}
         demTilesLoaded={dem?.tilesLoaded ?? null}
-        demSourceLabel={dem?.source?.label ?? null}
+        demSourceLabel={demSourceLabel}
         gridSpacingM={gridSpacingM} setGridSpacingM={setGridSpacingM}
         onAfterImport={fitToBounds}
         onFitCalcAreaToObjects={fitCalcAreaToObjects}
