@@ -108,9 +108,14 @@ test('cascade does not wait for a deferred source, then upgrades to it', async (
   // LiDAR export is still in flight. The deferred source's `load` is held open,
   // so if the returned promise waited for it this test would hang.
   const slow = gate();
-  const deferred = fake('slow', { deferred: true, gate: slow.promise });
-  const { fast, settled } = upgradeOutcome([deferred, fake('fast')]);
+  const calls: string[] = [];
+  const deferred = fake('slow', { deferred: true, gate: slow.promise, calls });
+  const { fast, settled } = upgradeOutcome([deferred, fake('fast', { calls })]);
   assert.equal((await fast).source?.label, 'fast');
+  // …and none of the slow chain has even started at that point: the caller
+  // gets its raster before the first `identify` goes out, not merely before
+  // the export finishes.
+  assert.deepEqual(calls, ['fast.covers', 'fast.load']);
   slow.open();
   assert.equal((await settled)?.source?.label, 'slow');
 });
@@ -136,6 +141,28 @@ test('without onUpgrade a deferred source is never touched', async () => {
   assert.equal((await loadAutoDem(BOUNDS, { sources })).source?.label, 'fast');
   // Long enough for the deferred pass's macrotask to have run, had there been one.
   await new Promise((r) => { setTimeout(r, 5); });
+  assert.deepEqual(calls, ['fast.covers', 'fast.load']);
+});
+
+test('a superseded load drops the deferred pass instead of running it', async () => {
+  // `stillWanted` is the caller saying the raster would be thrown away anyway
+  // (an upload, moved bounds, another project). Nine probes and a 16 MB export
+  // must not go out for it — and the settle must still fire, or the chip would
+  // sit on "checking QLD LiDAR…" for ever.
+  const calls: string[] = [];
+  let upgraded = false;
+  let resolveSettled!: () => void;
+  const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
+  const sources = [fake('slow', { deferred: true, calls }), fake('fast', { calls })];
+  const r = await loadAutoDem(BOUNDS, {
+    sources,
+    stillWanted: () => false,
+    onUpgrade: () => { upgraded = true; },
+    onUpgradeSettled: () => resolveSettled(),
+  });
+  assert.equal(r.source?.label, 'fast');
+  await settled;
+  assert.equal(upgraded, false);
   assert.deepEqual(calls, ['fast.covers', 'fast.load']);
 });
 

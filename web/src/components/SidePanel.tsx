@@ -217,6 +217,10 @@ interface Props {
   setContourBounds(b: { min: number; max: number; step: number }): void;
   demStatus: 'idle' | 'loading' | 'ready' | 'error';
   demTilesLoaded: number | null;
+  /// The contour grid on screen was not solved against the DEM now loaded — a
+  /// regrid is running, or a better DEM arrived under it. Exports that caption
+  /// the grid with the DEM (PDF, share) are held off until it clears.
+  gridOutOfDate?: boolean;
   gridSpacingM: number;
   setGridSpacingM(v: number): void;
   /// Called by the import modal after sources / receivers are added so
@@ -1466,6 +1470,16 @@ function ResultsTab(props: Props) {
   const mutedWhenNoGrid = hasGrid ? undefined : { opacity: 0.55 };
   const gridHint = hasGrid ? undefined : 'Needs a computed contour grid — click for details';
 
+  /// The PDF and a share both caption the contours with the DEM's name and
+  /// credit, read live off the loaded raster — so neither may go out while the
+  /// cells on screen were solved against a different DEM (the QLD LiDAR
+  /// upgrade landing under a grid, or any regrid still running). Unlike the
+  /// no-grid case this is seconds long and fixes itself, so the buttons are
+  /// genuinely disabled and say why.
+  const gridUpdatingHint = props.gridOutOfDate
+    ? 'Contours are updating for the new terrain — export when they finish'
+    : undefined;
+
   function download(blob: Blob, suffix: string, ext: string) {
     triggerDownload(`${defaultFilenameStem(project, suffix)}.${ext}`, blob);
   }
@@ -1630,8 +1644,9 @@ function ResultsTab(props: Props) {
           <button
             className="btn small primary block"
             onClick={() => props.onOpenPdfExport?.()}
-            disabled={!props.onOpenPdfExport}
-            title="Report-quality snapshot: basemap image with vector contours and receivers"
+            disabled={!props.onOpenPdfExport || !!props.gridOutOfDate}
+            title={gridUpdatingHint
+              ?? 'Report-quality snapshot: basemap image with vector contours and receivers'}
           >📄 Export PDF…</button>
           <button
             className="btn small block"
@@ -1655,8 +1670,9 @@ function ResultsTab(props: Props) {
           <button
             className="btn small block"
             onClick={() => props.onOpenShare?.()}
-            disabled={!props.onOpenShare}
-            title="Publish a read-only link a client can open without an account"
+            disabled={!props.onOpenShare || !!props.gridOutOfDate}
+            title={gridUpdatingHint
+              ?? 'Publish a read-only link a client can open without an account'}
           >🔗 Share a read-only link…</button>
           <button className="btn small" style={mutedWhenNoGrid} title={gridHint} onClick={() => { if (requireGrid() && grid) download(exportGridGeoTiff(grid), 'grid', 'tif'); }}>
             ↓ GeoTIFF

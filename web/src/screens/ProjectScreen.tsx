@@ -557,10 +557,13 @@ export function ProjectScreen() {
 
   const [dem, setDem] = useState<DemRaster | null>(null);
   const [demStatus, setDemStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-  /// True while the loaded DEM might still be replaced by a slower, better one
-  /// (today: QLD LiDAR, behind nine probes and a 16 MB export). The project is
-  /// fully usable throughout — this only decorates the status chip.
-  const [demUpgradePending, setDemUpgradePending] = useState(false);
+  /// The DEM-load generation whose background upgrade is still running (today:
+  /// QLD LiDAR, behind nine probes and a 16 MB export), or null. A generation
+  /// rather than a flag so a settle can only clear the load it belongs to: the
+  /// chip would otherwise be left saying "checking QLD LiDAR…" over an
+  /// uploaded GeoTIFF whose upload cancelled the load that started the check.
+  /// The project is fully usable throughout — this only decorates the chip.
+  const [demUpgradePending, setDemUpgradePending] = useState<number | null>(null);
   /// 'auto' = the automatic source cascade; 'upload' = user GeoTIFF.
   const [demSource, setDemSource] = useState<'auto' | 'upload'>('auto');
   /// One generation counter for EVERY DEM load — the automatic cascade, the
@@ -577,6 +580,8 @@ export function ProjectScreen() {
     demLoadGenRef.current++;
     setDem(d);
     setDemSource(source);
+    // Whatever upgrade was being checked was for the DEM this replaces.
+    setDemUpgradePending(null);
     if (source === 'auto' && d == null) {
       // Reset request — kick the auto-loader effect by clearing status.
       setDemStatus('idle');
@@ -590,8 +595,19 @@ export function ProjectScreen() {
   /// being looked for. The suffix goes when the LiDAR lands (the label is then
   /// the LiDAR's own) and equally when Queensland is skipped or fails.
   const demSourceLabel = dem?.source?.label
-    ? `${dem.source.label}${demUpgradePending ? ' · checking QLD LiDAR…' : ''}`
+    ? `${dem.source.label}${demUpgradePending != null ? ' · checking QLD LiDAR…' : ''}`
     : null;
+
+  /// The contours on screen are not the contours for the terrain now loaded:
+  /// either a regrid is running, or a DEM landed after this grid was solved.
+  /// The QLD LiDAR upgrade arrives seconds after DEM-S and the regrid is
+  /// debounced 600 ms, so there is a real window in which the cells are DEM-S
+  /// and the terrain line, source label and map attribution — all read live
+  /// off `dem` — say LiDAR. Exports that CAPTION the grid that way (the PDF, a
+  /// share) wait for the two to agree; the map keeps drawing the old grid
+  /// meanwhile, exactly as it does through any regrid.
+  const gridOutOfDate = gridStatus === 'computing'
+    || (grid != null && grid.demStamp !== demFingerprint(dem));
 
   // BESS-group wizard state. `null` = closed; otherwise editing or
   // creating. The wizard owns its own form state; we just hand it the
@@ -1072,6 +1088,10 @@ export function ProjectScreen() {
     const gen = ++demLoadGenRef.current;
     const wanted = demNeedBounds;
     loadAutoDem(wanted, {
+      // Checked before every step of the deferred pass, so a superseded load
+      // stops probing and exporting instead of running the whole slow chain
+      // for a raster that would be thrown away.
+      stillWanted: () => upgradeStillWanted(gen, demLoadGenRef.current),
       onUpgrade: (r) => {
         // Same guard as the fast path, for the same reason: an upload, a
         // re-fetch for moved bounds or a project switch has already replaced
@@ -1079,11 +1099,9 @@ export function ProjectScreen() {
         if (!upgradeStillWanted(gen, demLoadGenRef.current)) return;
         setDem(r);
       },
-      // Cleared unguarded, unlike the raster itself: a settle from a superseded
-      // load can only stop the chip saying "checking" a little early, whereas
-      // guarding it would leave the suffix stuck on, say, an uploaded DEM
-      // whose upload cancelled the load that put it there.
-      onUpgradeSettled: () => setDemUpgradePending(false),
+      // Only this load's own "checking" claim is cleared — a newer load may
+      // already have started one of its own.
+      onUpgradeSettled: () => setDemUpgradePending((p) => (p === gen ? null : p)),
     })
       .then((r) => {
         if (gen !== demLoadGenRef.current) return;   // superseded (upload, or a newer extent)
@@ -1093,7 +1111,7 @@ export function ProjectScreen() {
         // The upgrade pass runs only once the fast raster is in hand, so this
         // is where the "checking" state begins — never during the first load,
         // where the chip already says `loading…`.
-        setDemUpgradePending(true);
+        setDemUpgradePending(gen);
       })
       .catch((e) => {
         if (gen !== demLoadGenRef.current) return;
@@ -1327,7 +1345,7 @@ export function ProjectScreen() {
           // and skipped. The edit that triggered the regrid was silently never
           // drawn, and the contour export would have written the stale grid.
           gridKeyRef.current = key;
-          setGrid(g);
+          setGrid({ ...g, demStamp: demFingerprint(dem) });
           setGridStatus('ready');
           setGridProgress(null);
         })
@@ -1364,7 +1382,7 @@ export function ProjectScreen() {
         .then((g) => {
           if (gen !== gridGenRef.current) return;
           gridKeyRef.current = key;
-          setGrid(g);
+          setGrid({ ...g, demStamp: demFingerprint(dem) });
           setGridStatus('ready');
           setGridProgress(null);
           // I20: fold the grid's approximations in beside the receiver solve's,
@@ -1874,6 +1892,7 @@ export function ProjectScreen() {
         demStatus={demStatus}
         demTilesLoaded={dem?.tilesLoaded ?? null}
         demSourceLabel={demSourceLabel}
+        gridOutOfDate={gridOutOfDate}
         gridSpacingM={gridSpacingM} setGridSpacingM={setGridSpacingM}
         onAfterImport={fitToBounds}
         onFitCalcAreaToObjects={fitCalcAreaToObjects}

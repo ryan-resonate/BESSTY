@@ -77,6 +77,12 @@ export interface GridResult {
   bounds: { sw: [number, number]; ne: [number, number] };
   dbA: Float32Array;
   computedMs: number;
+  /// Which DEM these cells were solved against (`demFingerprint`), stamped by
+  /// the caller when the grid lands. The terrain under a project can change
+  /// while a grid is on screen — the QLD LiDAR upgrade arrives seconds after
+  /// the DEM-S one — and the regrid is debounced, so without this an export
+  /// could caption a DEM-S grid with the LiDAR's name and credit.
+  demStamp?: string;
 }
 
 /// A rectangular block of grid cells with its OWN clustered source set. Each

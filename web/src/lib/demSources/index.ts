@@ -72,6 +72,12 @@ export interface AutoDemOptions {
   /// Called once when the deferred pass is over, whether or not it upgraded
   /// anything, so a UI that says it is checking can stop saying so.
   onUpgradeSettled?: () => void;
+  /// Is the deferred pass still worth running? Checked before it starts and
+  /// before every step of it, so a load the caller has already superseded — an
+  /// upload, a re-fetch for moved bounds, a project switch — stops rather than
+  /// spending nine probes and a 16 MB export on a raster it would then throw
+  /// away. Absent ⇒ always wanted.
+  stillWanted?: () => boolean;
 }
 
 /// First NON-DEFERRED source that covers `bounds` and loads. A source that
@@ -113,21 +119,36 @@ function startUpgrade(
   if (!onUpgrade) return;
   const deferred = sources.filter((s) => s.deferred);
   setTimeout(() => {
-    void runUpgrade(bounds, deferred, onUpgrade).finally(() => onUpgradeSettled?.());
+    // Superseded during the macrotask gap: nothing to do, but the caller is
+    // still told the pass is over so its "checking…" chip can stop.
+    const pass = opts.stillWanted?.() === false
+      ? Promise.resolve()
+      : runUpgrade(bounds, deferred, opts, onUpgrade);
+    void pass.finally(() => onUpgradeSettled?.());
   }, 0);
 }
 
 /// First deferred source that covers and loads wins; anything else is a warning
 /// and nothing more. The project keeps the DEM it already has.
+///
+/// `stillWanted` is re-checked between every await: each step is seconds long,
+/// so the answer really can change under it, and past that point the work is
+/// pure cost.
 async function runUpgrade(
   bounds: DemBounds,
   deferred: readonly DemSource[],
+  opts: AutoDemOptions,
   onUpgrade: (raster: DemRaster) => void,
 ): Promise<void> {
+  const wanted = () => opts.stillWanted?.() ?? true;
   for (const source of deferred) {
+    if (!wanted()) return;
     try {
       if (!(await source.covers(bounds))) continue;
-      onUpgrade(await source.load(bounds));
+      if (!wanted()) return;
+      const raster = await source.load(bounds);
+      if (!wanted()) return;
+      onUpgrade(raster);
       return;
     } catch (err) {
       // eslint-disable-next-line no-console
