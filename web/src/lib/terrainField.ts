@@ -32,7 +32,12 @@ const DEFAULT_DEM_RESOLUTION_M = 20;
 
 /** Most flagged cells the build record keeps for the map overlay. A DEM that
  *  produced more than this is broken in a way no overlay would clarify. */
-const MAX_REPORTED_SUSPECT_CELLS = 500;
+export const MAX_REPORTED_SUSPECT_CELLS = 500;
+
+/** Hard bound on the flag → correct loop `qaCorrect` runs. Correcting the worst
+ *  cell of an uneven smear can leave its neighbours steep enough to flag on the
+ *  next look, so the pass iterates; the bound is what guarantees it stops. */
+const QA_CORRECTION_PASSES = 3;
 
 export interface TerrainFieldOptions {
   /** Override the sampling pitch (m). Defaults to the DEM's native resolution. */
@@ -61,8 +66,14 @@ export interface TerrainBuildInfo extends TerrainQaSummary {
   /** Pitch (m) terrain was ACTUALLY screened at — the cell cap can make this
    *  coarser than the DEM's own resolution, and only the built field knows. */
   pitchM: number;
-  /** Flagged cells, capped at [`MAX_REPORTED_SUSPECT_CELLS`]. */
+  /** Flagged cells, worst deviation first, capped at
+   *  [`MAX_REPORTED_SUSPECT_CELLS`]. `count` is the true total. */
   cells: SuspectCell[];
+  /** Sparse `cell index → (corrected − raw)`, one entry per cell correction
+   *  actually moved and nothing else. Empty unless `qaCorrect` was on and
+   *  something was flagged. This — not the corrected raster — is what
+   *  [`correctedDemRaster`] adds to the DEM. */
+  deltas: Map<number, number>;
 }
 
 /**
@@ -151,53 +162,64 @@ export function clearTerrainFieldCache(): void {
 }
 
 /// What the most recent build produced, or `null` if none has been (or it
-/// produced no terrain). Read straight after `buildTerrainField` — the memo
-/// holds one entry, so a later build for a different extent replaces it.
+/// produced no terrain).
 ///
-/// Pass `dem` when reading it later (the UI does, a frame or several after the
-/// solve): the record then comes back only if it was built from THAT raster.
-/// Without it, a DEM swap leaves the previous surface's pitch and suspect cells
-/// on screen, described as the current DEM's.
-export function lastTerrainBuild(dem?: DemRaster | null): TerrainBuildInfo | null {
-  if (!memo) return null;
-  if (dem !== undefined && (!dem || !memo.key.startsWith(`${demIdentity(dem)}|`))) return null;
-  return memo.info ?? null;
+/// Only ever safe to read STRAIGHT AFTER a `buildTerrainField` call, with no
+/// await in between: the memo holds one entry, so the next build — typically
+/// the contour grid's, over a different extent — replaces it. Anything that
+/// needs the record later is handed it (`evaluateProject` returns it).
+export function lastTerrainBuild(): TerrainBuildInfo | null {
+  return memo?.info ?? null;
 }
 
-/// A `DemRaster` that reads the QA-CORRECTED surface inside the built field and
-/// the raw DEM outside it.
+/// The DEM plus whatever the QA correction moved — the raw raster everywhere
+/// else, exactly.
 ///
 /// Endpoint ground (sources, receivers, grid cells, wall feet) is looked up
 /// from the DemRaster, while the engine screens paths against the heightfield.
 /// With correction on those two disagree exactly where it matters — a receiver
 /// standing on a corrected cell would otherwise float 60 m over the terrain the
-/// engine sees. `origin` is the scene's geodetic origin, the same one the field
-/// was built in.
+/// engine sees.
+///
+/// What is added is the sparse DELTA (`corrected − raw` at the corrected cells,
+/// zero everywhere else), not the resampled field: returning the field's own
+/// bilinear moved every endpoint in the extent by the resampling error — metres
+/// where a fine DEM had been coarsened to the cell cap — and put a step at the
+/// field edge. Border cells are never flagged, so the delta reaches the edge as
+/// zero and there is no seam. `origin` is the scene's geodetic origin, the same
+/// one the field was built in.
 export function correctedDemRaster(
   dem: DemRaster,
   field: SceneHeightfield,
   origin: [number, number],
+  deltas: ReadonlyMap<number, number>,
 ): DemRaster {
-  const { spacing, nx, ny, heights } = field;
+  if (deltas.size === 0) return dem;
+  const { spacing, nx, ny } = field;
   const [e0, n0] = field.origin;
+  const delta = (ix: number, iy: number) => deltas.get(iy * nx + ix) ?? 0;
   return {
     ...dem,
+    // The wrapper is NOT a regular lat/lng grid — the raster underneath may be,
+    // and `captureDemRegion`'s fast path would then snapshot it uncorrected.
+    grid: undefined,
     elevation(lat: number, lng: number): number {
+      const raw = dem.elevation(lat, lng);
       const [e, n] = latLngToLocalMetres([lat, lng], origin);
       const fx = (e - e0) / spacing;
       const fy = (n - n0) / spacing;
-      if (!(fx >= 0 && fx <= nx - 1 && fy >= 0 && fy <= ny - 1)) return dem.elevation(lat, lng);
+      if (!(fx >= 0 && fx <= nx - 1 && fy >= 0 && fy <= ny - 1)) return raw;
       // The field is at least 2×2, so clamping the cell corner to the last full
       // cell keeps the far edge interpolating (t = 1) rather than indexing off.
       const ix = Math.min(Math.floor(fx), nx - 2);
       const iy = Math.min(Math.floor(fy), ny - 2);
       const tx = fx - ix;
       const ty = fy - iy;
-      const h00 = heights[iy * nx + ix];
-      const h10 = heights[iy * nx + ix + 1];
-      const h01 = heights[(iy + 1) * nx + ix];
-      const h11 = heights[(iy + 1) * nx + ix + 1];
-      return h00 * (1 - tx) * (1 - ty) + h10 * tx * (1 - ty) + h01 * (1 - tx) * ty + h11 * tx * ty;
+      const d = delta(ix, iy) * (1 - tx) * (1 - ty)
+        + delta(ix + 1, iy) * tx * (1 - ty)
+        + delta(ix, iy + 1) * (1 - tx) * ty
+        + delta(ix + 1, iy + 1) * tx * ty;
+      return d === 0 ? raw : raw + d;
     },
   };
 }
@@ -274,11 +296,19 @@ export function buildTerrainField(
   const qa = flagSuspectCells(heights, nx, ny, spacing);
   let final = heights;
   const info: TerrainBuildInfo = {
-    pitchM: spacing, count: qa.count, maxDevM: qa.maxDevM, correction: null, cells: [],
+    pitchM: spacing, count: qa.count, maxDevM: qa.maxDevM,
+    correction: null, cells: [], deltas: new Map(),
   };
   if (qa.count > 0) {
     const fixed = correctSuspectCells(heights, nx, ny, qa.indices);
-    for (const i of qa.indices.slice(0, MAX_REPORTED_SUSPECT_CELLS)) {
+    // Report the WORST cells, not the first ones the row-major scan reached:
+    // past the cap that was a band along the south edge of the raster, which
+    // says nothing about where the DEM is actually broken.
+    const worst = qa.indices
+      .map((i) => ({ i, dev: Math.abs(heights[i] - fixed.heights[i]) }))
+      .sort((a, b) => b.dev - a.dev)
+      .slice(0, MAX_REPORTED_SUSPECT_CELLS);
+    for (const { i } of worst) {
       const ix = i % nx;
       const iy = (i - ix) / nx;
       info.cells.push({
@@ -288,8 +318,28 @@ export function buildTerrainField(
       });
     }
     if (opts.qaCorrect) {
+      // Correcting can expose what it was hiding: an uneven 2×2 smear flags only
+      // its worst cell, and replacing that leaves the rest steep enough to flag
+      // on the next look, so a single pass leaves residuals behind. Iterate to a
+      // fixed point, hard-bounded. Only the CORRECTION iterates — `count`,
+      // `maxDevM` and `cells` still describe the DEM as it was delivered.
+      const touched = new Set<number>(qa.indices);
+      let maxChangeM = fixed.maxChangeM;
       final = fixed.heights;
-      info.correction = { changed: fixed.changed, maxChangeM: fixed.maxChangeM };
+      for (let pass = 1; pass < QA_CORRECTION_PASSES; pass++) {
+        const again = flagSuspectCells(final, nx, ny, spacing);
+        if (again.count === 0) break;
+        const next = correctSuspectCells(final, nx, ny, again.indices);
+        if (next.changed === 0) break;
+        for (const i of again.indices) touched.add(i);
+        if (next.maxChangeM > maxChangeM) maxChangeM = next.maxChangeM;
+        final = next.heights;
+      }
+      for (const i of touched) {
+        const d = final[i] - heights[i];
+        if (d !== 0) info.deltas.set(i, d);
+      }
+      info.correction = { changed: info.deltas.size, maxChangeM };
     }
   }
 

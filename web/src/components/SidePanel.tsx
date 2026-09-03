@@ -184,6 +184,9 @@ interface Props {
   /// How many the last solve flagged, so the toggle can say whether there is
   /// anything to see.
   suspectCellCount?: number;
+  /// How many of those are actually listed and drawn — `terrainField` keeps only
+  /// the worst few hundred. Below `suspectCellCount`, the hint says so.
+  suspectCellsShown?: number;
   contourMode: ContourMode;
   setContourMode(m: ContourMode): void;
   contourOpacity: number;
@@ -1867,6 +1870,9 @@ function LayersTab(props: Props) {
                 ? 'Cells the last solve read as DEM blunders — a spike or pit standing '
                   + 'clear of everything around it. Click one for its height and what '
                   + 'correcting it would put there.'
+                  + (props.suspectCellsShown != null && props.suspectCellsShown < props.suspectCellCount
+                    ? ` Showing the ${props.suspectCellsShown} largest of ${props.suspectCellCount}.`
+                    : '')
                 : 'The last solve found none. When it does, they appear here and on the map.'}
             </div>
           </>
@@ -2460,7 +2466,10 @@ export function SettingsTab(props: SettingsTabProps) {
   }
 
   const propagation = settings.propagation ?? { maxContributionDistanceM: 20000, treeAcceptanceTheta: 0.25 };
-  const topography = settings.topography ?? {};
+  // `despikeStrength` is off the type but can still be in a stored document;
+  // splitting it off here is what keeps a toggle from writing it back.
+  const { despikeStrength: _despikeStrength, ...topography } =
+    (settings.topography ?? {}) as NonNullable<typeof settings.topography> & { despikeStrength?: string };
   const tonality = tonalitySettingsFor(project);
 
   return (
@@ -3082,10 +3091,13 @@ export function SettingsTab(props: SettingsTabProps) {
           <br />
           <b>Correct suspect terrain cells:</b> a cell (or 2×2 patch) that stands
           above or below everything around it by more than {suspectSlopeDeg()}°
-          and belongs to nothing longer is a DEM blunder, not a bund or a cliff.
-          Flagged cells are always listed in the solve diagnostics and drawn on
-          the map (Layers → Suspect terrain cells); tick this to replace them
-          with the median of their neighbours. Nothing else is ever altered.
+          and belongs to nothing longer reads as a DEM blunder. A continuous
+          ridge, bund or cliff line is not flagged, however narrow — but a crest
+          whose own cells step by more than a cell width at a time can be, so
+          check the flags before correcting. They are always listed in the solve
+          diagnostics and drawn on the map (Layers → Suspect terrain cells); tick
+          this to replace them with the median of their neighbours. Nothing else
+          is ever altered.
         </div>
       </section>
       )}

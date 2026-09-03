@@ -13,6 +13,9 @@ import assert from 'node:assert/strict';
 
 import { parseDemGeoTiffBuffer } from '../demUpload';
 import { QLD_LIDAR, QLD_LIDAR_SOURCE, qldExportRequest } from './qldLidar';
+import {
+  RAMP_H, RAMP_NORTH, RAMP_PIXEL_DEG, RAMP_W, RAMP_WEST, rampTiff,
+} from '../__fixtures__/geotiff';
 import type { DemBounds } from './index';
 
 const M_PER_DEG = (Math.PI / 180) * 6371008.8;
@@ -207,116 +210,37 @@ test('QLD: the export request asks for the float32 TIFF, not a picture', () => {
 
 // --------------------------------------------------------------- parsing
 
-/// A minimal single-strip float32 GeoTIFF: tie point at the raster's NW corner,
-/// `pixelDeg` square cells, EPSG:4326 geokeys.
-///
-/// Built by hand because geotiff.js's own `writeArrayBuffer` writes one BYTE
-/// per sample whatever it is handed (`encodeImage` sizes the strip at
-/// width·height·samplesPerPixel), so it cannot produce the float32 raster the
-/// QLD service returns.
-function floatGeoTiff(
-  values: Float32Array,
-  width: number,
-  height: number,
-  west: number,
-  north: number,
-  pixelDeg: number,
-): ArrayBuffer {
-  const align = (v: number, n: number) => Math.ceil(v / n) * n;
-  const SIZE: Record<number, number> = { 3: 2, 4: 4, 12: 8 };  // SHORT, LONG, DOUBLE
-  const STRIP_OFFSETS = 273;
-  const entries: Array<[tag: number, type: number, values: number[]]> = [
-    [256, 4, [width]],                        // ImageWidth
-    [257, 4, [height]],                       // ImageLength
-    [258, 3, [32]],                           // BitsPerSample
-    [259, 3, [1]],                            // Compression: none
-    [262, 3, [1]],                            // PhotometricInterpretation
-    [STRIP_OFFSETS, 4, [0]],                  // patched below
-    [277, 3, [1]],                            // SamplesPerPixel
-    [278, 4, [height]],                       // RowsPerStrip: one strip
-    [279, 4, [width * height * 4]],           // StripByteCounts
-    [339, 3, [3]],                            // SampleFormat: IEEE float
-    [33550, 12, [pixelDeg, pixelDeg, 0]],     // ModelPixelScale
-    [33922, 12, [0, 0, 0, west, north, 0]],   // ModelTiepoint
-    // GeoKeyDirectory: v1.1.0, 3 keys — geographic model, PixelIsArea, WGS 84.
-    [34735, 3, [1, 1, 0, 3, 1024, 0, 1, 2, 1025, 0, 1, 1, 2048, 0, 1, 4326]],
-  ];
-
-  // Values longer than 4 bytes live after the IFD and are referenced by offset.
-  let cursor = align(8 + 2 + entries.length * 12 + 4, 8);
-  const offsets = new Map<number, number>();
-  for (const [tag, type, vals] of entries) {
-    if (SIZE[type] * vals.length <= 4) continue;
-    cursor = align(cursor, SIZE[type]);
-    offsets.set(tag, cursor);
-    cursor += SIZE[type] * vals.length;
-  }
-  const dataOffset = align(cursor, 4);
-
-  const dv = new DataView(new ArrayBuffer(dataOffset + width * height * 4));
-  dv.setUint8(0, 0x49); dv.setUint8(1, 0x49);          // "II" — little endian
-  dv.setUint16(2, 42, true);
-  dv.setUint32(4, 8, true);                            // first IFD
-  dv.setUint16(8, entries.length, true);
-  entries.forEach(([tag, type, vals], i) => {
-    const o = 10 + i * 12;
-    const list = tag === STRIP_OFFSETS ? [dataOffset] : vals;
-    dv.setUint16(o, tag, true);
-    dv.setUint16(o + 2, type, true);
-    dv.setUint32(o + 4, list.length, true);
-    const inline = SIZE[type] * list.length <= 4;
-    const at = inline ? o + 8 : offsets.get(tag)!;
-    if (!inline) dv.setUint32(o + 8, at, true);
-    list.forEach((v, k) => {
-      const p = at + k * SIZE[type];
-      if (type === 3) dv.setUint16(p, v, true);
-      else if (type === 4) dv.setUint32(p, v, true);
-      else dv.setFloat64(p, v, true);
-    });
-  });
-  dv.setUint32(10 + entries.length * 12, 0, true);     // no second IFD
-  for (let i = 0; i < values.length; i++) dv.setFloat32(dataOffset + i * 4, values[i], true);
-  return dv.buffer;
-}
-
-const RAMP_W = 5;
-const RAMP_H = 4;
-const RAMP_WEST = 153.0;
-const RAMP_NORTH = -27.40;
-const RAMP_PIXEL_DEG = 0.001;
-
-/// A west→east ramp of 1 m per column, with the NW cell holding the service's
-/// no-data sentinel.
-function rampTiff(): ArrayBuffer {
-  const values = new Float32Array(RAMP_W * RAMP_H);
-  for (let j = 0; j < RAMP_H; j++) for (let i = 0; i < RAMP_W; i++) values[j * RAMP_W + i] = i;
-  values[0] = -9999;
-  return floatGeoTiff(values, RAMP_W, RAMP_H, RAMP_WEST, RAMP_NORTH, RAMP_PIXEL_DEG);
-}
-
 test('QLD: the raster is georeferenced from the file, not from the bbox asked for', async () => {
   const dem = await parseDemGeoTiffBuffer(rampTiff(), { noDataValue: -9999 });
   // The parser reads the tie point and pixel scale, so the footprint is the
-  // file's own — 5 × 4 cells of 0.001° from (153.0, −27.40).
-  assert.deepEqual(dem.bounds.sw, [RAMP_NORTH - RAMP_H * RAMP_PIXEL_DEG, RAMP_WEST]);
-  assert.deepEqual(dem.bounds.ne, [RAMP_NORTH, RAMP_WEST + RAMP_W * RAMP_PIXEL_DEG]);
+  // file's own — 5 × 4 cells of 0.001° from (153.0, −27.40) — bounded by the
+  // outer cells' CENTRES, half a pixel inside the file's bbox.
+  const near = (a: [number, number], b: [number, number], what: string) => {
+    assert.ok(Math.abs(a[0] - b[0]) < 1e-12 && Math.abs(a[1] - b[1]) < 1e-12,
+      `${what}: ${a} vs ${b}`);
+  };
+  near(dem.bounds.sw,
+    [RAMP_NORTH - (RAMP_H - 0.5) * RAMP_PIXEL_DEG, RAMP_WEST + 0.5 * RAMP_PIXEL_DEG], 'sw');
+  near(dem.bounds.ne,
+    [RAMP_NORTH - 0.5 * RAMP_PIXEL_DEG, RAMP_WEST + (RAMP_W - 0.5) * RAMP_PIXEL_DEG], 'ne');
   assert.equal(dem.epsg, 4326);
 
-  // Sampling maps the bbox onto (width − 1) intervals, so a column step is
-  // span/(w − 1) = 0.00125°, and the ramp reads back as its column index.
-  const step = (RAMP_W * RAMP_PIXEL_DEG) / (RAMP_W - 1);
+  // PixelIsArea: the bbox names the outer edges, so cell centres sit half a
+  // pixel inside it and a column step is the pixel scale itself. The ramp reads
+  // back as its column index at those centres.
+  const centre = RAMP_WEST + RAMP_PIXEL_DEG / 2;
   const lat = dem.bounds.sw[0];                       // bottom row: no sentinel
-  assert.ok(Math.abs(dem.elevation(lat, RAMP_WEST) - 0) < 1e-6);
-  assert.ok(Math.abs(dem.elevation(lat, RAMP_WEST + step) - 1) < 1e-6);
-  assert.ok(Math.abs(dem.elevation(lat, RAMP_WEST + step * 2.5) - 2.5) < 1e-6);
+  assert.ok(Math.abs(dem.elevation(lat, centre) - 0) < 1e-6);
+  assert.ok(Math.abs(dem.elevation(lat, centre + RAMP_PIXEL_DEG) - 1) < 1e-6);
+  assert.ok(Math.abs(dem.elevation(lat, centre + RAMP_PIXEL_DEG * 2.5) - 2.5) < 1e-6);
   assert.equal(dem.elevation(lat, RAMP_WEST + 1), 0, 'outside the raster is 0, as everywhere');
 
   // −9999 is a hole, not a 10 km pit: it must reach `terrainField` as NaN.
-  assert.ok(Number.isNaN(dem.elevation(dem.bounds.ne[0], RAMP_WEST)));
+  assert.ok(Number.isNaN(dem.elevation(dem.bounds.ne[0], dem.bounds.sw[1])), 'the NW cell');
 
   // Pitch is the finer axis in metres — E-W here, cells being square in degrees.
-  const ns = ((RAMP_H * RAMP_PIXEL_DEG) / (RAMP_H - 1)) * M_PER_DEG;
-  const ew = step * M_PER_DEG * Math.cos((RAMP_NORTH * Math.PI) / 180);
+  const ns = RAMP_PIXEL_DEG * M_PER_DEG;
+  const ew = ns * Math.cos((RAMP_NORTH * Math.PI) / 180);
   assert.ok(Math.abs((dem.resolutionM ?? 0) - Math.min(ew, ns)) < 0.05, `${dem.resolutionM}`);
 });
 
@@ -371,10 +295,41 @@ test('QLD: a loaded raster is cached, and a service error is not', async () => {
     url.includes('/identify')
       ? identifyBody(LIDAR)
       : { ok: true, headers: { get: () => 'image/tiff' }, arrayBuffer: async () => errorBody }
-  ), async () => {
+  ), async (log) => {
     await QLD_LIDAR.covers(failing);
+    const before = log.urls.length;
     await assert.rejects(() => QLD_LIDAR.load(failing), /Unable to complete operation/);
+    assert.equal(
+      log.urls.filter((u) => u.includes('/exportImage')).length, 3,
+      'three attempts before the cascade is allowed to fall through',
+    );
+    assert.ok(log.urls.length > before);
     // A rejection must not stay cached, or every retry fails instantly from it.
     await assert.rejects(() => QLD_LIDAR.load(failing), /Unable to complete operation/);
   });
+});
+
+test('QLD: a transient export failure is retried, not dropped to DEM-S', async () => {
+  // The service answers a third to a half of `exportImage` calls with HTTP 200,
+  // `image/tiff`, and "General function failure" in the body. Falling straight
+  // through on that put the SAME project on 1 m LiDAR one session and 30 m SRTM
+  // the next, with nothing on screen to say which.
+  const bounds = box(-27.45, 153.05);
+  const busy = new TextEncoder().encode('General function failure.').buffer;
+  let exports = 0;
+  const dem = await withFetch((url) => {
+    if (url.includes('/identify')) return identifyBody(LIDAR);
+    exports++;
+    if (exports === 1) throw new Error('ECONNRESET');
+    return {
+      ok: true,
+      headers: { get: () => 'image/tiff' },
+      arrayBuffer: async () => (exports === 2 ? busy : rampTiff()),
+    };
+  }, async () => {
+    assert.equal(await QLD_LIDAR.covers(bounds), true);
+    return QLD_LIDAR.load(bounds);
+  });
+  assert.equal(exports, 3, 'a dropped connection and a busy answer both retried');
+  assert.equal(dem.source?.id, 'qld-lidar', 'the third attempt is the raster the project uses');
 });

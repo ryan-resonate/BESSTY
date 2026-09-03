@@ -153,7 +153,7 @@ export function FactorialStudy({ project, dem, onClose }: Props) {
         // The 'study' channel has its own worker, queued rather than
         // superseding: editing the project while this runs fires the editor's
         // own live solves, and those must not cancel the sweep.
-        const rs = await evaluateProject(p, snap.dem, undefined, 'study');
+        const { results: rs } = await evaluateProject(p, snap.dem, undefined, 'study');
         const byReceiver = new Map<string, number>();
         for (const r of rs) if (selectedRxIds.has(r.receiverId)) byReceiver.set(r.receiverId, assessedLevel(r) ?? r.totalDbA);
         out.push({ combo: combos[i], byReceiver });

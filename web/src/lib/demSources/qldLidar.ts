@@ -222,6 +222,45 @@ function looksLikeTiff(buf: ArrayBuffer): boolean {
     || (b[0] === 0x4d && b[1] === 0x4d && b[2] === 0x00 && b[3] === 0x2a);
 }
 
+/// Backoff before the 2nd and 3rd export attempt (ms). Three attempts in all.
+const EXPORT_RETRY_DELAYS_MS = [500, 1500];
+
+/// Fetch one `exportImage`, retrying a body that is not a TIFF.
+///
+/// The service answers a third to a half of requests with HTTP 200,
+/// `content-type: image/tiff` and a "General function failure" message in the
+/// body — a transient busy-service answer, not a statement about the site. Left
+/// unretried it drops the project through to DEM-S, so the SAME project stands
+/// on 1 m LiDAR in one session and 30 m SRTM in the next. Only after three
+/// attempts does it fall through, and it says why.
+async function fetchExport(url: string): Promise<ArrayBuffer> {
+  let lastReason = '';
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const buf = await resp.arrayBuffer();
+      // A rejected export comes back as HTTP 200 with `content-type: image/tiff`
+      // and a JSON error body, so neither the status nor the content type says
+      // anything. Sniff the file itself, and quote the service's own message —
+      // handing the bytes to the TIFF parser instead would report "Invalid byte
+      // order value" and lose it.
+      if (looksLikeTiff(buf)) return buf;
+      lastReason = new TextDecoder().decode(buf.slice(0, 300));
+    } catch (err) {
+      lastReason = String((err as Error)?.message ?? err);
+    }
+    if (attempt >= EXPORT_RETRY_DELAYS_MS.length) {
+      throw new Error(`QLD elevation export returned an error: ${lastReason}`);
+    }
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[BESSTY] QLD elevation export attempt ${attempt + 1} failed (${lastReason}); retrying`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, EXPORT_RETRY_DELAYS_MS[attempt]));
+  }
+}
+
 /// Loaded rasters, LRU-bounded exactly as DEM-S is: an export is up to 16 MB of
 /// float32, and dragging the calc area across the state must not keep every
 /// window it passed through for the life of the tab.
@@ -247,21 +286,7 @@ export const QLD_LIDAR: DemSource = {
       const { covered, nativePitchM } = await coverageFor(bounds);
       if (!covered) throw new Error('QLD LiDAR does not cover this area.');
       const req = qldExportRequest(bounds, nativePitchM);
-      const resp = await fetch(req.url);
-      if (!resp.ok) throw new Error(`QLD elevation export failed: ${resp.status}`);
-      const buf = await resp.arrayBuffer();
-      // A rejected export comes back as HTTP 200 with `content-type: image/tiff`
-      // and a JSON error body, so neither the status nor the content type says
-      // anything. Sniff the file itself, and quote the service's own message —
-      // "General function failure" is what a busy service says, and the cascade
-      // silently dropping to DEM-S is otherwise indistinguishable from the site
-      // simply not having LiDAR.
-      if (!looksLikeTiff(buf)) {
-        throw new Error(
-          'QLD elevation export returned an error: '
-          + new TextDecoder().decode(buf.slice(0, 300)),
-        );
-      }
+      const buf = await fetchExport(req.url);
       const raster = await parseDemGeoTiffBuffer(buf, {
         noDataValue: NO_DATA_VALUE,
         sourceInfo: QLD_LIDAR_SOURCE,

@@ -106,9 +106,9 @@ interface Props {
   /// adaptive clustering) with the effective source count the solver used for
   /// each, so over-clustering is visible rather than inferred.
   showBhDebug?: boolean;
-  /// Terrain QA overlay — the DEM cells the last solve flagged as blunders
-  /// (`terrainField.lastTerrainBuild`). A flagged cell is a claim about the
-  /// user's data, so it is shown where the data is, not only in a note.
+  /// Terrain QA overlay — the DEM cells the last receiver solve flagged as
+  /// blunders (it returns them with its results). A flagged cell is a claim
+  /// about the user's data, so it is shown where the data is, not only in a note.
   suspectCells?: Array<{ latLng: [number, number]; z: number; median: number }>;
   showSuspectCells?: boolean;
   /// Grid spacing the tiles are derived from — the clustering partition
@@ -2963,7 +2963,7 @@ export function MapView({
   // honest place to make it is on the map: the note says "3 suspect cells", the
   // overlay says WHERE, and the popup says by how much, so the user can decide
   // whether it is a genuine spike or a real feature the rule caught. Kept in its
-  // own layer group and capped by `terrainField` at 500 cells.
+  // own layer group; `terrainField` passes at most 500 cells, the worst first.
   useEffect(() => {
     const group = suspectGroupRef.current;
     if (!group) return;

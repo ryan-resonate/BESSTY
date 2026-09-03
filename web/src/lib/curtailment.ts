@@ -318,7 +318,7 @@ export async function buildTransferMatrix(
   period: Period,
 ): Promise<TransferMatrix> {
   const { pinned, lwBySource } = projectForTransfer(project, period);
-  const results = await evaluateProject(pinned, dem, undefined, 'export');
+  const { results } = await evaluateProject(pinned, dem, undefined, 'export');
   return transferFromResults(lwBySource, results);
 }
 

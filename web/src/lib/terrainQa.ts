@@ -77,7 +77,10 @@ const DY8 = [-1, -1, -1, 0, 0, 1, 1, 1];
  * source cell becomes after bilinear resampling). Why clusters only link across
  * sub-threshold steps: a spike that touches a cliff crest must not be absorbed
  * into the crest's long cluster and lost, while the undulating cells of a real
- * crest (a metre or two apart) stay one long cluster and are never flagged.
+ * crest (a metre or two apart) stay one long cluster. So a CONTINUOUS ridge or
+ * cliff line is not flagged, however narrow — but a crest whose own cells
+ * alternate by more than one cell width per step breaks into short clusters and
+ * can be, which is why correction is opt-in and every flag is reported.
  *
  * Border cells are never flagged (the raster margin makes them irrelevant and
  * their ring is truncated). Non-finite cells are never flagged and any cell

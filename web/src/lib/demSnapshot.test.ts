@@ -11,6 +11,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { captureDemRegion, regionRaster, type DemRaster, type DemRegion } from './dem';
+import { parseDemGeoTiffBuffer } from './demUpload';
+import { RAMP_H, RAMP_NORTH, RAMP_PIXEL_DEG, RAMP_W, RAMP_WEST, rampTiff } from './__fixtures__/geotiff';
 import type { GridJob } from './gridCore';
 import { sourcePaddedBounds } from './solver';
 import { TERRAIN_MAX_CELLS_PER_AXIS } from './terrainField';
@@ -64,6 +66,36 @@ test('the snapshot fast path reproduces the generic sampling loop', () => {
   }
   assert.ok(holes > 0, 'the hole reached the output');
   assert.ok(outside > 20, 'part of the window really was outside the source');
+});
+
+test('an uploaded raster’s own grid frame matches its elevation lookup', async () => {
+  // `DemRegion` corners are the extreme SAMPLE POINTS, but a GeoTIFF's bbox
+  // names the outer pixel EDGES. Handing the bbox straight to `grid()` only
+  // agreed with `elevation` while the sampler wrongly treated the corners as
+  // centres, so the two paths would silently drift half a pixel apart.
+  const dem = await parseDemGeoTiffBuffer(rampTiff(), { noDataValue: -9999 });
+  assert.ok(dem.grid, 'a geographic upload offers its grid');
+
+  // A window offset from, and larger than, the file, so edges and the outside-
+  // coverage zero are exercised as well as the interior.
+  const sw: [number, number] = [RAMP_NORTH - (RAMP_H + 1) * RAMP_PIXEL_DEG, RAMP_WEST - RAMP_PIXEL_DEG];
+  const ne: [number, number] = [RAMP_NORTH + RAMP_PIXEL_DEG, RAMP_WEST + (RAMP_W + 1) * RAMP_PIXEL_DEG];
+  // 17 × 12 deliberately: no sample lands exactly on the coverage boundary,
+  // where the two differently-scaled index formulas could disagree by an ulp
+  // and one path would drop to 0 while the other interpolated.
+  const fast = captureDemRegion(dem, sw, ne, 17, 12);
+  const slow = captureDemRegion({ ...dem, grid: undefined }, sw, ne, 17, 12);
+  let holes = 0;
+  for (let i = 0; i < slow.data.length; i++) {
+    if (Number.isNaN(slow.data[i])) {
+      assert.ok(Number.isNaN(fast.data[i]), `hole at ${i} filled by the fast path`);
+      holes++;
+      continue;
+    }
+    assert.ok(Math.abs(fast.data[i] - slow.data[i]) < 1e-9,
+      `sample ${i}: ${fast.data[i]} vs ${slow.data[i]}`);
+  }
+  assert.ok(holes > 0, 'the no-data sentinel reached the output');
 });
 
 // -------------------------------------------------------- snapshot sizing

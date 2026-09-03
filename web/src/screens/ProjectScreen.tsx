@@ -21,7 +21,7 @@ import { listEntriesByKind, lookupEntry } from '../lib/catalog';
 import { gridDomain, makeBandsForRange, type Palette } from '../lib/colormap';
 import { terrainReportLine, type DemRaster } from '../lib/dem';
 import { loadAutoDem, type DemBounds } from '../lib/demSources';
-import { lastTerrainBuild, type SuspectCell } from '../lib/terrainField';
+import type { SuspectCell, TerrainBuildInfo } from '../lib/terrainField';
 import {
   evaluateGridViaWorker,
   cancelGridRun,
@@ -528,10 +528,13 @@ export function ProjectScreen() {
   /// Item I — Barnes-Hut clustering overlay. Session-only, like the grid-cell
   /// debug layer: a diagnostic, not a view preference worth persisting.
   const [showBhDebug, setShowBhDebug] = useState(false);
-  /// Terrain QA. `suspectCells` is refreshed from the receiver solve's terrain
-  /// build (the one that runs on this thread), and the overlay defaults ON so a
+  /// Terrain QA, as the RECEIVER solve reported it — the record comes back with
+  /// the results rather than being read out of `lastTerrainBuild` afterwards,
+  /// because the contour grid usually builds last and over a different extent,
+  /// which had the overlay and the report tail describing the grid's raster
+  /// while the diagnostics described this one. The overlay defaults ON so a
   /// flagged blunder is seen rather than waiting to be looked for.
-  const [suspectCells, setSuspectCells] = useState<SuspectCell[]>([]);
+  const [terrainBuild, setTerrainBuild] = useState<TerrainBuildInfo | null>(null);
   const [showSuspectCells, setShowSuspectCells] = useState(true);
 
   // Grid spacing — auto-picked from the calc area on first appearance,
@@ -1224,11 +1227,11 @@ export function ProjectScreen() {
       const gen = ++pointGenRef.current;
       const diag = new Diagnostics();
       evaluateProject(project, dem, diag)
-        .then((results) => {
+        .then(({ results, terrain }) => {
           if (gen !== pointGenRef.current) return;       // superseded
           setResults(results);
           setDiagnostics(diag.list());                   // I20
-          setSuspectCells(lastTerrainBuild(dem)?.cells ?? []);
+          setTerrainBuild(terrain);
           setLastSolveMs(performance.now() - start);
         })
         .catch((e) => {
@@ -1733,10 +1736,9 @@ export function ProjectScreen() {
   }
 
   const receiverDbList = (results ?? []).map((r) => r.totalDbA);
-  /// The pitch terrain was actually screened at, plus what the QA pass found —
-  /// both belong in the report's provenance line. Keyed by `dem`, so a build
-  /// made from the DEM we have just replaced is not reported as this one's.
-  const terrainBuild = lastTerrainBuild(dem);
+  /// The flagged cells the overlay draws: the worst ones, capped by
+  /// `terrainField`. `terrainBuild.count` is the true total.
+  const suspectCells: SuspectCell[] = terrainBuild?.cells ?? [];
 
   return (
     <div className="workspace">
@@ -1808,7 +1810,8 @@ export function ProjectScreen() {
         showGridDebug={showGridDebug} setShowGridDebug={setShowGridDebug}
         showBhDebug={showBhDebug} setShowBhDebug={setShowBhDebug}
         showSuspectCells={showSuspectCells} setShowSuspectCells={setShowSuspectCells}
-        suspectCellCount={suspectCells.length}
+        suspectCellCount={terrainBuild?.count ?? 0}
+        suspectCellsShown={suspectCells.length}
         onOpenSettings={() => setShowSettings(true)}
         onOpenPdfExport={openPdfExport}
         onOpenStudy={() => setShowStudy(true)}

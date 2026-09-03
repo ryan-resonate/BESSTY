@@ -119,7 +119,7 @@ export function liveSweepDeps(
 ): SweepDeps {
   return {
     solveReceivers: (project, dem) =>
-      evaluateProject(project, dem, new Diagnostics(), channel),
+      evaluateProject(project, dem, new Diagnostics(), channel).then((s) => s.results),
     solveGrid: (project, dem, onTile) =>
       evaluateGridViaWorker(project, dem, spacingM, receiverHeightM, onTile),
     windSpeedsFor,

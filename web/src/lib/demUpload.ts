@@ -3,9 +3,9 @@
 // project.
 //
 // CRS handling:
-//   - If the GeoTIFF is in EPSG:4326 (WGS84) or EPSG:4269 (NAD83 — close
-//     enough for our purposes), we walk it directly — `(lat,lng)` indexes
-//     straight into the raster.
+//   - If the GeoTIFF is in a GEOGRAPHIC CRS — WGS84, GDA94, GDA2020, NAD83,
+//     all close enough to WGS84 for our purposes — we walk it directly:
+//     `(lat,lng)` indexes straight into the raster.
 //   - If it's in any other registered EPSG (UTM, MGA, NZTM, …), we
 //     project the bounding box back to WGS84 to compute the raster's
 //     visible footprint, and transform every elevation query from
@@ -84,19 +84,38 @@ export async function parseDemGeoTiffBuffer(
   const xRange = xmax - xmin;
   const yRange = ymax - ymin;
 
+  // Where a cell's CENTRE sits inside the bbox. GeoTIFF's default raster type is
+  // PixelIsArea: the tie point (and so the bbox) names the outer pixel EDGES,
+  // and centres sit half a pixel inside them. Treating the corners as centres —
+  // which this did — offset every sample by half a cell and stretched the
+  // raster by 1/(width − 1) on top. `GTRasterTypeGeoKey` = 2 (PixelIsPoint) is
+  // the exception: there the tie point IS the first centre.
+  const halfPixel = pixelIsPoint(image) ? 0 : 0.5;
+  const pitchX = xRange / width;
+  const pitchY = yRange / height;
+  // Cell centres bound the SAMPLED area — the outer half-pixel has no bilinear
+  // stencil — so these, not the bbox corners, are the corners of everything the
+  // raster can answer for. (`demSources/gaDemS.ts` frames its window the same
+  // way, and `DemRegion` is defined in the same terms.)
+  const sxMin = xmin + halfPixel * pitchX;
+  const syMax = ymax - halfPixel * pitchY;
+  const sxMax = sxMin + (width - 1) * pitchX;
+  const syMin = syMax - (height - 1) * pitchY;
+
   // For the DemRaster.bounds field we need WGS84 corners (the rest of the
   // app uses lat/lng everywhere). Project the four corners and take the
   // axis-aligned hull. (For UTM/MGA at our typical site sizes the
   // distortion is tiny — sub-arcsecond.)
+  const geographic = isGeographicEpsg(epsg);
   let bounds: { sw: [number, number]; ne: [number, number] };
-  if (epsg === 4326 || epsg === 4269) {
-    bounds = { sw: [ymin, xmin], ne: [ymax, xmax] };
+  if (geographic) {
+    bounds = { sw: [syMin, sxMin], ne: [syMax, sxMax] };
   } else {
     const corners: Array<[number, number]> = [
-      toWgs84(epsg, xmin, ymin),
-      toWgs84(epsg, xmax, ymin),
-      toWgs84(epsg, xmin, ymax),
-      toWgs84(epsg, xmax, ymax),
+      toWgs84(epsg, sxMin, syMin),
+      toWgs84(epsg, sxMax, syMin),
+      toWgs84(epsg, sxMin, syMax),
+      toWgs84(epsg, sxMax, syMax),
     ];
     let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
     for (const [la, ln] of corners) {
@@ -119,13 +138,13 @@ export async function parseDemGeoTiffBuffer(
   }
 
   // Inner sampler operates in the GeoTIFF's native (x, y) coords — bilinear
-  // interpolation, returning 0 outside the raster footprint.
+  // interpolation, returning 0 outside the sampled footprint.
   function sampleNative(x: number, y: number): number {
-    if (x < xmin || x > xmax || y < ymin || y > ymax) return 0;
     // GeoTIFF row 0 is the *northernmost* row (top-left origin). Convert
     // (x, y) → fractional (col, row).
-    const fx = ((x - xmin) / xRange) * (width - 1);
-    const fy = ((ymax - y) / yRange) * (height - 1);
+    const fx = (x - sxMin) / pitchX;
+    const fy = (syMax - y) / pitchY;
+    if (!(fx >= 0 && fx <= width - 1 && fy >= 0 && fy <= height - 1)) return 0;
     const x0 = Math.floor(fx);
     const y0 = Math.floor(fy);
     const x1 = Math.min(x0 + 1, width - 1);
@@ -144,7 +163,7 @@ export async function parseDemGeoTiffBuffer(
     );
   }
 
-  const elevation = (epsg === 4326 || epsg === 4269)
+  const elevation = geographic
     ? (lat: number, lng: number) => sampleNative(lng, lat)
     : (lat: number, lng: number) => {
         const [x, y] = fromWgs84(epsg, lat, lng);
@@ -171,10 +190,25 @@ export async function parseDemGeoTiffBuffer(
     // `captureDemRegion` can copy out of `data` instead of paying a closure
     // call per sample. A projected one is not (a UTM grid curves in lat/lng)
     // and has to keep going through `elevation`.
-    grid: (epsg === 4326 || epsg === 4269)
+    //
+    // `DemRegion` corners are the extreme SAMPLE POINTS, which is exactly what
+    // `bounds` holds — so the two paths read the same cell for the same point.
+    grid: geographic
       ? () => ({ data, sw: bounds.sw, ne: bounds.ne, nx: width, ny: height })
       : undefined,
   };
+}
+
+/// Is this CRS geographic (lat/lng degrees) rather than projected (metres)?
+///
+/// Asks the registry rather than testing a hard-coded pair of codes: GDA94
+/// (4283) and GDA2020 (7844) are geographic too, and calling them projected
+/// read a 5 m ELVIS DEM's degrees as metres — 5e-5 m per cell, which forced the
+/// heightfield cap and reported "0.0 m native".
+function isGeographicEpsg(epsg: number): boolean {
+  const preset = presetForEpsg(epsg);
+  if (!preset) return false;
+  return preset.group === 'Geographic' || /\+proj=longlat\b/.test(preset.defn);
 }
 
 function uploadSourceInfo(filename: string, nativePitchM: number): DemSourceInfo {
@@ -209,11 +243,11 @@ export function demPixelPitchM(
   bounds: { sw: [number, number]; ne: [number, number] },
   linearUnitM = 1,
 ): number {
-  // Sampling maps the bbox onto (width − 1) intervals, so that — not `width` —
-  // is the step the bilinear lookup actually resolves.
-  const dx = Math.abs(xRange) / Math.max(1, width - 1);
-  const dy = Math.abs(yRange) / Math.max(1, height - 1);
-  if (epsg !== 4326 && epsg !== 4269) return Math.min(dx, dy) * linearUnitM;
+  // The bbox spans the outer pixel edges, so `width` whole cells fit in it —
+  // not the (width − 1) intervals between their centres.
+  const dx = Math.abs(xRange) / Math.max(1, width);
+  const dy = Math.abs(yRange) / Math.max(1, height);
+  if (!isGeographicEpsg(epsg)) return Math.min(dx, dy) * linearUnitM;
   const mPerDeg = (Math.PI / 180) * 6371008.8;
   const midLat = ((bounds.sw[0] + bounds.ne[0]) / 2) * (Math.PI / 180);
   return Math.min(dx * mPerDeg * Math.cos(midLat), dy * mPerDeg);
@@ -229,6 +263,14 @@ function linearUnitM(image: GeoTIFFImage): number {
     case 9003: return 1200 / 3937;         // US survey foot
     default: return 1;
   }
+}
+
+/// `GTRasterTypeGeoKey` = 2 is RasterPixelIsPoint. 1 (RasterPixelIsArea) and an
+/// absent key both mean the tie point names a pixel's outer corner, which is
+/// the GeoTIFF default and by far the common case.
+function pixelIsPoint(image: GeoTIFFImage): boolean {
+  const keys = image.getGeoKeys?.() as Record<string, number | undefined> | undefined;
+  return keys?.GTRasterTypeGeoKey === 2;
 }
 
 function inferEpsg(image: GeoTIFFImage): number | null {

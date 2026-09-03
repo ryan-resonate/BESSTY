@@ -55,6 +55,7 @@ import {
 } from './sceneBuilder';
 import {
   buildTerrainField, correctedDemRaster, lastTerrainBuild, TERRAIN_MAX_CELLS_PER_AXIS,
+  type TerrainBuildInfo,
 } from './terrainField';
 import { Diagnostics } from './diagnostics';
 import { approxDistanceM } from './geo';
@@ -141,6 +142,17 @@ export interface ReceiverResult {
   /// Equal to `totalDbA` whenever no penalty applies, which is the default.
   assessedDbA?: number;
   perSource: Array<{ sourceId: string; perBandLp: Float64Array }>;
+}
+
+/// What one `evaluateProject` call produced.
+export interface ProjectSolve {
+  results: ReceiverResult[];
+  /// The terrain build THIS solve stood on — pitch, flagged cells, correction.
+  /// Returned rather than left for the caller to read back from
+  /// `lastTerrainBuild`, because the contour grid usually builds last and over a
+  /// different extent, so the UI would end up describing the grid's raster.
+  /// Null when the project had no usable terrain.
+  terrain: TerrainBuildInfo | null;
 }
 
 // ============== P1: point solve off the main thread ==============
@@ -371,16 +383,16 @@ export function resolveSources(project: Project): ResolvedSource[] {
 
 /// The raster endpoint ground must be read from, given the terrain the engine
 /// will screen against. Normally the DEM itself; with `topography.qaCorrect` on
-/// it is the corrected surface, so a receiver over a corrected cell stands on
-/// the terrain the engine sees instead of floating above it. Reads the record
-/// of the build that just happened, so call it straight after one.
+/// it is the DEM plus the correction's deltas, so a receiver over a corrected
+/// cell stands on the terrain the engine sees instead of floating above it.
 function groundDemFor(
   dem: DemRaster | null,
   terrain: SceneHeightfield | null,
   origin: [number, number],
+  qa: TerrainBuildInfo | null,
 ): DemRaster | null {
-  if (!dem || !terrain || !lastTerrainBuild()?.correction) return dem;
-  return correctedDemRaster(dem, terrain, origin);
+  if (!dem || !terrain || !qa?.correction) return dem;
+  return correctedDemRaster(dem, terrain, origin, qa.deltas);
 }
 
 /// Ground elevation under a point, with the app's long-standing non-finite → 0
@@ -410,7 +422,7 @@ export async function evaluateProject(
   dem: DemRaster | null,
   diagnostics: Diagnostics = new Diagnostics(),
   channel: SolveChannel = 'live',
-): Promise<ReceiverResult[]> {
+): Promise<ProjectSolve> {
   await ensureSolverReady();
 
   const origin = projectOrigin(project);
@@ -448,15 +460,20 @@ export async function evaluateProject(
     [...sources.map((s) => s.latLng), ...valid.map((r) => r.latLng)],
     { qaCorrect: project.settings?.topography?.qaCorrect, diagnostics },
   );
-  const terrainQa = lastTerrainBuild();
+  // Only meaningful when a field was actually built: `buildTerrainField` returns
+  // early (leaving the memo alone) when there is no DEM or nothing to cover.
+  const terrainQa = terrain ? lastTerrainBuild() : null;
   if (terrain && dem) {
     diagnostics.note('terrain.source', 'info', terrainSourceNote(dem, terrain));
     if (terrainQa && terrainQa.count > 0) {
-      diagnostics.note('terrain.suspect', 'material', terrainSuspectNote(dem, terrainQa), terrainQa.count);
+      // Count 1, not the cell count: the note already says how many cells there
+      // are, and the UI renders `count` as a "(×N)" repeat marker — so merging
+      // the receiver and grid notes read "3 suspect cells (×6)".
+      diagnostics.note('terrain.suspect', 'material', terrainSuspectNote(dem, terrainQa));
     }
   }
   // Endpoint ground has to come off the same surface the engine screens against.
-  const groundDem = groundDemFor(dem, terrain, origin);
+  const groundDem = groundDemFor(dem, terrain, origin, terrainQa);
   if (!terrain && dem) {
     diagnostics.note(
       'terrain.absent', 'material',
@@ -569,12 +586,15 @@ export async function evaluateProject(
   }
   // Preserve the caller's receiver order, and keep a "—" row for anything that
   // didn't solve (non-finite coordinates, or a rejected scene).
-  return project.receivers.map((rx) => results.get(rx.id) ?? {
-    receiverId: rx.id,
-    perBandLp: new Float64Array(n),
-    totalDbA: -Infinity,
-    perSource: [],
-  });
+  return {
+    results: project.receivers.map((rx) => results.get(rx.id) ?? {
+      receiverId: rx.id,
+      perBandLp: new Float64Array(n),
+      totalDbA: -Infinity,
+      perSource: [],
+    }),
+    terrain: terrainQa,
+  };
 }
 
 /// Receiver results for all three assessment periods.
@@ -608,13 +628,13 @@ export async function evaluateAllPeriods(
   // Which periods may share a solve is one rule, owned by `modes.ts`, because
   // the wind sweep asks the same question and must answer it identically.
   for (const periods of groupPeriodsBySolve(project)) {
-    const solved = await evaluateProject(
+    const { results } = await evaluateProject(
       { ...project, scenario: { ...project.scenario, period: periods[0] } },
       dem,
       new Diagnostics(),
       channel,
     );
-    for (const p of periods) out[p] = solved;
+    for (const p of periods) out[p] = results;
   }
   return out;
 }
@@ -901,8 +921,10 @@ function buildGridJob(
   if (terrain && dem && diagnostics) {
     diagnostics.note('terrain.source', 'info', terrainSourceNote(dem, terrain));
     const qa = lastTerrainBuild();
+    // One note, not one per suspect cell — `count` is the UI's "(×N)" repeat
+    // marker, and the message already carries the cell count.
     if (qa && qa.count > 0) {
-      diagnostics.note('terrain.suspect', 'material', terrainSuspectNote(dem, qa), qa.count);
+      diagnostics.note('terrain.suspect', 'material', terrainSuspectNote(dem, qa));
     }
   }
 
@@ -939,7 +961,9 @@ export async function evaluateGrid(
 ): Promise<GridResult> {
   await ensureSolverReady();
   const job = buildGridJob(project, dem, spacingM, rxHeightAboveGround);
-  return runBatchedGrid(job, groundDemFor(dem, job.terrain, job.origin));
+  // Read straight after the build, before anything can await and rebuild it.
+  const qa = job.terrain ? lastTerrainBuild() : null;
+  return runBatchedGrid(job, groundDemFor(dem, job.terrain, job.origin, qa));
 }
 
 // ============== Worker offload (S1) ==============
@@ -974,6 +998,8 @@ export async function evaluateGridViaWorker(
 ): Promise<GridResult> {
   await ensureSolverReady();
   const job = buildGridJob(project, dem, spacingM, rxHeightAboveGround, diagnostics);
+  // Read straight after the build, before anything can await and rebuild it.
+  const qa = job.terrain ? lastTerrainBuild() : null;
   {
     // The DEM region must cover the calc area AND every (real) source, because
     // ridge sampling walks the whole source→cell line. Expand the snapshot
@@ -986,7 +1012,7 @@ export async function evaluateGridViaWorker(
     // doesn't move geometry (e.g. wind speed / G / atmosphere change, or a
     // re-run of the same area) reuses the sampled terrain instead of
     // re-sampling ~10⁶ DEM points on the main thread each time.
-    const ground = groundDemFor(dem, job.terrain, job.origin);
+    const ground = groundDemFor(dem, job.terrain, job.origin, qa);
     const cached = ground
       ? captureDemRegionCached(
         ground,
